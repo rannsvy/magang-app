@@ -38,6 +38,7 @@ interface PhotoCategory {
 interface ReportPreview {
   jobName: string
   technicianName: string
+  salesName: string
   location: string
   completedDate: string
   photoCategories: PhotoCategory[]
@@ -256,7 +257,8 @@ export default function GenerateLaporanPage() {
 
       const mockPreview: ReportPreview = {
         jobName: selectedJob?.name || "",
-        technicianName: "Ahmad Teknisi",
+        technicianName: "Candra",
+        salesName: "Anggita",
         location: selectedJob?.location || "",
         completedDate: "2024-01-15",
         photoCategories: [
@@ -766,6 +768,15 @@ export default function GenerateLaporanPage() {
                           {reportPreview?.location}
                         </div>
                       </div>
+
+                      <div>
+                        <h5 className="font-semibold text-gray-900 mb-2">Sales</h5>
+                        <div className="flex items-center text-sm text-gray-600">
+                          <User className="h-4 w-4 mr-2" />
+                          {reportPreview?.salesName}
+                        </div>
+                      </div>
+
                     </CardContent>
                   </Card>
                 </div>

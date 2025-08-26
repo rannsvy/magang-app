@@ -18,7 +18,7 @@ interface Technician {
   name: string
   email: string
   phone: string
-  status: "tidak_bertugas" | "ditugaskan" | "selesai"
+  status: "Di_Kantor" | "ditugaskan" | "selesai"
   joinDate: string
 }
 
@@ -29,7 +29,7 @@ interface Job {
   assignmentDate: string
   technicianId: string
   technicianName: string
-  status: "tidak_bertugas" | "ditugaskan" | "selesai"
+  status: "Di_Kantor" | "ditugaskan" | "selesai"
   template: string
   notes: string
 }
@@ -57,7 +57,7 @@ const mockTechnicians: Technician[] = [
     name: "Candra Teknisi",
     email: "candra@teknisi.com",
     phone: "081234567892",
-    status: "tidak_bertugas",
+    status: "Di_Kantor",
     joinDate: "2023-03-10",
   },
   {
@@ -117,8 +117,8 @@ const mockJobs: Job[] = [
 
 const getStatusBadge = (status: string) => {
   switch (status) {
-    case "tidak_bertugas":
-      return <Badge className="bg-gray-100 text-gray-700 hover:bg-gray-100">Tidak Bertugas</Badge>
+    case "Di_Kantor":
+      return <Badge className="bg-gray-100 text-gray-700 hover:bg-gray-100">Di Kantor</Badge>
     case "ditugaskan":
       return <Badge className="bg-yellow-100 text-yellow-700 hover:bg-yellow-100">Ditugaskan</Badge>
     case "selesai":
@@ -219,7 +219,7 @@ export default function ManageTechnicians() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">Semua Status</SelectItem>
-                      <SelectItem value="tidak_bertugas">Tidak Bertugas</SelectItem>
+                      <SelectItem value="Di_Kantor">Di Kantor</SelectItem>
                       <SelectItem value="ditugaskan">Ditugaskan</SelectItem>
                       <SelectItem value="selesai">Selesai</SelectItem>
                     </SelectContent>
