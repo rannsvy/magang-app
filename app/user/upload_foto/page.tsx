@@ -84,7 +84,7 @@ export default function UploadFotoPage() {
   const searchParams = useSearchParams()
   const jobId = searchParams.get("job")
 
-  const fileInputRefs = useRef<{ [key: string]: HTMLInputElement | null }>({})
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const categoriesPerPage = 8
 
   const totalPages = Math.ceil(categories.length / categoriesPerPage)
@@ -101,6 +101,8 @@ export default function UploadFotoPage() {
     switch (status) {
       case "empty":
         return "bg-gray-100 border-gray-300 text-gray-500"
+      case "pending":
+        return "bg-yellow-50 border-yellow-300 text-yellow-600"
       case "incomplete":
         return "bg-red-50 border-red-300 text-red-600"
       case "complete":
@@ -202,7 +204,7 @@ export default function UploadFotoPage() {
 
                   {/* Hidden file input for camera */}
                   <input
-                    ref={(el) => (fileInputRefs.current[category.id] = el)}
+                     ref={(el) => { fileInputRefs.current[category.id] = el; }}
                     type="file"
                     accept="image/*"
                     capture="environment"
