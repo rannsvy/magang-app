@@ -53,6 +53,7 @@
     "react-dom": "18.3.1",
     "react-easy-crop": "^5.5.0",
     "react-hook-form": "^7.60.0",
+    "react-image-crop": "^11.0.10",
     "react-resizable-panels": "^2.1.7",
     "recharts": "2.15.4",
     "sonner": "^1.7.4",
