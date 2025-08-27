@@ -360,7 +360,7 @@ export default function GenerateLaporanPage() {
           {
             id: "cctv-4",
             name: "CCTV 4",
-            photos: ["/cctv-camera-4.png"],
+            photos: ["/cctv-camera-4.png", "/pemasangan-cctv-contoh-1.jpg", "/pemasangan-cctv-contoh-2.webp"],
             currentIndex: 0,
           },
           {

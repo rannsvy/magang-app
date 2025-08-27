@@ -860,10 +860,9 @@ export default function AssignScheduling() {
                         <td className={`px-1 py-1 border-r border-gray-200 font-medium ${rowBgColor}`}>
                           <div
                             className="text-xs font-semibold cursor-pointer hover:bg-blue-50 px-1 py-1 rounded transition-colors"
-                            onContextMenu={(e) => handleProjectNameRightClick(e, project.name)}
-                            title="Klik kanan untuk shortcut Generate Laporan"
-                          >
-                            {project.name}
+                            onContextMenu={(e) => handleProjectNameRightClick(e,project.name)}
+                            title="Klik kanan untuk shortcut Generate Laporan">
+                            {project.name}  
                           </div>
                           <div className="text-[9px] text-gray-500 leading-tight">{project.jobId}</div>
                         </td>
@@ -1075,9 +1074,8 @@ export default function AssignScheduling() {
               <Select
                 value={editProjectForm.status}
                 onValueChange={(value: ProjectStatus) => setEditProjectForm((prev) => ({ ...prev, status: value }))}
-                autoFocus={editProjectForm.isReadOnlyProject}
-              >
-                <SelectTrigger>
+                >               
+                <SelectTrigger autoFocus={editProjectForm.isReadOnlyProject}>
                   <SelectValue placeholder="Pilih status baru" />
                 </SelectTrigger>
                 <SelectContent>

@@ -17,9 +17,9 @@ export default function AdminDashboard() {
       <AdminHeader title="Dashboard Admin" />
 
       <main className="p-8">
-        <div className="max-w-7xl mx-auto">
+        <div className="max-w-10xl mx-auto">
           {/* Statistics Section */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             <Card className="hover:shadow-lg transition-shadow">
               <CardContent className="p-8">
                 <div className="flex items-center">
@@ -27,7 +27,7 @@ export default function AdminDashboard() {
                     <CheckCircle className="h-12 w-12 text-green-600" />
                   </div>
                   <div className="ml-6">
-                    <p className="text-lg font-medium text-gray-600 mb-2">Pekerjaan Selesai</p>
+                    <p className="text-lg font-medium text-gray-600 mb-1">Pekerjaan Selesai</p>
                     <p className="text-4xl font-bold text-gray-900">24</p>
                   </div>
                 </div>
@@ -42,7 +42,7 @@ export default function AdminDashboard() {
                   </div>
                   <div className="ml-6">
                     <p className="text-lg font-medium text-gray-600 mb-2">Sedang Berlangsung</p>
-                    <p className="text-4xl font-bold text-gray-900">8</p>
+                    <p className="text-2xl font-bold text-gray-900">8</p>
                   </div>
                 </div>
               </CardContent>
@@ -54,9 +54,9 @@ export default function AdminDashboard() {
                   <div className="p-4 bg-blue-100 rounded-full">
                     <FileText className="h-12 w-12 text-blue-600" />
                   </div>
-                  <div className="ml-6">
+                  <div className="ml-6  ">
                     <p className="text-lg font-medium text-gray-600 mb-2">Laporan Dibuat</p>
-                    <p className="text-4xl font-bold text-gray-900">18</p>
+                    <p className="text-2xl font-bold text-gray-900">18</p>
                   </div>
                 </div>
               </CardContent>
@@ -75,7 +75,7 @@ export default function AdminDashboard() {
                     <Users className="h-16 w-16 text-purple-600" />
                   </div>
                   <div>
-                    <h3 className="text-2xl font-bold text-gray-900 mb-2">Kelola Teknisi</h3>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Kelola Teknisi</h3>
                     <p className="text-lg text-gray-600">Lihat & kelola data teknisi</p>
                   </div>
                 </div>
@@ -92,8 +92,8 @@ export default function AdminDashboard() {
                     <CalendarCheck className="h-16 w-16 text-orange-600" />
                   </div>
                   <div>
-                    <h3 className="text-2xl font-bold text-gray-900 mb-2">Assign Penjadwalan</h3>
-                    <p className="text-lg text-gray-600">Tetapkan teknisi, pekerjaan, template</p>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Assign Penjadwalan</h3>
+                    <p className="text-lg text-gray-600">Penjadwalan Project dan Teknisi</p>
                   </div>
                 </div>
               </CardContent>
@@ -105,12 +105,12 @@ export default function AdminDashboard() {
             >
               <CardContent className="p-10 text-center">
                 <div className="flex flex-col items-center space-y-4">
-                  <div className="p-6 bg-green-100 rounded-full group-hover:bg-green-200 transition-colors">
+                  <div className="p-6  bg-green-100 rounded-full group-hover:bg-green-200 transition-colors">
                     <FileText className="h-16 w-16 text-green-600" />
                   </div>
                   <div>
-                    <h3 className="text-2xl font-bold text-gray-900 mb-2">Generate Laporan</h3>
-                    <p className="text-lg text-gray-600">Pilih template & pekerjaan untuk membuat laporan</p>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Generate Laporan</h3>
+                    <p className="text-lg text-gray-600">Pilih pekerjaan dan generate laporan</p>
                   </div>
                 </div>
               </CardContent>
@@ -126,7 +126,7 @@ export default function AdminDashboard() {
                     <History className="h-16 w-16 text-indigo-600" />
                   </div>
                   <div>
-                    <h3 className="text-2xl font-bold text-gray-900 mb-2">Riwayat Pekerjaan</h3>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Riwayat Pekerjaan</h3>
                     <p className="text-lg text-gray-600">Lihat riwayat semua pekerjaan</p>
                   </div>
                 </div>
