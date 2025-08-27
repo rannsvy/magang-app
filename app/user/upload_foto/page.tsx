@@ -153,7 +153,7 @@ export default function UploadFotoPage() {
       <TechnicianHeader title={`Upload Foto - Job #${jobId}`} showBackButton={true} backUrl="/user/dashboard" />
 
       {/* Main Content */}
-      <main className="p-4">
+      <main className="p-8">
         <div className="max-w-4xl mx-auto">
           {/* Categories Grid */}
           <div className="grid grid-cols-2 gap-1 mb-4">
@@ -165,7 +165,7 @@ export default function UploadFotoPage() {
                 <div key={category.id} className="space-y-1">
                   <Card className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[130px] mx-auto`}>
                     <CardContent
-                      className="p-1 flex items-center justify-center h-[80px] w-[120px] relative"
+                      className="p-1 flex items-center justify-center h-[80px] w-[130px] relative"
                       onClick={() => handleCameraClick(category.id)}
                     >
                       {category.photo ? (
@@ -186,9 +186,9 @@ export default function UploadFotoPage() {
 
                   {/* Serial Number Input */}
                   {category.requiresSerialNumber && category.photo && (
-                    <div className="space-y-1">
-                      <Label htmlFor={`sn-${category.id}`} className="text-xs text-gray-600">
-                        Serial Number *
+                    <div className="space-y-1 ">
+                      <Label htmlFor={`sn-${category.id}`} className="text-[12px] text-gray-600 justify-center">
+                        SN = {category.name}
                       </Label>
                       <Input
                         id={`sn-${category.id}`}
