@@ -10,7 +10,6 @@ import { TechnicianHeader } from "@/components/technician-header"
 import { Pagination } from "@/components/pagination"
 import { Camera } from "lucide-react"
 
-// ====== Ganti ke react-image-crop (seperti crop-example.tsx)
 import ReactCrop, {
   type Crop,
   type PixelCrop,
@@ -18,7 +17,7 @@ import ReactCrop, {
 } from "react-image-crop"
 import "react-image-crop/dist/ReactCrop.css"
 
-/* ===================== Types & Data ===================== */
+
 interface PhotoCategory {
   id: string
   name: string
@@ -27,7 +26,6 @@ interface PhotoCategory {
   serialNumber?: string
 }
 
-// Mock categories for demonstration
 const mockCategories: PhotoCategory[] = [
   { id: "1", name: "Fisik CCTV", requiresSerialNumber: false },
   { id: "2", name: "Foto Terpasang CCTV 1", requiresSerialNumber: false },
@@ -108,7 +106,6 @@ async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<B
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/jpeg", 0.92)
   )
 }
-/* ==================================================================== */
 
 export default function UploadFotoPage() {
   const [categories, setCategories] = useState<PhotoCategory[]>(mockCategories)
