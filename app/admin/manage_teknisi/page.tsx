@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,14 +12,13 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { AdminHeader } from "@/components/admin-header"
 import { Search, Plus, Edit, Trash2, ChevronLeft, ChevronRight } from "lucide-react"
+import { apiFetch } from "@/lib/apiFetch"
 
 interface Technician {
   id: string
+  code: string
   name: string
-  email: string
-  phone: string
-  status: "tidak_bertugas" | "ditugaskan" | "selesai"
-  joinDate: string
+  initial: string
 }
 
 interface Job {
@@ -33,50 +32,6 @@ interface Job {
   template: string
   notes: string
 }
-
-// Mock data for technicians with new status system
-const mockTechnicians: Technician[] = [
-  {
-    id: "1",
-    name: "Ahmad Teknisi",
-    email: "ahmad@teknisi.com",
-    phone: "081234567890",
-    status: "ditugaskan",
-    joinDate: "2023-01-15",
-  },
-  {
-    id: "2",
-    name: "Budi Teknisi",
-    email: "budi@teknisi.com",
-    phone: "081234567891",
-    status: "selesai",
-    joinDate: "2023-02-20",
-  },
-  {
-    id: "3",
-    name: "Candra Teknisi",
-    email: "candra@teknisi.com",
-    phone: "081234567892",
-    status: "tidak_bertugas",
-    joinDate: "2023-03-10",
-  },
-  {
-    id: "4",
-    name: "Dedi Teknisi",
-    email: "dedi@teknisi.com",
-    phone: "081234567893",
-    status: "ditugaskan",
-    joinDate: "2023-04-05",
-  },
-  {
-    id: "5",
-    name: "Eko Teknisi",
-    email: "eko@teknisi.com",
-    phone: "081234567894",
-    status: "selesai",
-    joinDate: "2023-05-12",
-  },
-]
 
 // Mock data for jobs
 const mockJobs: Job[] = [
@@ -129,6 +84,8 @@ const getStatusBadge = (status: string) => {
 }
 
 export default function ManageTechnicians() {
+  const [technicians, setTechnicians] = useState<Technician[]>([])
+  const [loading, setLoading] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [currentPage, setCurrentPage] = useState(1)
@@ -136,6 +93,50 @@ export default function ManageTechnicians() {
   const [editingJob, setEditingJob] = useState<Job | null>(null)
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
   const itemsPerPage = 5
+
+  useEffect(() => {
+    loadTechnicians()
+  }, [])
+
+  async function loadTechnicians() {
+    try {
+      setLoading(true)
+      const response = await apiFetch('/api/technicians')
+      const data = response.data || []
+      setTechnicians(data)
+    } catch (error) {
+      console.error('Error loading technicians:', error)
+      alert('Gagal memuat data teknisi')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function deleteTechnician(technicianId: string, technicianName: string) {
+    if (!confirm(`Apakah Anda yakin ingin menghapus teknisi ${technicianName}? Tindakan ini tidak dapat dibatalkan.`)) {
+      return
+    }
+
+    try {
+      setLoading(true)
+      const response = await apiFetch(`/api/technicians?id=${technicianId}`, {
+        method: 'DELETE',
+      })
+      
+      if (response.error) {
+        throw new Error(response.error)
+      }
+      
+      // Hapus dari state lokal
+      setTechnicians(prev => prev.filter(tech => tech.id !== technicianId))
+      alert(`Teknisi ${technicianName} berhasil dihapus`)
+    } catch (error: any) {
+      console.error('Error deleting technician:', error)
+      alert(`Gagal menghapus teknisi: ${error.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   // Filter technicians
   const filteredTechnicians = mockTechnicians.filter((tech) => {

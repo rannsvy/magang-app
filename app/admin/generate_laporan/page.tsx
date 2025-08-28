@@ -1,14 +1,21 @@
-"use client"
+"use client";
 
-import type React from "react"
+import type React from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { createClient } from "@supabase/supabase-js";
 
-import { useState, useEffect } from "react"
-import { useSearchParams } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { AdminHeader } from "@/components/admin-header"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { AdminHeader } from "@/components/admin-header";
 import {
   FileText,
   Download,
@@ -21,593 +28,563 @@ import {
   ChevronRight,
   ArrowLeft,
   X,
-} from "lucide-react"
+} from "lucide-react";
 
+/* ================= Supabase ================= */
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+/* ================= Types ================= */
 interface GenerateForm {
-  projectName: string
-  jobId: string
+  projectName: string; // id group (job_group_id atau job_groups.id)
+  jobId: string; // projects.job_id
+}
+
+interface ProjectGroup {
+  id: string;
+  name: string;
+}
+
+interface JobRow {
+  id: string; // UI pakai ini = job_id
+  job_id?: string | null; // raw
+  name: string | null;
+  project_id: string; // projects.id (uuid)
+  lokasi: string | null;
+  tanggal_mulai?: string | null;
+  closed_at?: string | null;
+  sigma_teknisi?: number | null;
+  sales_name?: string | null;
+  presales_name?: string | null;
 }
 
 interface PhotoCategory {
-  id: string
-  name: string
-  photos: string[]
-  currentIndex: number
+  id: string;
+  name: string;
+  photos: string[];
+  currentIndex: number;
+  snKey?: string | null; // mis. "Device 1" / "Main Unit"
 }
 
 interface ReportPreview {
-  jobName: string
-  technicianName: string
-  location: string
-  completedDate: string
-  photoCategories: PhotoCategory[]
-  serialNumbers: { [key: string]: string }
-  notes: string
+  jobName: string;
+  technicianName: string;
+  location: string;
+  completedDate: string;
+  photoCategories: PhotoCategory[];
+  serialNumbers: { [key: string]: string };
+  notes: string;
+  projectName?: string;
 }
 
 interface HoverOverlayState {
-  isOpen: boolean
-  categoryId: string
-  photoIndex: number
-  isLoading: boolean
-  hasError: boolean
+  isOpen: boolean;
+  categoryId: string;
+  photoIndex: number;
+  isLoading: boolean;
+  hasError: boolean;
 }
 
-const projects = [
-  { id: "pemasangan-cctv", name: "Pemasangan CCTV" },
-  { id: "maintenance-server", name: "Maintenance Server" },
-  { id: "instalasi-wifi", name: "Instalasi WiFi" },
-  { id: "perbaikan-router", name: "Perbaikan Router" },
-  { id: "setup-jaringan", name: "Setup Jaringan" },
-]
+/* =============== Fallback (jika DB kosong) =============== */
+const FALLBACK_CATEGORIES: Array<Pick<PhotoCategory, "id" | "name" | "snKey">> =
+  [
+    { id: "fisik", name: "Fisik", snKey: undefined },
+    { id: "serial-number", name: "Serial Number", snKey: undefined },
+    { id: "cctv-1", name: "CCTV 1", snKey: "Device 1" },
+    { id: "cctv-2", name: "CCTV 2", snKey: "Device 2" },
+    { id: "power-supply", name: "Power Supply", snKey: "Device 2" },
+    { id: "network-switch", name: "Network Switch", snKey: "Main Unit" },
+    { id: "dvr-nvr", name: "DVR/NVR", snKey: "Main Unit" },
+    { id: "monitor-display", name: "Monitor Display", snKey: "Main Unit" },
+    { id: "testing", name: "Testing", snKey: undefined },
+    { id: "dokumentasi-final", name: "Dokumentasi Final", snKey: undefined },
+  ];
 
-const jobs = [
-  {
-    id: "CCTV_Mandiri_Darmo",
-    name: "CCTV_Mandiri_Darmo",
-    projectId: "pemasangan-cctv",
-    location: "Bank Mandiri Darmo",
-    displayName: "Mandiri_Darmo",
-  },
-  {
-    id: "CCTV_BNI_Pakis",
-    name: "CCTV_BNI_Pakis",
-    projectId: "pemasangan-cctv",
-    location: "Bank BNI Pakis",
-    displayName: "BNI_Pakis",
-  },
-  {
-    id: "CCTV_BCA_Tunjungan",
-    name: "CCTV_BCA_Tunjungan",
-    projectId: "pemasangan-cctv",
-    location: "Bank BCA Tunjungan",
-    displayName: "BCA_Tunjungan",
-  },
-  {
-    id: "Server_Telkom_Surabaya",
-    name: "Server_Telkom_Surabaya",
-    projectId: "maintenance-server",
-    location: "PT Telkom Surabaya",
-    displayName: "Telkom_Surabaya",
-  },
-  {
-    id: "Server_Indosat_Malang",
-    name: "Server_Indosat_Malang",
-    projectId: "maintenance-server",
-    location: "PT Indosat Malang",
-    displayName: "Indosat_Malang",
-  },
-  {
-    id: "WiFi_Unair_Kampus",
-    name: "WiFi_Unair_Kampus",
-    projectId: "instalasi-wifi",
-    location: "Universitas Airlangga",
-    displayName: "Unair_Kampus",
-  },
-  {
-    id: "WiFi_ITS_Sukolilo",
-    name: "WiFi_ITS_Sukolilo",
-    projectId: "instalasi-wifi",
-    location: "Institut Teknologi Sepuluh Nopember",
-    displayName: "ITS_Sukolilo",
-  },
-  {
-    id: "Router_Warnet_Gubeng",
-    name: "Router_Warnet_Gubeng",
-    projectId: "perbaikan-router",
-    location: "Warnet Cyber Gubeng",
-    displayName: "Warnet_Gubeng",
-  },
-  {
-    id: "Jaringan_Pemkot_Surabaya",
-    name: "Jaringan_Pemkot_Surabaya",
-    projectId: "setup-jaringan",
-    location: "Pemkot Surabaya",
-    displayName: "Pemkot_Surabaya",
-  },
-]
+/* =============== Utils =============== */
+const truncateSerialNumber = (sn: string, max = 12) =>
+  sn.length <= max ? sn : sn.slice(0, max) + "...";
 
-const getSerialNumberForCategory = (categoryId: string, serialNumbers: { [key: string]: string }) => {
-  // Map category IDs to serial number keys
-  const categoryToSnMap: { [key: string]: string } = {
-    "cctv-1": "Device 1",
-    "cctv-2": "Device 2",
-    "cctv-3": "Device 1",
-    "cctv-4": "Device 2",
-    "cctv-5": "Device 1",
-    "dvr-nvr": "Main Unit",
-    "network-switch": "Main Unit",
-    "power-supply": "Device 2",
-    "monitor-display": "Main Unit",
+const fmtDate = (d?: string | null) => {
+  if (!d) return "";
+  try {
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return String(d);
+    return dt.toISOString().slice(0, 10); // YYYY-MM-DD
+  } catch {
+    return String(d);
   }
+};
 
-  const snKey = categoryToSnMap[categoryId]
-  return snKey ? serialNumbers[snKey] : null
-}
-
-const truncateSerialNumber = (sn: string, maxLength = 12) => {
-  if (sn.length <= maxLength) return sn
-  return sn.substring(0, maxLength) + "..."
-}
-
+/* =============== Page =============== */
 export default function GenerateLaporanPage() {
-  const searchParams = useSearchParams()
-  const projectParam = searchParams.get("project")
+  const searchParams = useSearchParams();
 
+  // Form
   const [formData, setFormData] = useState<GenerateForm>({
     projectName: "",
     jobId: "",
-  })
-  const [reportPreview, setReportPreview] = useState<ReportPreview | null>(null)
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [currentGridPage, setCurrentGridPage] = useState(0)
-  const [showPreview, setShowPreview] = useState(false)
+  });
 
-  const [hoverOverlay, setHoverOverlay] = useState<{
-    isOpen: boolean
-    categoryId: string
-    photoIndex: number
-    isLoading: boolean
-    hasError: boolean
-  }>({
+  // List dari DB
+  const [projectGroups, setProjectGroups] = useState<ProjectGroup[]>([]);
+  const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Preview
+  const [reportPreview, setReportPreview] = useState<ReportPreview | null>(
+    null
+  );
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [currentGridPage, setCurrentGridPage] = useState(0);
+  const [showPreview, setShowPreview] = useState(false);
+
+  // Hover overlay
+  const [hoverOverlay, setHoverOverlay] = useState<HoverOverlayState>({
     isOpen: false,
     categoryId: "",
     photoIndex: 0,
     isLoading: false,
     hasError: false,
-  })
+  });
+  const [hoverTimeout, setHoverTimeout] = useState<NodeJS.Timeout | null>(null);
 
-  const [hoverTimeout, setHoverTimeout] = useState<NodeJS.Timeout | null>(null)
-
-  const getProjectIdFromName = (displayName: string): string => {
-    const projectMap: { [key: string]: string } = {
-      "Pemasangan CCTV": "pemasangan-cctv",
-      "Maintenance Server": "maintenance-server",
-      "Instalasi WiFi": "instalasi-wifi",
-      "Perbaikan Router": "perbaikan-router",
-      "Setup Jaringan": "setup-jaringan",
-    }
-    return projectMap[displayName] || ""
-  }
-
+  /* ======== Ambil Project Group ======== */
   useEffect(() => {
-    const projectParam = searchParams.get("project")
-    if (projectParam && !formData.projectName) {
-      const decodedProjectName = decodeURIComponent(projectParam)
-      const projectId = getProjectIdFromName(decodedProjectName)
+    let isMounted = true;
 
-      if (projectId) {
-        setFormData((prev) => ({
-          ...prev,
-          projectName: projectId,
-        }))
+    async function fetchGroups() {
+      setLoadingProjects(true);
+      setErrorMsg(null);
+
+      // Coba pakai tabel job_groups (kalau ada)
+      const tryGroups = await supabase
+        .from("job_groups")
+        .select("id,name")
+        .order("name", { ascending: true });
+
+      if (!isMounted) return;
+
+      if (!tryGroups.error && (tryGroups.data?.length ?? 0) > 0) {
+        setProjectGroups(tryGroups.data as ProjectGroup[]);
+        setLoadingProjects(false);
+        return;
+      }
+
+      // Fallback: distinct job_group_id dari projects
+      const { data, error } = await supabase
+        .from("projects")
+        .select("job_group_id")
+        .not("job_group_id", "is", null)
+        .order("job_group_id", { ascending: true });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error(error);
+        setErrorMsg("Gagal memuat daftar project group");
+        setProjectGroups([]);
+      } else {
+        const uniq = Array.from(
+          new Set((data ?? []).map((r: any) => String(r.job_group_id)))
+        );
+        setProjectGroups(uniq.map((id) => ({ id, name: id })));
+      }
+
+      setLoadingProjects(false);
+    }
+
+    fetchGroups();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  /* ======== Ambil Jobs per group ======== */
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchJobsByGroup(groupId: string) {
+      setLoadingJobs(true);
+      setErrorMsg(null);
+
+      // ⚠️ HANYA pilih kolom yang ADA di skema kamu
+      const { data, error } = await supabase
+        .from("projects")
+        .select(
+          "id, job_id, job_group_id, name, lokasi, tanggal_mulai, closed_at, sigma_teknisi, sales_name, presales_name"
+        )
+        .eq("job_group_id", groupId)
+        .order("job_id", { ascending: true });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error(error);
+        setErrorMsg("Gagal memuat daftar pekerjaan");
+        setJobs([]);
+      } else {
+        const rows: JobRow[] = (data || []).map((j: any) => ({
+          id: String(j.job_id),
+          job_id: j.job_id ?? null,
+          name: j.name ?? null,
+          project_id: String(j.id),
+          lokasi: j.lokasi ?? null,
+          tanggal_mulai: j.tanggal_mulai ?? null,
+          closed_at: j.closed_at ?? null,
+          sigma_teknisi: j.sigma_teknisi ?? null,
+          sales_name: j.sales_name ?? null,
+          presales_name: j.presales_name ?? null,
+        }));
+        setJobs(rows);
+      }
+
+      setLoadingJobs(false);
+    }
+
+    if (formData.projectName) {
+      fetchJobsByGroup(formData.projectName);
+    } else {
+      setJobs([]);
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [formData.projectName]);
+
+  // (opsional) auto-pilih group dari query ?project=
+  useEffect(() => {
+    const projectParam = searchParams.get("project");
+    if (projectParam && !formData.projectName && projectGroups.length) {
+      const decoded = decodeURIComponent(projectParam);
+      const found = projectGroups.find(
+        (p) => p.name === decoded || p.id === decoded
+      );
+      if (found) {
+        setFormData((prev) => ({ ...prev, projectName: found.id, jobId: "" }));
       }
     }
-  }, [searchParams, formData.projectName])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, projectGroups.length]);
 
-  useEffect(() => {
-    const handleEscapeKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && hoverOverlay.isOpen) {
-        hideHoverOverlay()
-      }
-    }
-
-    document.addEventListener("keydown", handleEscapeKey)
-    return () => document.removeEventListener("keydown", handleEscapeKey)
-  }, [hoverOverlay.isOpen])
-
+  // Cleanup hover timeout
   useEffect(() => {
     return () => {
-      if (hoverTimeout) {
-        clearTimeout(hoverTimeout)
-      }
-    }
-  }, [hoverTimeout])
+      if (hoverTimeout) clearTimeout(hoverTimeout);
+    };
+  }, [hoverTimeout]);
 
+  /* ================= Form handlers ================= */
   const handleInputChange = (field: keyof GenerateForm, value: string) => {
     setFormData((prev) => {
-      const newData = { ...prev, [field]: value }
-      if (field === "projectName") {
-        newData.jobId = ""
-      }
-      return newData
-    })
-  }
+      const next = { ...prev, [field]: value };
+      if (field === "projectName") next.jobId = "";
+      return next;
+    });
+  };
 
-  const getFilteredJobs = () => {
-    if (!formData.projectName) return []
-    return jobs.filter((job) => job.projectId === formData.projectName)
-  }
+  const selectedProject = useMemo(
+    () => projectGroups.find((p) => p.id === formData.projectName) || null,
+    [projectGroups, formData.projectName]
+  );
 
-  const isFormValid = () => {
-    return formData.projectName && formData.jobId
-  }
+  const isFormValid = () => Boolean(formData.projectName && formData.jobId);
 
+  /* ================= Generate Preview ================= */
   const handleGenerate = async () => {
     if (!isFormValid()) {
-      alert("Mohon lengkapi semua field")
-      return
+      alert("Mohon lengkapi semua field");
+      return;
     }
 
-    setIsGenerating(true)
+    setIsGenerating(true);
+    setErrorMsg(null);
 
-    setTimeout(() => {
-      const selectedJob = jobs.find((job) => job.id === formData.jobId)
+    try {
+      const selectedJob = jobs.find((j) => j.id === formData.jobId);
 
-      const mockPreview: ReportPreview = {
-        jobName: selectedJob?.name || "",
-        technicianName: "Ahmad Teknisi",
-        location: selectedJob?.location || "",
-        completedDate: "2024-01-15",
-        photoCategories: [
-          {
-            id: "fisik",
-            name: "Fisik",
-            photos: ["/cctv-installation.png", "/placeholder-n2tdv.png", "/surveillance-camera-housing.png"],
-            currentIndex: 0,
+      // 1) Serial Numbers (opsional, fallback bila tabel belum ada)
+      let serialNumbers: Record<string, string> = {
+        "Device 1": "SN001234567",
+        "Device 2": "SN001234568",
+        "Main Unit": "MU987654321",
+      };
+      const snQuery = await supabase
+        .from("job_serial_numbers")
+        .select("label, value")
+        .eq("job_id", formData.jobId);
+
+      if (!snQuery.error && snQuery.data) {
+        const map = (snQuery.data || []).reduce(
+          (acc: Record<string, string>, r: any) => {
+            acc[String(r.label)] = String(r.value);
+            return acc;
           },
-          {
-            id: "serial-number",
-            name: "Serial Number",
-            photos: ["/placeholder-ma1ip.png", "/placeholder-wmmhg.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "cctv-1",
-            name: "CCTV 1",
-            photos: [
-              "/cctv-camera-view-1.png",
-              "/security-camera-monitoring.png",
-              "/placeholder-p8oau.png",
-              "/cctv-night-vision-test.png",
-            ],
-            currentIndex: 0,
-          },
-          {
-            id: "cctv-2",
-            name: "CCTV 2",
-            photos: ["/placeholder-glk0s.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "instalasi-camera-1",
-            name: "Instalasi Camera 1",
-            photos: [
-              "/placeholder.svg?height=200&width=300",
-              "/placeholder.svg?height=200&width=300",
-              "/placeholder.svg?height=200&width=300",
-            ],
-            currentIndex: 0,
-          },
-          {
-            id: "instalasi-camera-2",
-            name: "Instalasi Camera 2",
-            photos: ["/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "kabel-management",
-            name: "Kabel Management",
-            photos: [
-              "/placeholder.svg?height=200&width=300",
-              "/placeholder.svg?height=200&width=300",
-              "/placeholder.svg?height=200&width=300",
-            ],
-            currentIndex: 0,
-          },
-          {
-            id: "testing",
-            name: "Testing",
-            photos: ["/placeholder.svg?height=200&width=300", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "dokumentasi-final",
-            name: "Dokumentasi Final",
-            photos: [
-              "/placeholder.svg?height=200&width=300",
-              "/placeholder.svg?height=200&width=300",
-              "/placeholder.svg?height=200&width=300",
-            ],
-            currentIndex: 0,
-          },
-          {
-            id: "sertifikat",
-            name: "Sertifikat",
-            photos: ["/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "manual-book",
-            name: "Manual Book",
-            photos: ["/placeholder.svg?height=200&width=300", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "warranty",
-            name: "Warranty",
-            photos: ["/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "cctv-3",
-            name: "CCTV 3",
-            photos: ["/cctv-camera-3.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "cctv-4",
-            name: "CCTV 4",
-            photos: ["/cctv-camera-4.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "cctv-5",
-            name: "CCTV 5",
-            photos: ["/cctv-camera-5.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "instalasi-camera-3",
-            name: "Instalasi Camera 3",
-            photos: ["/camera-installation-3.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "instalasi-camera-4",
-            name: "Instalasi Camera 4",
-            photos: ["/camera-installation-4.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "power-supply",
-            name: "Power Supply",
-            photos: ["/power-supply-unit.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "network-switch",
-            name: "Network Switch",
-            photos: ["/network-switch.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "dvr-nvr",
-            name: "DVR/NVR",
-            photos: ["/dvr-nvr-recorder.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "monitor-display",
-            name: "Monitor Display",
-            photos: ["/security-monitor-display.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "konfigurasi-sistem",
-            name: "Konfigurasi Sistem",
-            photos: ["/system-configuration.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "testing-koneksi",
-            name: "Testing Koneksi",
-            photos: ["/connection-testing.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "testing-rekaman",
-            name: "Testing Rekaman",
-            photos: ["/recording-test.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "testing-playback",
-            name: "Testing Playback",
-            photos: ["/playback-test.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "user-training",
-            name: "User Training",
-            photos: ["/user-training-session.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "handover-dokumen",
-            name: "Handover Dokumen",
-            photos: ["/placeholder-hom1f.png"],
-            currentIndex: 0,
-          },
-          {
-            id: "cleaning-area",
-            name: "Cleaning Area",
-            photos: ["/cleaning-work-area.png", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "backup-konfigurasi",
-            name: "Backup Konfigurasi",
-            photos: ["/placeholder.svg?height=200&width=300", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-          {
-            id: "label-perangkat",
-            name: "Label Perangkat",
-            photos: ["/placeholder.svg?height=200&width=300", "/placeholder.svg?height=200&width=300"],
-            currentIndex: 0,
-          },
-        ],
-        serialNumbers: {
-          "Device 1": "SN001234567",
-          "Device 2": "SN001234568",
-          "Main Unit": "MU987654321",
-        },
-        notes:
-          "Pekerjaan telah selesai dilakukan dengan baik. Semua perangkat berfungsi normal dan sudah terhubung ke sistem. Lokasi pemasangan strategis sesuai dengan kebutuhan.",
+          {}
+        );
+        if (Object.keys(map).length) serialNumbers = map;
       }
 
-      setReportPreview(mockPreview)
-      setIsGenerating(false)
-      setCurrentGridPage(0)
-      setShowPreview(true)
-    }, 2000)
-  }
+      // 2) Categories (opsional)
+      let categories: PhotoCategory[] = FALLBACK_CATEGORIES.map((c) => ({
+        ...c,
+        photos: [],
+        currentIndex: 0,
+      }));
 
-  const handleCarouselNavigation = (categoryId: string, direction: "prev" | "next") => {
-    if (!reportPreview) return
+      const catQuery = await supabase
+        .from("job_photo_categories")
+        .select("id, name, sn_key, sort_order")
+        .order("sort_order", { ascending: true });
 
+      if (!catQuery.error && catQuery.data?.length) {
+        categories = (catQuery.data as any[]).map((c) => ({
+          id: String(c.id),
+          name: String(c.name),
+          snKey: c.sn_key ? String(c.sn_key) : undefined,
+          photos: [],
+          currentIndex: 0,
+        }));
+      }
+
+      // 3) Photos per job (opsional)
+      const photoQuery = await supabase
+        .from("job_photos")
+        .select("category_id, url, sort_order")
+        .eq("job_id", formData.jobId)
+        .order("sort_order", { ascending: true });
+
+      if (!photoQuery.error && photoQuery.data) {
+        const photoMap = (photoQuery.data || []).reduce(
+          (acc: Record<string, string[]>, p: any) => {
+            const cid = String(p.category_id);
+            if (!acc[cid]) acc[cid] = [];
+            acc[cid].push(String(p.url || "/placeholder.svg"));
+            return acc;
+          },
+          {}
+        );
+        categories = categories.map((c) => ({
+          ...c,
+          photos:
+            photoMap[c.id] && photoMap[c.id].length
+              ? photoMap[c.id]
+              : ["/placeholder.svg?height=200&width=300"],
+        }));
+      } else {
+        // Jika tabel job_photos belum ada → kasih placeholder biar tile tampil
+        categories = categories.map((c) => ({
+          ...c,
+          photos: c.photos.length
+            ? c.photos
+            : ["/placeholder.svg?height=200&width=300"],
+        }));
+      }
+
+      // Build header preview dari kolom yang ada
+      const jobName = selectedJob?.name || selectedJob?.id || "";
+      const location = selectedJob?.lokasi || "";
+      const completedDate =
+        fmtDate(selectedJob?.closed_at) ||
+        fmtDate(selectedJob?.tanggal_mulai) ||
+        "—";
+      const technicianName =
+        selectedJob?.sales_name ||
+        selectedJob?.presales_name ||
+        (typeof selectedJob?.sigma_teknisi === "number"
+          ? `Teknisi (${selectedJob?.sigma_teknisi})`
+          : "Teknisi");
+
+      const preview: ReportPreview = {
+        jobName,
+        technicianName,
+        location,
+        completedDate,
+        photoCategories: categories,
+        serialNumbers,
+        notes:
+          "Pekerjaan telah selesai dilakukan dengan baik. Semua perangkat berfungsi normal dan sudah terhubung ke sistem.",
+        projectName: selectedProject?.name,
+      };
+
+      setReportPreview(preview);
+      setCurrentGridPage(0);
+      setShowPreview(true);
+    } catch (e: any) {
+      console.error(e);
+      setErrorMsg(e?.message || "Gagal menghasilkan preview laporan");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  /* ================= Grid & Overlay (seperti Code 1) ================= */
+  const itemsPerPage = 20;
+  const totalPages = reportPreview
+    ? Math.ceil(reportPreview.photoCategories.length / itemsPerPage)
+    : 0;
+
+  const getCurrentPageItems = () => {
+    if (!reportPreview) return [];
+    const startIndex = currentGridPage * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return reportPreview.photoCategories.slice(startIndex, endIndex);
+  };
+
+  const handleGridNavigation = (dir: "prev" | "next") => {
+    if (dir === "next" && currentGridPage < totalPages - 1) {
+      setCurrentGridPage((p) => p + 1);
+    } else if (dir === "prev" && currentGridPage > 0) {
+      setCurrentGridPage((p) => p - 1);
+    }
+  };
+
+  const getSerialNumberForCategory = (
+    category: PhotoCategory,
+    serialNumbers: { [key: string]: string }
+  ) => {
+    if (category.snKey && serialNumbers[category.snKey])
+      return serialNumbers[category.snKey];
+    const map: Record<string, string> = {
+      "cctv-1": "Device 1",
+      "cctv-2": "Device 2",
+      "cctv-3": "Device 1",
+      "cctv-4": "Device 2",
+      "cctv-5": "Device 1",
+      "dvr-nvr": "Main Unit",
+      "network-switch": "Main Unit",
+      "power-supply": "Device 2",
+      "monitor-display": "Main Unit",
+    };
+    const key = map[category.id];
+    return key ? serialNumbers[key] : undefined;
+  };
+
+  const [hoverOverlayState, setHoverOverlayState] = useState(0); // dummy to force re-render on quick nav
+
+  const handleCarouselNavigation = (
+    categoryId: string,
+    direction: "prev" | "next"
+  ) => {
+    if (!reportPreview) return;
     setReportPreview((prev) => {
-      if (!prev) return prev
-
-      const updatedCategories = prev.photoCategories.map((category) => {
+      if (!prev) return prev;
+      const updated = prev.photoCategories.map((category) => {
         if (category.id === categoryId && category.photos.length > 0) {
-          const maxIndex = category.photos.length - 1
-          let newIndex = category.currentIndex
-
-          if (direction === "next") {
-            newIndex = newIndex >= maxIndex ? 0 : newIndex + 1
-          } else if (direction === "prev") {
-            newIndex = newIndex <= 0 ? maxIndex : newIndex - 1
-          }
+          const maxIndex = category.photos.length - 1;
+          let newIndex = category.currentIndex;
+          newIndex =
+            direction === "next"
+              ? newIndex >= maxIndex
+                ? 0
+                : newIndex + 1
+              : newIndex <= 0
+              ? maxIndex
+              : newIndex - 1;
 
           if (hoverOverlay.isOpen && hoverOverlay.categoryId === categoryId) {
-            setHoverOverlay((overlayPrev) => ({
-              ...overlayPrev,
+            setHoverOverlay((ov) => ({
+              ...ov,
               photoIndex: newIndex,
               isLoading: true,
               hasError: false,
-            }))
-
-            setTimeout(() => {
-              setHoverOverlay((overlayPrev) => ({ ...overlayPrev, isLoading: false }))
-            }, 150)
+            }));
+            setTimeout(
+              () => setHoverOverlay((ov) => ({ ...ov, isLoading: false })),
+              150
+            );
+            setHoverOverlayState((s) => s + 1);
           }
-
-          return { ...category, currentIndex: newIndex }
+          return { ...category, currentIndex: newIndex };
         }
-        return category
-      })
-
-      return { ...prev, photoCategories: updatedCategories }
-    })
-  }
+        return category;
+      });
+      return { ...prev, photoCategories: updated };
+    });
+  };
 
   const showHoverOverlay = (categoryId: string) => {
-    const category = reportPreview?.photoCategories.find((cat) => cat.id === categoryId)
-    if (!category || category.photos.length === 0) return
-
+    const category = reportPreview?.photoCategories.find(
+      (c) => c.id === categoryId
+    );
+    if (!category || category.photos.length === 0) return;
     setHoverOverlay({
       isOpen: true,
       categoryId,
       photoIndex: category.currentIndex,
       isLoading: true,
       hasError: false,
-    })
+    });
+    setTimeout(
+      () => setHoverOverlay((prev) => ({ ...prev, isLoading: false })),
+      200
+    );
+  };
 
-    setTimeout(() => {
-      setHoverOverlay((prev) => ({ ...prev, isLoading: false }))
-    }, 200)
-  }
-
-  const hideHoverOverlay = () => {
-    setHoverOverlay((prev) => ({ ...prev, isOpen: false }))
-  }
+  const hideHoverOverlay = () =>
+    setHoverOverlay((prev) => ({ ...prev, isOpen: false }));
 
   const handleImageHoverEnter = (categoryId: string) => {
-    if (hoverTimeout) {
-      clearTimeout(hoverTimeout)
-    }
-
-    const delay = 1000 // 1 second delay for all photo categories
-
-    const timeout = setTimeout(() => {
-      showHoverOverlay(categoryId)
-    }, delay)
-
-    setHoverTimeout(timeout)
-  }
+    if (hoverTimeout) clearTimeout(hoverTimeout);
+    const timeout = setTimeout(() => showHoverOverlay(categoryId), 1000);
+    setHoverTimeout(timeout);
+  };
 
   const handleImageHoverLeave = () => {
     if (hoverTimeout) {
-      clearTimeout(hoverTimeout)
-      setHoverTimeout(null)
+      clearTimeout(hoverTimeout);
+      setHoverTimeout(null);
     }
-  }
+  };
 
-  const handleArrowClick = (e: React.MouseEvent, categoryId: string, direction: "prev" | "next") => {
-    e.stopPropagation()
-    e.preventDefault()
-    handleCarouselNavigation(categoryId, direction)
-  }
+  const handleArrowClick = (
+    e: React.MouseEvent,
+    categoryId: string,
+    direction: "prev" | "next"
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    handleCarouselNavigation(categoryId, direction);
+  };
 
   const handleImageClick = (categoryId: string) => {
     if (hoverOverlay.isOpen && hoverOverlay.categoryId === categoryId) {
-      hideHoverOverlay()
+      hideHoverOverlay();
     } else {
-      showHoverOverlay(categoryId)
+      showHoverOverlay(categoryId);
     }
-  }
+  };
 
   const getCurrentOverlayPhoto = () => {
-    const category = reportPreview?.photoCategories.find((cat) => cat.id === hoverOverlay.categoryId)
-    return category?.photos[hoverOverlay.photoIndex] || ""
-  }
+    const category = reportPreview?.photoCategories.find(
+      (c) => c.id === hoverOverlay.categoryId
+    );
+    return category?.photos[hoverOverlay.photoIndex] || "";
+  };
 
-  const getCurrentOverlayCategory = () => {
-    return reportPreview?.photoCategories.find((cat) => cat.id === hoverOverlay.categoryId)
-  }
+  const getCurrentOverlayCategory = () =>
+    reportPreview?.photoCategories.find(
+      (c) => c.id === hoverOverlay.categoryId
+    );
 
   const handleDownloadReport = () => {
-    alert("Download report functionality is not implemented yet.")
-  }
+    alert("Download report (PDF) belum diimplementasikan.");
+  };
 
-  const itemsPerPage = 20
-  const totalPages = reportPreview ? Math.ceil(reportPreview.photoCategories.length / itemsPerPage) : 0
+  const handleBackToForm = () => setShowPreview(false);
 
-  const getCurrentPageItems = () => {
-    if (!reportPreview) return []
-    const startIndex = currentGridPage * itemsPerPage
-    const endIndex = startIndex + itemsPerPage
-    return reportPreview.photoCategories.slice(startIndex, endIndex)
-  }
-
-  const handleGridNavigation = (direction: "prev" | "next") => {
-    if (direction === "next" && currentGridPage < totalPages - 1) {
-      setCurrentGridPage((prev) => prev + 1)
-    } else if (direction === "prev" && currentGridPage > 0) {
-      setCurrentGridPage((prev) => prev - 1)
-    }
-  }
-
-  const handleBackToForm = () => {
-    setShowPreview(false)
-  }
-
+  /* ================= UI (Desain Code 1) ================= */
   return (
     <div className="min-h-screen bg-gray-50">
       {!showPreview ? (
-        <AdminHeader title="Generate Laporan" showBackButton={true} backUrl="/admin/dashboard" />
+        <AdminHeader
+          title="Generate Laporan"
+          showBackButton={true}
+          backUrl="/admin/dashboard"
+        />
       ) : (
         <div className="bg-white border-b border-gray-200 px-8 py-4">
           <div className="max-w-7xl mx-auto flex items-center justify-between">
@@ -620,9 +597,15 @@ export default function GenerateLaporanPage() {
               >
                 <ArrowLeft className="h-5 w-5" />
               </Button>
-              <h1 className="text-2xl font-bold text-gray-900">Generate Laporan</h1>
+              <h1 className="text-2xl font-bold text-gray-900">
+                Generate Laporan
+              </h1>
             </div>
-            <Button onClick={handleBackToForm} variant="outline" className="flex items-center gap-2 bg-transparent">
+            <Button
+              onClick={handleBackToForm}
+              variant="outline"
+              className="flex items-center gap-2 bg-transparent"
+            >
               <ArrowLeft className="h-4 w-4" />
               Kembali ke Form
             </Button>
@@ -634,6 +617,7 @@ export default function GenerateLaporanPage() {
         <div className="max-w-7xl mx-auto">
           {!showPreview ? (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+              {/* Form */}
               <div className="lg:sticky lg:top-8">
                 <Card>
                   <CardHeader>
@@ -649,17 +633,35 @@ export default function GenerateLaporanPage() {
                       </Label>
                       <Select
                         value={formData.projectName}
-                        onValueChange={(value) => handleInputChange("projectName", value)}
+                        onValueChange={(value) =>
+                          handleInputChange("projectName", value)
+                        }
+                        disabled={loadingProjects}
                       >
                         <SelectTrigger className="text-lg py-3">
-                          <SelectValue placeholder="Pilih nama project" />
+                          <SelectValue
+                            placeholder={
+                              loadingProjects
+                                ? "Memuat daftar project..."
+                                : "Pilih nama project"
+                            }
+                          />
                         </SelectTrigger>
                         <SelectContent>
-                          {projects.map((project) => (
-                            <SelectItem key={project.id} value={project.id} className="text-lg">
-                              {project.name}
+                          {projectGroups.map((p) => (
+                            <SelectItem
+                              key={p.id}
+                              value={p.id}
+                              className="text-lg"
+                            >
+                              {p.name}
                             </SelectItem>
                           ))}
+                          {!loadingProjects && projectGroups.length === 0 && (
+                            <div className="px-3 py-2 text-sm text-gray-500">
+                              Tidak ada project
+                            </div>
+                          )}
                         </SelectContent>
                       </Select>
                     </div>
@@ -670,25 +672,50 @@ export default function GenerateLaporanPage() {
                       </Label>
                       <Select
                         value={formData.jobId}
-                        onValueChange={(value) => handleInputChange("jobId", value)}
-                        disabled={!formData.projectName}
+                        onValueChange={(value) =>
+                          handleInputChange("jobId", value)
+                        }
+                        disabled={!formData.projectName || loadingJobs}
                       >
                         <SelectTrigger className="text-lg py-3">
                           <SelectValue
                             placeholder={
-                              formData.projectName ? "Pilih ID pekerjaan" : "Pilih nama project terlebih dahulu"
+                              !formData.projectName
+                                ? "Pilih nama project terlebih dahulu"
+                                : loadingJobs
+                                ? "Memuat daftar pekerjaan..."
+                                : jobs.length
+                                ? "Pilih ID pekerjaan"
+                                : "Belum ada pekerjaan untuk project ini"
                             }
                           />
                         </SelectTrigger>
                         <SelectContent>
-                          {getFilteredJobs().map((job) => (
-                            <SelectItem key={job.id} value={job.id} className="text-lg">
+                          {jobs.map((job) => (
+                            <SelectItem
+                              key={job.id}
+                              value={job.id}
+                              className="text-lg"
+                            >
                               {job.id}
                             </SelectItem>
                           ))}
+                          {!loadingJobs &&
+                            formData.projectName &&
+                            jobs.length === 0 && (
+                              <div className="px-3 py-2 text-sm text-gray-500">
+                                Tidak ada pekerjaan
+                              </div>
+                            )}
                         </SelectContent>
                       </Select>
                     </div>
+
+                    {errorMsg && (
+                      <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md p-3">
+                        {errorMsg}
+                      </div>
+                    )}
 
                     <div className="pt-4">
                       <Button
@@ -713,6 +740,7 @@ export default function GenerateLaporanPage() {
                 </Card>
               </div>
 
+              {/* Placeholder Preview */}
               <Card>
                 <CardHeader>
                   <CardTitle className="text-2xl flex items-center gap-3">
@@ -724,27 +752,37 @@ export default function GenerateLaporanPage() {
                   <div className="flex items-center justify-center h-96 text-gray-500">
                     <div className="text-center">
                       <FileText className="h-16 w-16 mx-auto mb-4 text-gray-300" />
-                      <p className="text-lg">Pilih data dan klik Generate untuk melihat preview laporan</p>
+                      <p className="text-lg">
+                        Pilih data dan klik Generate untuk melihat preview
+                        laporan
+                      </p>
                     </div>
                   </div>
                 </CardContent>
               </Card>
             </div>
           ) : (
+            /* ================= PREVIEW ================= */
             <div className="space-y-6">
               <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
                 <div className="xl:col-span-1">
                   <Card>
                     <CardHeader>
-                      <CardTitle className="text-lg">Detail Pekerjaan</CardTitle>
+                      <CardTitle className="text-lg">
+                        Detail Pekerjaan
+                      </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div>
-                        <h4 className="font-bold text-lg text-gray-900 mb-1">{reportPreview?.jobName}</h4>
+                        <h4 className="font-bold text-lg text-gray-900 mb-1">
+                          {reportPreview?.jobName}
+                        </h4>
                       </div>
 
                       <div>
-                        <h5 className="font-semibold text-gray-900 mb-2">Teknisi</h5>
+                        <h5 className="font-semibold text-gray-900 mb-2">
+                          Teknisi
+                        </h5>
                         <div className="flex items-center text-sm text-gray-600">
                           <User className="h-4 w-4 mr-2" />
                           {reportPreview?.technicianName}
@@ -752,7 +790,9 @@ export default function GenerateLaporanPage() {
                       </div>
 
                       <div>
-                        <h5 className="font-semibold text-gray-900 mb-2">Tanggal</h5>
+                        <h5 className="font-semibold text-gray-900 mb-2">
+                          Tanggal
+                        </h5>
                         <div className="flex items-center text-sm text-gray-600">
                           <Calendar className="h-4 w-4 mr-2" />
                           {reportPreview?.completedDate}
@@ -760,7 +800,9 @@ export default function GenerateLaporanPage() {
                       </div>
 
                       <div>
-                        <h5 className="font-semibold text-gray-900 mb-2">Lokasi</h5>
+                        <h5 className="font-semibold text-gray-900 mb-2">
+                          Lokasi
+                        </h5>
                         <div className="flex items-center text-sm text-gray-600">
                           <MapPin className="h-4 w-4 mr-2" />
                           {reportPreview?.location}
@@ -780,7 +822,7 @@ export default function GenerateLaporanPage() {
                         </CardTitle>
                         <div className="flex items-center gap-3">
                           <span className="text-sm text-gray-600">
-                            {currentGridPage + 1}/{totalPages}
+                            {currentGridPage + 1}/{totalPages || 1}
                           </span>
                           <div className="flex gap-1">
                             <Button
@@ -809,8 +851,11 @@ export default function GenerateLaporanPage() {
                       <div className="isolate grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                         {getCurrentPageItems().map((category) => {
                           const serialNumber = reportPreview
-                            ? getSerialNumberForCategory(category.id, reportPreview.serialNumbers)
-                            : null
+                            ? getSerialNumberForCategory(
+                                category,
+                                reportPreview.serialNumbers
+                              )
+                            : undefined;
 
                           return (
                             <div
@@ -822,36 +867,56 @@ export default function GenerateLaporanPage() {
                                   <>
                                     <div
                                       className="absolute inset-0 cursor-pointer hover-zone"
-                                      onMouseEnter={() => handleImageHoverEnter(category.id)}
+                                      onMouseEnter={() =>
+                                        handleImageHoverEnter(category.id)
+                                      }
                                       onMouseLeave={handleImageHoverLeave}
-                                      onClick={() => handleImageClick(category.id)}
+                                      onClick={() =>
+                                        handleImageClick(category.id)
+                                      }
                                       onKeyDown={(e) => {
                                         if (e.key === "Enter") {
-                                          e.preventDefault()
-                                          handleImageClick(category.id)
+                                          e.preventDefault();
+                                          handleImageClick(category.id);
                                         }
                                       }}
                                       tabIndex={0}
                                       role="button"
                                       aria-label={`View ${category.name} photos`}
                                     >
+                                      {/* eslint-disable-next-line @next/next/no-img-element */}
                                       <img
-                                        src={category.photos[category.currentIndex] || "/placeholder.svg"}
-                                        alt={`${category.name} ${category.currentIndex + 1}`}
+                                        src={
+                                          category.photos[
+                                            category.currentIndex
+                                          ] || "/placeholder.svg"
+                                        }
+                                        alt={`${category.name} ${
+                                          category.currentIndex + 1
+                                        }`}
                                         className="w-full h-full object-cover transition-opacity hover:opacity-90"
                                       />
                                     </div>
 
                                     {category.photos.length > 1 && (
                                       <>
-                                        {/* Left Control Zone */}
                                         <div className="absolute left-0 top-0 bottom-0 w-12 flex items-center justify-center z-10">
                                           <Button
                                             variant="ghost"
                                             size="sm"
-                                            onClick={(e) => handleArrowClick(e, category.id, "prev")}
-                                            onMouseEnter={(e) => e.stopPropagation()}
-                                            onMouseLeave={(e) => e.stopPropagation()}
+                                            onClick={(e) =>
+                                              handleArrowClick(
+                                                e,
+                                                category.id,
+                                                "prev"
+                                              )
+                                            }
+                                            onMouseEnter={(e) =>
+                                              e.stopPropagation()
+                                            }
+                                            onMouseLeave={(e) =>
+                                              e.stopPropagation()
+                                            }
                                             className="h-7 w-7 p-0 bg-black/30 hover:bg-black/50 text-white rounded-full pointer-events-auto"
                                             tabIndex={0}
                                             aria-label={`Previous ${category.name} photo`}
@@ -860,14 +925,23 @@ export default function GenerateLaporanPage() {
                                           </Button>
                                         </div>
 
-                                        {/* Right Control Zone */}
                                         <div className="absolute right-0 top-0 bottom-0 w-12 flex items-center justify-center z-10">
                                           <Button
                                             variant="ghost"
                                             size="sm"
-                                            onClick={(e) => handleArrowClick(e, category.id, "next")}
-                                            onMouseEnter={(e) => e.stopPropagation()}
-                                            onMouseLeave={(e) => e.stopPropagation()}
+                                            onClick={(e) =>
+                                              handleArrowClick(
+                                                e,
+                                                category.id,
+                                                "next"
+                                              )
+                                            }
+                                            onMouseEnter={(e) =>
+                                              e.stopPropagation()
+                                            }
+                                            onMouseLeave={(e) =>
+                                              e.stopPropagation()
+                                            }
                                             className="h-7 w-7 p-0 bg-black/30 hover:bg-black/50 text-white rounded-full pointer-events-auto"
                                             tabIndex={0}
                                             aria-label={`Next ${category.name} photo`}
@@ -878,10 +952,10 @@ export default function GenerateLaporanPage() {
                                       </>
                                     )}
 
-                                    {/* Photo counter */}
                                     {category.photos.length > 1 && (
                                       <div className="absolute bottom-2 right-2 bg-black/70 text-white text-xs px-2 py-1 rounded pointer-events-none z-5">
-                                        {category.currentIndex + 1}/{category.photos.length}
+                                        {category.currentIndex + 1}/
+                                        {category.photos.length}
                                       </div>
                                     )}
                                   </>
@@ -902,7 +976,8 @@ export default function GenerateLaporanPage() {
                                       className="text-[9px] text-gray-500 font-mono bg-gray-100 px-1 py-0.5 rounded cursor-help"
                                       title={`Serial Number: ${serialNumber}`}
                                     >
-                                      SN: {truncateSerialNumber(serialNumber, 8)}
+                                      SN:{" "}
+                                      {truncateSerialNumber(serialNumber, 8)}
                                     </span>
                                   </div>
                                 ) : (
@@ -914,7 +989,7 @@ export default function GenerateLaporanPage() {
                                 )}
                               </div>
                             </div>
-                          )
+                          );
                         })}
                       </div>
                     </CardContent>
@@ -924,7 +999,10 @@ export default function GenerateLaporanPage() {
 
               <div className="sticky bottom-0 z-30 bg-white border-t p-4 shadow-lg">
                 <div className="max-w-7xl mx-auto">
-                  <Button onClick={handleDownloadReport} className="w-full bg-blue-600 hover:bg-blue-700 text-lg py-3">
+                  <Button
+                    onClick={handleDownloadReport}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-lg py-3"
+                  >
                     <Download className="h-5 w-5 mr-2" />
                     Finalisasi & Download Laporan PDF
                   </Button>
@@ -935,13 +1013,13 @@ export default function GenerateLaporanPage() {
         </div>
       </main>
 
+      {/* Hover Overlay */}
       {hoverOverlay.isOpen && (
         <div
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center"
           onClick={hideHoverOverlay}
         >
           <div className="relative max-w-4xl max-h-[80vh] p-4">
-            {/* Close button */}
             <Button
               variant="ghost"
               size="sm"
@@ -951,7 +1029,6 @@ export default function GenerateLaporanPage() {
               <X className="h-4 w-4" />
             </Button>
 
-            {/* Image container */}
             <div className="relative bg-white rounded-lg overflow-hidden shadow-2xl">
               {hoverOverlay.isLoading ? (
                 <div className="flex items-center justify-center w-96 h-64">
@@ -963,10 +1040,19 @@ export default function GenerateLaporanPage() {
                   <Button
                     variant="outline"
                     onClick={() => {
-                      setHoverOverlay((prev) => ({ ...prev, isLoading: true, hasError: false }))
-                      setTimeout(() => {
-                        setHoverOverlay((prev) => ({ ...prev, isLoading: false }))
-                      }, 200)
+                      setHoverOverlay((prev) => ({
+                        ...prev,
+                        isLoading: true,
+                        hasError: false,
+                      }));
+                      setTimeout(
+                        () =>
+                          setHoverOverlay((prev) => ({
+                            ...prev,
+                            isLoading: false,
+                          })),
+                        200
+                      );
                     }}
                   >
                     Coba Lagi
@@ -974,17 +1060,25 @@ export default function GenerateLaporanPage() {
                 </div>
               ) : (
                 <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={getCurrentOverlayPhoto() || "/placeholder.svg"}
-                    alt={`${getCurrentOverlayCategory()?.name} ${hoverOverlay.photoIndex + 1}`}
+                    alt={`${getCurrentOverlayCategory()?.name} ${
+                      hoverOverlay.photoIndex + 1
+                    }`}
                     className="max-w-full max-h-[70vh] object-contain"
-                    onError={() => setHoverOverlay((prev) => ({ ...prev, hasError: true, isLoading: false }))}
+                    onError={() =>
+                      setHoverOverlay((prev) => ({
+                        ...prev,
+                        hasError: true,
+                        isLoading: false,
+                      }))
+                    }
                   />
-
-                  {/* Caption */}
                   <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
                     <p className="text-white text-sm font-medium">
-                      {getCurrentOverlayCategory()?.name} — {hoverOverlay.photoIndex + 1}/
+                      {getCurrentOverlayCategory()?.name} —{" "}
+                      {hoverOverlay.photoIndex + 1}/
                       {getCurrentOverlayCategory()?.photos.length || 0}
                     </p>
                   </div>
@@ -995,5 +1089,5 @@ export default function GenerateLaporanPage() {
         </div>
       )}
     </div>
-  )
+  );
 }
