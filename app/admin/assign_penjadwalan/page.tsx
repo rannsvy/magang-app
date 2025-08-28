@@ -1846,7 +1846,7 @@ export default function AssignScheduling() {
                     Tanggal Terima PO
                   </Label>
                   <input
-                    id="tanggalTerimaPo"
+                    id="tanggalTerimaPo" 
                     type="date"
                     value={newProjectForm.tanggalTerimaPo}
                     onChange={(e) =>

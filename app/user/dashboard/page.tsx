@@ -194,7 +194,7 @@ export default function TechnicianDashboard() {
                                 <span>
                                   {index + 1}. {tech.name}
                                 </span>
-                                {tech.isLeader && <Star className="h-2.5 w-2.5 text-yellow-500 fill-yellow-500" />}
+                                {tech.isLeader && <Star className="h-2.5 w-2.5 text-red-500 fill-red-500" />}
                               </div>
                             ))}
                           </div>
