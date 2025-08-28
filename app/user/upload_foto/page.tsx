@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -9,15 +9,10 @@ import { Card, CardContent } from "@/components/ui/card"
 import { TechnicianHeader } from "@/components/technician-header"
 import { Pagination } from "@/components/pagination"
 import { Camera } from "lucide-react"
-
-import ReactCrop, {
-  type Crop,
-  type PixelCrop,
-  type PercentCrop,
-} from "react-image-crop"
+import ReactCrop, { type Crop, type PixelCrop } from "react-image-crop"
 import "react-image-crop/dist/ReactCrop.css"
 
-
+/* ===================== Types & Data ===================== */
 interface PhotoCategory {
   id: string
   name: string
@@ -82,10 +77,22 @@ const mockCategories: PhotoCategory[] = [
   { id: "54", name: "Pelatihan", requiresSerialNumber: false },
 ]
 
+/* ===== helper bandingkan crop (hindari setState berulang) ===== */
+type LooseCrop = { x: number; y: number; width: number; height: number; unit?: "px" | "%" }
+
+function cropsAlmostEqual(a?: LooseCrop | null, b?: LooseCrop | null, eps = 0.5) {
+  if (!a || !b) return false
+  return (
+    Math.abs(a.x - b.x) < eps &&
+    Math.abs(a.y - b.y) < eps &&
+    Math.abs(a.width - b.width) < eps &&
+    Math.abs(a.height - b.height) < eps &&
+    a.unit === b.unit
+  )
+}
+
 /* ============== Helper: crop <img> → Blob (via canvas) ============== */
 async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<Blob> {
-  // PixelCrop yang diberikan ReactCrop adalah dalam pixel tampilan (rendered img),
-  // jadi perlu diskalakan ke natural image untuk presisi output.
   const scaleX = img.naturalWidth / img.width
   const scaleY = img.naturalHeight / img.height
 
@@ -117,15 +124,21 @@ export default function UploadFotoPage() {
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const categoriesPerPage = 8
 
-  // ===== ReactCrop modal state (unit: 'px' untuk hindari TS mismatch) =====
+  // ===== ReactCrop modal state =====
   const [cropOpen, setCropOpen] = useState(false)
   const [pendingCategoryId, setPendingCategoryId] = useState<string | null>(null)
   const [srcToCrop, setSrcToCrop] = useState<string | null>(null)
 
   const imgRef = useRef<HTMLImageElement | null>(null)
-  const [crop, setCrop] = useState<Crop | undefined>(undefined) // akan di-set di onImageLoaded dengan unit 'px'
+  const [crop, setCrop] = useState<Crop | undefined>(undefined) // unit: 'px'
   const [completedCrop, setCompletedCrop] = useState<PixelCrop | null>(null)
   const [aspect, setAspect] = useState<number | undefined>(undefined) // undefined = free
+
+  // orientasi & ukuran container responsif
+  const [isPortrait, setIsPortrait] = useState(false)
+
+  // 🔒 putus feedback-loop dari ReactCrop -> onChange -> setCrop -> onChange
+  const ignoreNextChangeRef = useRef(false)
 
   const totalPages = Math.ceil(categories.length / categoriesPerPage)
   const startIndex = (currentPage - 1) * categoriesPerPage
@@ -166,31 +179,93 @@ export default function UploadFotoPage() {
       setPendingCategoryId(categoryId)
       setSrcToCrop(dataUrl)
       setCropOpen(true)
-      // reset agar onImageLoaded menghitung crop default berdasarkan ukuran gambar ter-render
       setCrop(undefined)
       setCompletedCrop(null)
-      setAspect(undefined) // default free
     }
     reader.readAsDataURL(file)
   }
 
-  // set crop default (unit: 'px') setelah gambar ter-load,
-  // supaya PixelCrop yang dikembalikan onComplete valid dan menghindari TS error.
+  // ========== RESPONSIVE onImageLoaded ==========
   const onImageLoaded = (img: HTMLImageElement) => {
     imgRef.current = img
+    setIsPortrait(img.naturalHeight >= img.naturalWidth)
+
+    if (crop) return // sudah ada, jangan reset
+
     const iw = img.width
     const ih = img.height
-    // default: 80% dari lebar, disesuaikan aspect bila ada
-    let w = Math.round(iw * 0.8)
-    let h = aspect ? Math.round(w / aspect) : Math.round(ih * 0.8)
-    if (h > ih) {
-      h = Math.round(ih * 0.8)
-      w = aspect ? Math.round(h * aspect) : Math.round(iw * 0.8)
+    const shortest = Math.min(iw, ih)
+    const base = Math.round(shortest * 0.85)
+
+    let w: number
+    let h: number
+    if (aspect) {
+      w = base
+      h = Math.round(w / aspect)
+      if (h > ih) {
+        h = Math.round(ih * 0.85)
+        w = Math.round(h * aspect)
+      }
+      if (w > iw) {
+        w = Math.round(iw * 0.85)
+        h = Math.round(w / aspect)
+      }
+    } else {
+      w = base
+      h = base
     }
+
     const x = Math.max(0, Math.round((iw - w) / 2))
     const y = Math.max(0, Math.round((ih - h) / 2))
-    setCrop({ unit: "px", x, y, width: w, height: h })
+
+    const nextCrop: Crop = { unit: "px", x, y, width: w, height: h }
+    if (!cropsAlmostEqual(crop, nextCrop)) {
+      ignoreNextChangeRef.current = true
+      setCrop(nextCrop)
+    }
   }
+
+  // Recompute crop bila aspect berubah (tetap responsif)
+  const lastAspectRef = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (!imgRef.current) return
+    if (lastAspectRef.current === aspect) return
+    lastAspectRef.current = aspect
+
+    const img = imgRef.current
+    const iw = img.width
+    const ih = img.height
+    const shortest = Math.min(iw, ih)
+    const base = Math.round(shortest * 0.85)
+
+    let w: number
+    let h: number
+    if (aspect) {
+      w = base
+      h = Math.round(w / aspect)
+      if (h > ih) {
+        h = Math.round(ih * 0.85)
+        w = Math.round(h * aspect)
+      }
+      if (w > iw) {
+        w = Math.round(iw * 0.85)
+        h = Math.round(w / aspect)
+      }
+    } else {
+      w = base
+      h = base
+    }
+
+    const x = Math.max(0, Math.round((iw - w) / 2))
+    const y = Math.max(0, Math.round((ih - h) / 2))
+    const nextCrop: Crop = { unit: "px", x, y, width: w, height: h }
+
+    setCrop((prev) => {
+      if (cropsAlmostEqual(prev, nextCrop)) return prev
+      ignoreNextChangeRef.current = true
+      return nextCrop
+    })
+  }, [aspect])
 
   const handleConfirmCrop = async () => {
     if (!imgRef.current || !completedCrop || !pendingCategoryId) return
@@ -201,16 +276,10 @@ export default function UploadFotoPage() {
       fr.readAsDataURL(blob)
     })
 
-    setCategories((prev) =>
-      prev.map((c) => (c.id === pendingCategoryId ? { ...c, photo: dataUrl } : c))
-    )
-
-    // reset & close
+    setCategories((prev) => prev.map((c) => (c.id === pendingCategoryId ? { ...c, photo: dataUrl } : c)))
     setCropOpen(false)
     setSrcToCrop(null)
     setPendingCategoryId(null)
-
-    // TODO: upload ke server di sini jika perlu
   }
 
   const handleCancelCrop = () => {
@@ -310,18 +379,35 @@ export default function UploadFotoPage() {
       {/* ===== Modal Crop (ReactCrop) ===== */}
       {cropOpen && srcToCrop && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-white rounded-xl p-4 w-[92vw] max-w-[520px]">
+          {/* lebar modal adaptif orientasi (tetap responsif) */}
+          <div className={`bg-white rounded-xl p-4 w-[92vw] ${isPortrait ? "max-w-[480px]" : "max-w-[720px]"}`}>
             <h3 className="text-sm font-semibold mb-3">Crop Foto</h3>
 
-            <div className="relative h-[340px] bg-black/5 rounded overflow-hidden flex items-center justify-center">
+            {/* Container responsif: gunakan viewport bounds */}
+            <div className="relative max-h-[70vh] max-w-[92vw] bg-black/5 rounded overflow-hidden flex items-center justify-center">
               <ReactCrop
                 crop={crop}
-                onChange={(c /*: Crop*/, _percent /*: PercentCrop*/) => setCrop(c)}
-                onComplete={(c /*: Crop*/, _percent /*: PercentCrop*/) => {
-                  // Karena kita set crop unit 'px' (lihat onImageLoaded), cast aman:
-                  setCompletedCrop(c as PixelCrop)
+                onChange={(c) => {
+                  // Guard invalid
+                  if (!c || !("width" in c) || !("height" in c) || !c.width || !c.height) return
+                  // Skip pantulan dari setCrop kita sendiri
+                  if (ignoreNextChangeRef.current) {
+                    ignoreNextChangeRef.current = false
+                    return
+                  }
+                  // Jika sama (dengan toleransi), jangan set
+                  if (cropsAlmostEqual(crop, c)) return
+                  // Set dan tandai agar event pantulan berikut diabaikan
+                  ignoreNextChangeRef.current = true
+                  setCrop(c)
                 }}
-                aspect={aspect} // undefined = free
+                onComplete={(c) => {
+                  if (!c || !("width" in c) || !("height" in c) || !c.width || !c.height) return
+                  const pc = c as PixelCrop
+                  if (cropsAlmostEqual(completedCrop, pc)) return
+                  setCompletedCrop(pc)
+                }}
+                aspect={aspect}
                 keepSelection
               >
                 <img
@@ -329,7 +415,7 @@ export default function UploadFotoPage() {
                   src={srcToCrop}
                   alt="To crop"
                   onLoad={(e) => onImageLoaded(e.currentTarget)}
-                  className="max-h-[340px] object-contain"
+                  className="max-h-[70vh] max-w-[92vw] w-auto h-auto object-contain"
                 />
               </ReactCrop>
             </div>
@@ -343,8 +429,6 @@ export default function UploadFotoPage() {
                   onChange={(e) => {
                     const v = e.target.value
                     setAspect(v === "free" ? undefined : v === "1:1" ? 1 : v === "4:3" ? 4 / 3 : 16 / 9)
-                    // Optional: kamu bisa reset crop di sini agar menyesuaikan aspect baru.
-                    if (imgRef.current) onImageLoaded(imgRef.current)
                   }}
                   className="text-xs border rounded px-2 py-1"
                 >
