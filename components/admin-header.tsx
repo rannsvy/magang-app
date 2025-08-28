@@ -59,7 +59,7 @@ export function AdminHeader({
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onClick={handleSettings}>
                 <Settings className="h-4 w-4 mr-2" />
-                Pengaturans 
+                Pengaturan
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleLogout} className="text-red-600">
                 <LogOut className="h-4 w-4 mr-2" />

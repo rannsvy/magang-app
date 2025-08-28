@@ -2,6 +2,7 @@
 
 import { Card, CardContent } from "@/components/ui/card"
 import { AdminHeader } from "@/components/admin-header"
+import { PWAInstallPrompt } from "@/components/pwa-install-prompt"
 import { FileText, CheckCircle, Clock, Users, CalendarCheck, History } from "lucide-react"
 import { useRouter } from "next/navigation"
 
@@ -135,6 +136,8 @@ export default function AdminDashboard() {
           </div>
         </div>
       </main>
+
+      <PWAInstallPrompt />
     </div>
   )
 }

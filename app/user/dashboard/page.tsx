@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { TechnicianHeader } from "@/components/technician-header"
 import { Pagination } from "@/components/pagination"
+import { PWAInstallPrompt } from "@/components/pwa-install-prompt"
 import { Star } from "lucide-react"
 
 interface Job {
@@ -225,6 +226,8 @@ export default function TechnicianDashboard() {
           )}
         </div>
       </main>
+
+      <PWAInstallPrompt />
     </div>
   )
 }
