@@ -2,24 +2,33 @@
 
 import type React from "react"
 import { useState, useRef, useEffect } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useSearchParams } from "next/navigation"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent } from "@/components/ui/card"
 import { TechnicianHeader } from "@/components/technician-header"
 import { Pagination } from "@/components/pagination"
 import { Camera } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import ReactCrop, { type Crop, type PixelCrop } from "react-image-crop"
 import "react-image-crop/dist/ReactCrop.css"
+import { type OcrInfo, type OCRPhase, recognizeSerialNumber, recognizeCableMeters } from "@/lib/ocr"
 
-/* ===================== Types & Data ===================== */
+
+
+/* ================= Types lokal ================= */
+
 interface PhotoCategory {
   id: string
   name: string
   requiresSerialNumber: boolean
   photo?: string
   serialNumber?: string
+  snDraft?: string
+  meter?: number
 }
+
+/* ================= Data ================= */
 
 const mockCategories: PhotoCategory[] = [
   { id: "1", name: "Fisik CCTV", requiresSerialNumber: false },
@@ -79,7 +88,6 @@ const mockCategories: PhotoCategory[] = [
 
 /* ===== helper bandingkan crop (hindari setState berulang) ===== */
 type LooseCrop = { x: number; y: number; width: number; height: number; unit?: "px" | "%" }
-
 function cropsAlmostEqual(a?: LooseCrop | null, b?: LooseCrop | null, eps = 0.5) {
   if (!a || !b) return false
   return (
@@ -95,7 +103,6 @@ function cropsAlmostEqual(a?: LooseCrop | null, b?: LooseCrop | null, eps = 0.5)
 async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<Blob> {
   const scaleX = img.naturalWidth / img.width
   const scaleY = img.naturalHeight / img.height
-
   const sx = Math.max(0, Math.round(cropPx.x * scaleX))
   const sy = Math.max(0, Math.round(cropPx.y * scaleY))
   const sw = Math.max(1, Math.round(cropPx.width * scaleX))
@@ -114,31 +121,34 @@ async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<B
   )
 }
 
+/* ================= Page ================= */
+
 export default function UploadFotoPage() {
   const [categories, setCategories] = useState<PhotoCategory[]>(mockCategories)
   const [currentPage, setCurrentPage] = useState(1)
-  const router = useRouter()
   const searchParams = useSearchParams()
   const jobId = searchParams.get("job") ?? ""
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const categoriesPerPage = 8
 
-  // ===== ReactCrop modal state =====
+  // ReactCrop state
   const [cropOpen, setCropOpen] = useState(false)
   const [pendingCategoryId, setPendingCategoryId] = useState<string | null>(null)
   const [srcToCrop, setSrcToCrop] = useState<string | null>(null)
 
   const imgRef = useRef<HTMLImageElement | null>(null)
-  const [crop, setCrop] = useState<Crop | undefined>(undefined) // unit: 'px'
+  const [crop, setCrop] = useState<Crop | undefined>(undefined)
   const [completedCrop, setCompletedCrop] = useState<PixelCrop | null>(null)
-  const [aspect, setAspect] = useState<number | undefined>(undefined) // undefined = free
+  const [aspect, setAspect] = useState<number | undefined>(undefined)
 
-  // orientasi & ukuran container responsif
+  // orientasi & anti feedback-loop
   const [isPortrait, setIsPortrait] = useState(false)
-
-  // 🔒 putus feedback-loop dari ReactCrop -> onChange -> setCrop -> onChange
   const ignoreNextChangeRef = useRef(false)
+  const lastAspectRef = useRef<number | undefined>(undefined)
+
+  // OCR per-kategori untuk UI
+  const [ocr, setOcr] = useState<Record<string, OcrInfo>>({})
 
   const totalPages = Math.ceil(categories.length / categoriesPerPage)
   const startIndex = (currentPage - 1) * categoriesPerPage
@@ -165,6 +175,9 @@ export default function UploadFotoPage() {
     }
   }
 
+  const isCableCategory = (name: string) =>
+    /kabel\s*cam\s*\d/i.test(name) && /(before|after)/i.test(name)
+
   /* ====== Ambil foto → tampilkan modal crop ====== */
   const handleCameraClick = (categoryId: string) => {
     fileInputRefs.current[categoryId]?.click()
@@ -181,6 +194,7 @@ export default function UploadFotoPage() {
       setCropOpen(true)
       setCrop(undefined)
       setCompletedCrop(null)
+      setAspect(undefined)
     }
     reader.readAsDataURL(file)
   }
@@ -189,44 +203,33 @@ export default function UploadFotoPage() {
   const onImageLoaded = (img: HTMLImageElement) => {
     imgRef.current = img
     setIsPortrait(img.naturalHeight >= img.naturalWidth)
-
-    if (crop) return // sudah ada, jangan reset
+    if (crop) return
 
     const iw = img.width
     const ih = img.height
     const shortest = Math.min(iw, ih)
     const base = Math.round(shortest * 0.85)
 
-    let w: number
-    let h: number
+    let w: number, h: number
     if (aspect) {
       w = base
       h = Math.round(w / aspect)
-      if (h > ih) {
-        h = Math.round(ih * 0.85)
-        w = Math.round(h * aspect)
-      }
-      if (w > iw) {
-        w = Math.round(iw * 0.85)
-        h = Math.round(w / aspect)
-      }
+      if (h > ih) { h = Math.round(ih * 0.85); w = Math.round(h * aspect) }
+      if (w > iw) { w = Math.round(iw * 0.85); h = Math.round(w / aspect) }
     } else {
-      w = base
-      h = base
+      w = base; h = base
     }
 
     const x = Math.max(0, Math.round((iw - w) / 2))
     const y = Math.max(0, Math.round((ih - h) / 2))
-
     const nextCrop: Crop = { unit: "px", x, y, width: w, height: h }
-    if (!cropsAlmostEqual(crop, nextCrop)) {
+    if (!cropsAlmostEqual(crop as any, nextCrop as any)) {
       ignoreNextChangeRef.current = true
       setCrop(nextCrop)
     }
   }
 
-  // Recompute crop bila aspect berubah (tetap responsif)
-  const lastAspectRef = useRef<number | undefined>(undefined)
+  // Recompute crop bila aspect berubah
   useEffect(() => {
     if (!imgRef.current) return
     if (lastAspectRef.current === aspect) return
@@ -238,22 +241,13 @@ export default function UploadFotoPage() {
     const shortest = Math.min(iw, ih)
     const base = Math.round(shortest * 0.85)
 
-    let w: number
-    let h: number
+    let w: number, h: number
     if (aspect) {
-      w = base
-      h = Math.round(w / aspect)
-      if (h > ih) {
-        h = Math.round(ih * 0.85)
-        w = Math.round(h * aspect)
-      }
-      if (w > iw) {
-        w = Math.round(iw * 0.85)
-        h = Math.round(w / aspect)
-      }
+      w = base; h = Math.round(w / aspect)
+      if (h > ih) { h = Math.round(ih * 0.85); w = Math.round(h * aspect) }
+      if (w > iw) { w = Math.round(iw * 0.85); h = Math.round(w / aspect) }
     } else {
-      w = base
-      h = base
+      w = base; h = base
     }
 
     const x = Math.max(0, Math.round((iw - w) / 2))
@@ -261,22 +255,60 @@ export default function UploadFotoPage() {
     const nextCrop: Crop = { unit: "px", x, y, width: w, height: h }
 
     setCrop((prev) => {
-      if (cropsAlmostEqual(prev, nextCrop)) return prev
+      if (cropsAlmostEqual(prev as any, nextCrop as any)) return prev
       ignoreNextChangeRef.current = true
       return nextCrop
     })
   }, [aspect])
 
+  /** ================== Pemanggilan OCR yang dipisah ================== */
+  async function runOCRForCategory_SN(catId: string, imageSource: Blob | string) {
+    setOcr((prev) => ({ ...prev, [catId]: { status: "barcode", progress: 0 } }))
+    const serial = await recognizeSerialNumber(imageSource, {
+      onProgress: (info) => setOcr((prev) => ({ ...prev, [catId]: info })),
+      enableBarcode: true, // set false kalau tak ingin barcode
+    })
+    if (serial) {
+      setCategories((prev) =>
+        prev.map((c) => (c.id === catId ? { ...c, serialNumber: serial, snDraft: undefined } : c))
+      )
+    }
+  }
+
+  async function runOCRForCategory_Cable(catId: string, imageSource: Blob | string) {
+    const meter = await recognizeCableMeters(imageSource, {
+      onProgress: (info) => setOcr((prev) => ({ ...prev, [catId]: info })),
+    })
+    setCategories((prev) =>
+      prev.map((c) => (c.id === catId ? { ...c, meter: meter ?? undefined } : c))
+    )
+  }
+
   const handleConfirmCrop = async () => {
     if (!imgRef.current || !completedCrop || !pendingCategoryId) return
     const blob = await cropElToBlob(imgRef.current, completedCrop)
+
     const dataUrl = await new Promise<string>((resolve) => {
       const fr = new FileReader()
       fr.onload = () => resolve(fr.result as string)
       fr.readAsDataURL(blob)
     })
 
-    setCategories((prev) => prev.map((c) => (c.id === pendingCategoryId ? { ...c, photo: dataUrl } : c)))
+    setCategories((prev) =>
+      prev.map((c) =>
+        c.id === pendingCategoryId ? { ...c, photo: dataUrl, snDraft: undefined } : c
+      )
+    )
+
+    const cat = categories.find((c) => c.id === pendingCategoryId)
+    if (cat) {
+      if (cat.requiresSerialNumber) {
+        await runOCRForCategory_SN(pendingCategoryId, blob)
+      } else if (isCableCategory(cat.name)) {
+        await runOCRForCategory_Cable(pendingCategoryId, blob)
+      }
+    }
+
     setCropOpen(false)
     setSrcToCrop(null)
     setPendingCategoryId(null)
@@ -288,8 +320,21 @@ export default function UploadFotoPage() {
     setPendingCategoryId(null)
   }
 
-  const handleSerialNumberChange = (categoryId: string, value: string) => {
-    setCategories((prev) => prev.map((cat) => (cat.id === categoryId ? { ...cat, serialNumber: value } : cat)))
+  const handleSerialNumberDraftChange = (categoryId: string, value: string) => {
+    setCategories((prev) =>
+      prev.map((cat) => (cat.id === categoryId ? { ...cat, snDraft: value } : cat))
+    )
+  }
+
+  const handleConfirmSerialNumber = (categoryId: string) => {
+    setCategories((prev) =>
+      prev.map((cat) =>
+        cat.id === categoryId
+          ? { ...cat, serialNumber: (cat.snDraft || "").trim(), snDraft: undefined }
+          : cat
+      )
+    )
+    setOcr((prev) => ({ ...prev, [categoryId]: { status: "done", progress: 100 } }))
   }
 
   const handlePrevPage = () => currentPage > 1 && setCurrentPage((p) => p - 1)
@@ -297,9 +342,12 @@ export default function UploadFotoPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <TechnicianHeader title={`Upload Foto - Job #${jobId}`} showBackButton backUrl="/user/dashboard" />
+      <TechnicianHeader
+        title={`Upload Foto - Job #${jobId}`}
+        showBackButton
+        backUrl="/user/dashboard"
+      />
 
-      {/* Main Content */}
       <main className="p-8">
         <div className="max-w-4xl mx-auto">
           {/* Categories Grid */}
@@ -307,17 +355,18 @@ export default function UploadFotoPage() {
             {currentCategories.map((category) => {
               const status = getCategoryStatus(category)
               const styles = getCategoryStyles(status)
+              const o = ocr[category.id]
 
               return (
                 <div key={category.id} className="space-y-1">
-                  <Card className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[130px] mx-auto`}>
-                    <CardContent
-                      className="p-1 flex items-center justify-center h-[80px] w-[130px] relative"
-                      onClick={() => handleCameraClick(category.id)}
-                    >
+                  <Card
+                    className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[130px] mx-auto`}
+                    onClick={() => handleCameraClick(category.id)}
+                  >
+                    <CardContent className="p-1 flex items-center justify-center h-[80px] w-[130px] relative">
                       {category.photo ? (
                         <img
-                          src={category.photo || "/placeholder.svg"}
+                          src={category.photo}
                           alt={category.name}
                           className="max-w-full max-h-full object-contain rounded"
                         />
@@ -329,31 +378,77 @@ export default function UploadFotoPage() {
                     </CardContent>
                   </Card>
 
-                  <p className="text-xs font-medium text-center text-gray-700 px-1">{category.name}</p>
+                  <p className="text-xs font-medium text-center text-gray-700 px-1">
+                    {category.name}
+                  </p>
 
-                  {/* Serial Number Input */}
+                  {/* Kabel: tampilkan meter bila ada */}
+                  {!category.requiresSerialNumber && category.photo && /kabel\s*cam\s*\d/i.test(category.name) && /(before|after)/i.test(category.name) && (
+                    <p className="text-[11px] text-gray-600 text-center">
+                      {typeof category.meter === "number"
+                        ? <>Panjang tertera: <b>{category.meter} m</b></>
+                        : <>Panjang belum terdeteksi</>}
+                    </p>
+                  )}
+
+                  {/* ===== SN (khusus kategori SN) ===== */}
                   {category.requiresSerialNumber && category.photo && (
-                    <div className="space-y-1">
-                      <Label htmlFor={`sn-${category.id}`} className="text-xs text-gray-600 justify-center">
-                        SN = {category.name}
-                      </Label>
-                      <Input
-                        id={`sn-${category.id}`}
-                        type="text"
-                        placeholder="Masukkan SN"
-                        value={category.serialNumber || ""}
-                        onChange={(e) => handleSerialNumberChange(category.id, e.target.value)}
-                        className="text-sm"
-                        required
-                      />
+                    <div className="space-y-2">
+                      {category.serialNumber ? (
+                        <p className="text-[9px] text-gray-600 text-center">
+                          SN = <span className="font-semibold">{category.serialNumber}</span>
+                        </p>
+                      ) : (
+                        <>
+                          <div className="space-y-1">
+                            <Label
+                              htmlFor={`sn-${category.id}`}
+                              className="text-[10px] text-gray-600 justify-center"
+                            >
+                              SN (isi manual)
+                            </Label>
+                            <div className="flex items-center gap-1">
+                              <Input
+                                id={`sn-${category.id}`}
+                                type="text"
+                                placeholder="Masukkan SN"
+                                value={category.snDraft ?? ""}
+                                onChange={(e) =>
+                                  handleSerialNumberDraftChange(category.id, e.target.value)
+                                }
+                                className="text-[10px]"
+                              />
+                              <Button
+                                type="button"
+                                className="h-6 px-2 text-[10px]"
+                                onClick={() => handleConfirmSerialNumber(category.id)}
+                                disabled={!((category.snDraft ?? "").trim().length)}
+                              >
+                                Enter
+                              </Button>
+                            </div>
+                          </div>
+
+                          {o && o.status !== "idle" && (
+                            <p className="text-[10px] text-gray-600">
+                              {o.status === "barcode" && "Mencoba baca barcode..."}
+                              {o.status === "ocr" && `Memproses OCR: ${o.progress}%`}
+                              {o.status === "done" && "Selesai ✔"}
+                              {o.status === "error" && (
+                                <span className="text-[10px] justify-center text-red-600">
+                                  Gagal: {o.error || "SN tidak terdeteksi."}
+                                </span>
+                              )}
+                            </p>
+                          )}
+                        </>
+                      )}
                     </div>
                   )}
 
-                  {/* Hidden file input for camera */}
+                  {/* Hidden file input */}
                   <input
-                    ref={(el) => {
-                      fileInputRefs.current[category.id] = el
-                    }}
+                    ref={(el) => { fileInputRefs.current[category.id] = el }}
                     type="file"
                     accept="image/*"
                     capture="environment"
@@ -379,32 +474,27 @@ export default function UploadFotoPage() {
       {/* ===== Modal Crop (ReactCrop) ===== */}
       {cropOpen && srcToCrop && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          {/* lebar modal adaptif orientasi (tetap responsif) */}
           <div className={`bg-white rounded-xl p-4 w-[92vw] ${isPortrait ? "max-w-[480px]" : "max-w-[720px]"}`}>
             <h3 className="text-sm font-semibold mb-3">Crop Foto</h3>
 
-            {/* Container responsif: gunakan viewport bounds */}
             <div className="relative max-h-[70vh] max-w-[92vw] bg-black/5 rounded overflow-hidden flex items-center justify-center">
               <ReactCrop
                 crop={crop}
-                onChange={(c) => {
-                  // Guard invalid
-                  if (!c || !("width" in c) || !("height" in c) || !c.width || !c.height) return
-                  // Skip pantulan dari setCrop kita sendiri
+                onChange={(c: PixelCrop) => {
+                  const lc = c as unknown as LooseCrop
+                  if (!lc || !lc.width || !lc.height) return
                   if (ignoreNextChangeRef.current) {
                     ignoreNextChangeRef.current = false
                     return
                   }
-                  // Jika sama (dengan toleransi), jangan set
-                  if (cropsAlmostEqual(crop, c)) return
-                  // Set dan tandai agar event pantulan berikut diabaikan
+                  if (cropsAlmostEqual((crop as any) as LooseCrop, lc)) return
                   ignoreNextChangeRef.current = true
-                  setCrop(c)
+                  setCrop(c as unknown as Crop)
                 }}
-                onComplete={(c) => {
-                  if (!c || !("width" in c) || !("height" in c) || !c.width || !c.height) return
-                  const pc = c as PixelCrop
-                  if (cropsAlmostEqual(completedCrop, pc)) return
+                onComplete={(c: PixelCrop) => {
+                  const pc = c
+                  if (!pc || !pc.width || !pc.height) return
+                  if (cropsAlmostEqual((completedCrop as any) as LooseCrop, pc as any)) return
                   setCompletedCrop(pc)
                 }}
                 aspect={aspect}
@@ -412,7 +502,7 @@ export default function UploadFotoPage() {
               >
                 <img
                   ref={imgRef}
-                  src={srcToCrop}
+                  src={srcToCrop!}
                   alt="To crop"
                   onLoad={(e) => onImageLoaded(e.currentTarget)}
                   className="max-h-[70vh] max-w-[92vw] w-auto h-auto object-contain"
@@ -420,7 +510,6 @@ export default function UploadFotoPage() {
               </ReactCrop>
             </div>
 
-            {/* Controls */}
             <div className="mt-3 grid grid-cols-1 gap-3">
               <div className="flex items-center gap-2">
                 <label className="text-xs text-gray-600">Aspect</label>
