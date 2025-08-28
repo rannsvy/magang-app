@@ -78,12 +78,12 @@ const mockCategories: PhotoCategory[] = [
   { id: "45", name: "Stop Kontak Terpasang", requiresSerialNumber: false },
   { id: "46", name: "Fisik Kabel Twisted", requiresSerialNumber: false },
   { id: "47", name: "Kabel Twisted Terpasang", requiresSerialNumber: false },
-  { id: "49", name: "Foto Proses Instalasi Cam 1", requiresSerialNumber: false },
-  { id: "50", name: "Foto Proses Instalasi Cam 2", requiresSerialNumber: false },
-  { id: "51", name: "Foto Proses Instalasi Cam 3", requiresSerialNumber: false },
-  { id: "52", name: "Foto Proses Instalasi Cam 4", requiresSerialNumber: false },
-  { id: "53", name: "View Keseluruhan", requiresSerialNumber: false },
-  { id: "54", name: "Pelatihan", requiresSerialNumber: false },
+  { id: "48", name: "Foto Proses Instalasi Cam 1", requiresSerialNumber: false },
+  { id: "49", name: "Foto Proses Instalasi Cam 2", requiresSerialNumber: false },
+  { id: "50", name: "Foto Proses Instalasi Cam 3", requiresSerialNumber: false },
+  { id: "51", name: "Foto Proses Instalasi Cam 4", requiresSerialNumber: false },
+  { id: "52", name: "View Keseluruhan", requiresSerialNumber: false },
+  { id: "53", name: "Pelatihan", requiresSerialNumber: false },
 ]
 
 /* ===== helper bandingkan crop (hindari setState berulang) ===== */
@@ -130,7 +130,7 @@ export default function UploadFotoPage() {
   const jobId = searchParams.get("job") ?? ""
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
-  const categoriesPerPage = 8
+  const categoriesPerPage = 10
 
   // ReactCrop state
   const [cropOpen, setCropOpen] = useState(false)
@@ -348,7 +348,7 @@ export default function UploadFotoPage() {
         backUrl="/user/dashboard"
       />
 
-      <main className="p-8">
+      <main className="p-2">
         <div className="max-w-4xl mx-auto">
           {/* Categories Grid */}
           <div className="grid grid-cols-2 gap-1 mb-4">
@@ -360,10 +360,10 @@ export default function UploadFotoPage() {
               return (
                 <div key={category.id} className="space-y-1">
                   <Card
-                    className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[130px] mx-auto`}
+                    className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[110px] mx-auto`}
                     onClick={() => handleCameraClick(category.id)}
                   >
-                    <CardContent className="p-1 flex items-center justify-center h-[80px] w-[130px] relative">
+                    <CardContent className="p-1 flex items-center justify-center h-[50px] w-[110px] relative">
                       {category.photo ? (
                         <img
                           src={category.photo}
@@ -372,7 +372,7 @@ export default function UploadFotoPage() {
                         />
                       ) : (
                         <div className="absolute inset-0 flex items-center justify-center">
-                          <Camera className="h-6 w-6 text-gray-400" />
+                          <Camera className="h-5 w-5 text-gray-400" />
                         </div>
                       )}
                     </CardContent>
