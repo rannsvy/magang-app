@@ -1292,7 +1292,7 @@ export default function AssignScheduling() {
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaManDays" className="flex items-center gap-1 min-w-[120px]">
-                    Sigma Man Days
+                    Total Man Days
                     <span className="text-red-500">*</span>
                   </Label>
                   <input
@@ -1309,7 +1309,7 @@ export default function AssignScheduling() {
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaTeknisi" className="flex items-center gap-1 min-w-[120px]">
-                    Sigma Teknisi
+                    Total Teknisi
                     <span className="text-red-500">*</span>
                   </Label>
                   <input
@@ -1365,7 +1365,7 @@ export default function AssignScheduling() {
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaHari" className="flex items-center gap-1 min-w-[120px]">
-                    Sigma Hari
+                    Total Hari
                     <span className="text-red-500">*</span>
                   </Label>
                   <input
