@@ -1,21 +1,22 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef, useEffect } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent } from "@/components/ui/card"
 import { TechnicianHeader } from "@/components/technician-header"
 import { Pagination } from "@/components/pagination"
-import { Camera } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Camera } from "lucide-react"
 import ReactCrop, { type Crop, type PixelCrop } from "react-image-crop"
 import "react-image-crop/dist/ReactCrop.css"
-import { type OcrInfo, recognizeSerialNumber, recognizeCableMeters } from "@/lib/ocr"
 
-/* ================= Types lokal ================= */
+// OCR SN saja
+import { type OcrInfo, recognizeSerialNumber } from "@/lib/ocr"
 
+/* ===== Types ===== */
 interface PhotoCategory {
   id: string
   name: string
@@ -23,13 +24,11 @@ interface PhotoCategory {
   photo?: string
   serialNumber?: string
   snDraft?: string
-  meter?: number
-  /** Token unik untuk mengikat hasil OCR ke foto yang benar */
+  meter?: number           // panjang kabel (manual)
   photoToken?: number
 }
 
-/* ================= Data ================= */
-
+/* ===== Data ===== */
 const mockCategories: PhotoCategory[] = [
   { id: "1", name: "Fisik CCTV", requiresSerialNumber: false },
   { id: "2", name: "Foto Terpasang CCTV 1", requiresSerialNumber: false },
@@ -58,6 +57,8 @@ const mockCategories: PhotoCategory[] = [
   { id: "25", name: "Foto Fisik Connector RJ 45", requiresSerialNumber: false },
   { id: "26", name: "RJ 45 Terpasang", requiresSerialNumber: false },
   { id: "27", name: "Fisik LAN SFTP", requiresSerialNumber: false },
+
+  // Kategori kabel (input manual meter di modal crop)
   { id: "28", name: "Kabel Cam 1 (Before)", requiresSerialNumber: false },
   { id: "29", name: "Kabel Cam 1 (After)", requiresSerialNumber: false },
   { id: "30", name: "Kabel Cam 2 (Before)", requiresSerialNumber: false },
@@ -66,6 +67,7 @@ const mockCategories: PhotoCategory[] = [
   { id: "33", name: "Kabel Cam 3 (After)", requiresSerialNumber: false },
   { id: "34", name: "Kabel Cam 4 (Before)", requiresSerialNumber: false },
   { id: "35", name: "Kabel Cam 4 (After)", requiresSerialNumber: false },
+
   { id: "36", name: "Fisik Kabel NYM", requiresSerialNumber: false },
   { id: "37", name: "Kabel NYM Terpasang", requiresSerialNumber: false },
   { id: "38", name: "Fisik Duradus Masko", requiresSerialNumber: false },
@@ -86,233 +88,137 @@ const mockCategories: PhotoCategory[] = [
   { id: "54", name: "Pelatihan", requiresSerialNumber: false },
 ]
 
-/* ===== helper bandingkan crop (hindari setState berulang) ===== */
+/* ===== Helpers ===== */
 type LooseCrop = { x: number; y: number; width: number; height: number; unit?: "px" | "%" }
-function cropsAlmostEqual(a?: LooseCrop | null, b?: LooseCrop | null, eps = 0.5) {
-  if (!a || !b) return false
-  return (
-    Math.abs(a.x - b.x) < eps &&
-    Math.abs(a.y - b.y) < eps &&
-    Math.abs(a.width - b.width) < eps &&
-    Math.abs(a.height - b.height) < eps &&
-    a.unit === b.unit
-  )
-}
+const cropsAlmostEqual = (a?: LooseCrop | null, b?: LooseCrop | null, e = 0.5) =>
+  !!a && !!b && Math.abs(a.x - b.x) < e && Math.abs(a.y - b.y) < e && Math.abs(a.width - b.width) < e && Math.abs(a.height - b.height) < e && a.unit === b.unit
 
-/* ============== Helper: crop <img> → Blob (via canvas) ============== */
 async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<Blob> {
-  const scaleX = img.naturalWidth / img.width
-  const scaleY = img.naturalHeight / img.height
-  const sx = Math.max(0, Math.round(cropPx.x * scaleX))
-  const sy = Math.max(0, Math.round(cropPx.y * scaleY))
-  const sw = Math.max(1, Math.round(cropPx.width * scaleX))
-  const sh = Math.max(1, Math.round(cropPx.height * scaleY))
+  const scaleX = img.naturalWidth / img.width, scaleY = img.naturalHeight / img.height
+  const sx = Math.max(0, Math.round(cropPx.x * scaleX)), sy = Math.max(0, Math.round(cropPx.y * scaleY))
+  const sw = Math.max(1, Math.round(cropPx.width * scaleX)), sh = Math.max(1, Math.round(cropPx.height * scaleY))
 
-  const canvas = document.createElement("canvas")
-  canvas.width = sw
-  canvas.height = sh
-  const ctx = canvas.getContext("2d")!
-  ctx.imageSmoothingEnabled = true
-  ctx.imageSmoothingQuality = "high"
+  const c = document.createElement("canvas"); c.width = sw; c.height = sh
+  const ctx = c.getContext("2d")!; ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high"
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh)
 
   return await new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/jpeg", 0.92)
+    c.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/jpeg", 0.92)
   )
 }
 
-/* ================= Page ================= */
+const isCableCategory = (name: string) => /kabel\s*cam\s*\d/i.test(name) && /(before|after)/i.test(name)
 
+/* ===== Page ===== */
 export default function UploadFotoPage() {
   const [categories, setCategories] = useState<PhotoCategory[]>(mockCategories)
   const [currentPage, setCurrentPage] = useState(1)
-  const searchParams = useSearchParams()
-  const jobId = searchParams.get("job") ?? ""
-
+  const [ocr, setOcr] = useState<Record<string, OcrInfo>>({})
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
-  const categoriesPerPage = 10
+  const jobId = useSearchParams().get("job") ?? ""
 
-  // ReactCrop state
+  // helper reset <input type="file">
+  const resetFileInput = (id: string) => {
+    const el = fileInputRefs.current[id]
+    if (el) el.value = ""
+  }
+
+  // crop states
   const [cropOpen, setCropOpen] = useState(false)
   const [pendingCategoryId, setPendingCategoryId] = useState<string | null>(null)
   const [srcToCrop, setSrcToCrop] = useState<string | null>(null)
-
-  const imgRef = useRef<HTMLImageElement | null>(null)
   const [crop, setCrop] = useState<Crop | undefined>(undefined)
   const [completedCrop, setCompletedCrop] = useState<PixelCrop | null>(null)
   const [aspect, setAspect] = useState<number | undefined>(undefined)
-
-  // orientasi & anti feedback-loop
+  const imgRef = useRef<HTMLImageElement | null>(null)
   const [isPortrait, setIsPortrait] = useState(false)
   const ignoreNextChangeRef = useRef(false)
   const lastAspectRef = useRef<number | undefined>(undefined)
 
-  // OCR per-kategori untuk UI
-  const [ocr, setOcr] = useState<Record<string, OcrInfo>>({})
+  // draft meter manual saat modal crop
+  const [isPendingCable, setIsPendingCable] = useState(false)
+  const [cableMeterDraft, setCableMeterDraft] = useState<string>("")
 
-  const totalPages = Math.ceil(categories.length / categoriesPerPage)
-  const startIndex = (currentPage - 1) * categoriesPerPage
-  const currentCategories = categories.slice(startIndex, startIndex + categoriesPerPage)
+  // pagination
+  const perPage = 10
+  const totalPages = Math.ceil(categories.length / perPage)
+  const slice = categories.slice((currentPage - 1) * perPage, (currentPage - 1) * perPage + perPage)
 
-  // === STATUS: hijau hanya jika SN >= 8 ===
-  const getCategoryStatus = (category: PhotoCategory) => {
-    if (!category.photo) return "empty"
-    if (category.requiresSerialNumber) {
-      const sn = (category.serialNumber ?? "").trim()
-      if (sn.length < 8) return "incomplete"
-    }
-    return "complete"
-  }
+  const getCategoryStatus = (c: PhotoCategory) =>
+    !c.photo ? "empty" : c.requiresSerialNumber && (c.serialNumber ?? "").trim().length < 8 ? "incomplete" : "complete"
 
-  const getCategoryStyles = (status: string) => {
-    switch (status) {
-      case "empty":
-        return "bg-gray-100 border-gray-300 text-gray-500"
-      case "pending":
-        return "bg-yellow-50 border-yellow-300 text-yellow-600"
-      case "incomplete":
-        return "bg-red-50 border-red-300 text-red-600"
-      case "complete":
-        return "bg-green-50 border-green-300 text-green-600"
-      default:
-        return "bg-gray-100 border-gray-300 text-gray-500"
-    }
-  }
+  const getCategoryStyles = (s: string) =>
+    s === "complete" ? "bg-green-50 border-green-300 text-green-600"
+      : s === "incomplete" ? "bg-red-50 border-red-300 text-red-600"
+      : s === "pending" ? "bg-yellow-50 border-yellow-300 text-yellow-600"
+      : "bg-gray-100 border-gray-300 text-gray-500"
 
-  // Kategori kabel (meter)
-  const isCableCategory = (name: string) =>
-    /kabel\s*cam\s*\d/i.test(name) && /(before|after)/i.test(name)
+  const handleCameraClick = (id: string) => fileInputRefs.current[id]?.click()
 
-  /* ====== Ambil foto → tampilkan modal crop ====== */
-  const handleCameraClick = (categoryId: string) => {
-    fileInputRefs.current[categoryId]?.click()
-  }
-
-  // === RESET SN saat pilih foto baru ===
-  const handlePhotoCapture = (categoryId: string, event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
+  const handlePhotoCapture = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
     if (!file) return
 
-    // Reset SN & OCR ketika ambil ulang foto kategori yang butuh SN
-    const cat = categories.find(c => c.id === categoryId)
+    const cat = categories.find((c) => c.id === id)
     if (cat?.requiresSerialNumber) {
-      setCategories(prev =>
-        prev.map(c =>
-          c.id === categoryId ? { ...c, serialNumber: undefined, snDraft: undefined } : c
-        )
-      )
-      setOcr(prev => ({ ...prev, [categoryId]: { status: "idle", progress: 0 } }))
+      setCategories(prev => prev.map(c => c.id === id ? { ...c, serialNumber: undefined, snDraft: undefined } : c))
+      setOcr(prev => ({ ...prev, [id]: { status: "idle", progress: 0 } }))
     }
 
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      const dataUrl = e.target?.result as string
-      setPendingCategoryId(categoryId)
-      setSrcToCrop(dataUrl)
+    const fr = new FileReader()
+    fr.onload = (ev) => {
+      setPendingCategoryId(id)
+      setSrcToCrop(ev.target?.result as string)
       setCropOpen(true)
       setCrop(undefined)
       setCompletedCrop(null)
       setAspect(undefined)
+
+      const isCable = !!cat && isCableCategory(cat.name)
+      setIsPendingCable(isCable)
+      setCableMeterDraft(isCable && typeof cat?.meter === "number" ? String(cat.meter) : "")
     }
-    reader.readAsDataURL(file)
+    fr.readAsDataURL(file)
+
+    // kunci bug: reset value supaya pilih file yang sama tetap memicu onChange
+    ;(e.target as HTMLInputElement).value = ""
   }
 
-  // ========== RESPONSIVE onImageLoaded ==========
   const onImageLoaded = (img: HTMLImageElement) => {
     imgRef.current = img
     setIsPortrait(img.naturalHeight >= img.naturalWidth)
-    if (crop) return
 
-    const iw = img.width
-    const ih = img.height
-    const shortest = Math.min(iw, ih)
-    const base = Math.round(shortest * 0.85)
-
-    let w: number, h: number
-    if (aspect) {
-      w = base
-      h = Math.round(w / aspect)
-      if (h > ih) { h = Math.round(ih * 0.85); w = Math.round(h * aspect) }
-      if (w > iw) { w = Math.round(iw * 0.85); h = Math.round(w / aspect) }
-    } else {
-      w = base; h = base
-    }
-
-    const x = Math.max(0, Math.round((iw - w) / 2))
-    const y = Math.max(0, Math.round((ih - h) / 2))
-    const nextCrop: Crop = { unit: "px", x, y, width: w, height: h }
-    if (!cropsAlmostEqual(crop as any, nextCrop as any)) {
-      ignoreNextChangeRef.current = true
-      setCrop(nextCrop)
-    }
-  }
-
-  // Recompute crop bila aspect berubah
-  useEffect(() => {
-    if (!imgRef.current) return
-    if (lastAspectRef.current === aspect) return
-    lastAspectRef.current = aspect
-
-    const img = imgRef.current
-    const iw = img.width
-    const ih = img.height
-    const shortest = Math.min(iw, ih)
-    const base = Math.round(shortest * 0.85)
-
-    let w: number, h: number
+    const iw = img.width, ih = img.height, base = Math.round(Math.min(iw, ih) * 0.85)
+    let w = base, h = base
     if (aspect) {
       w = base; h = Math.round(w / aspect)
       if (h > ih) { h = Math.round(ih * 0.85); w = Math.round(h * aspect) }
       if (w > iw) { w = Math.round(iw * 0.85); h = Math.round(w / aspect) }
-    } else {
-      w = base; h = base
     }
+    setCrop({ unit: "px", x: Math.max(0, Math.round((iw - w) / 2)), y: Math.max(0, Math.round((ih - h) / 2)), width: w, height: h })
+  }
 
-    const x = Math.max(0, Math.round((iw - w) / 2))
-    const y = Math.max(0, Math.round((ih - h) / 2))
-    const nextCrop: Crop = { unit: "px", x, y, width: w, height: h }
-
-    setCrop((prev) => {
-      if (cropsAlmostEqual(prev as any, nextCrop as any)) return prev
-      ignoreNextChangeRef.current = true
-      return nextCrop
-    })
+  useEffect(() => {
+    if (!imgRef.current || lastAspectRef.current === aspect) return
+    lastAspectRef.current = aspect
+    onImageLoaded(imgRef.current)
   }, [aspect])
 
-  /** ================== Pemanggilan OCR yang dipisah ================== */
-  async function runOCRForCategory_SN(catId: string, imageSource: Blob | string, token: number) {
-    setOcr((prev) => ({ ...prev, [catId]: { status: "barcode", progress: 0 } }))
-    const serial = await recognizeSerialNumber(imageSource, {
-      onProgress: (info) => setOcr((prev) => ({ ...prev, [catId]: info })),
+  async function runOCR_SN(catId: string, src: Blob | string, token: number) {
+    setOcr(prev => ({ ...prev, [catId]: { status: "barcode", progress: 0 } }))
+    const sn = await recognizeSerialNumber(src, {
+      onProgress: info => setOcr(prev => ({ ...prev, [catId]: info })),
       enableBarcode: true,
     })
-
-    // TANPA paksa 8 char — gunakan hasil dari lib (sudah dinormalisasi dinamis)
-    const finalSN = (serial || "").toUpperCase()
-
-    if (finalSN) {
-      setCategories((prev) =>
-        prev.map((c) =>
-          c.id === catId && c.photoToken === token
-            ? { ...c, serialNumber: finalSN, snDraft: undefined }
-            : c
-        )
-      )
-    }
+    if (sn) setCategories(prev => prev.map(c => c.id === catId && c.photoToken === token ? { ...c, serialNumber: sn } : c))
+    else setOcr(prev => ({ ...prev, [catId]: { status: "error", progress: 0, error: "SN tidak terdeteksi." } }))
   }
 
-  async function runOCRForCategory_Cable(catId: string, imageSource: Blob | string, token: number) {
-    const meter = await recognizeCableMeters(imageSource, {
-      onProgress: (info) => setOcr((prev) => ({ ...prev, [catId]: info })),
-    })
-    setCategories((prev) =>
-      prev.map((c) =>
-        c.id === catId && c.photoToken === token ? { ...c, meter: meter ?? undefined } : c
-      )
-    )
+  const handleConfirmSerialNumber = (id: string) => {
+    setCategories(prev => prev.map(c => c.id === id ? { ...c, serialNumber: (c.snDraft || "").trim().toUpperCase(), snDraft: undefined } : c))
+    setOcr(prev => ({ ...prev, [id]: { status: "done", progress: 100 } }))
   }
 
-  // === Simpan Crop: kosongkan SN dulu, set token foto, lalu OCR ===
   const handleConfirmCrop = async () => {
     if (!imgRef.current || !completedCrop || !pendingCategoryId) return
     const blob = await cropElToBlob(imgRef.current, completedCrop)
@@ -322,113 +228,89 @@ export default function UploadFotoPage() {
       fr.onload = () => resolve(fr.result as string)
       fr.readAsDataURL(blob)
     })
-
     const token = Date.now()
 
-    // Set foto + reset SN + set photoToken (penting untuk cegah race condition)
-    setCategories((prev) =>
-      prev.map((c) =>
-        c.id === pendingCategoryId
-          ? { ...c, photo: dataUrl, serialNumber: undefined, snDraft: undefined, photoToken: token }
-          : c
-      )
-    )
-
     const cat = categories.find((c) => c.id === pendingCategoryId)
-    if (cat) {
-      if (cat.requiresSerialNumber) {
-        await runOCRForCategory_SN(pendingCategoryId, blob, token)
-      } else if (isCableCategory(cat.name)) {
-        await runOCRForCategory_Cable(pendingCategoryId, blob, token)
-      }
-    }
+    const isCable = !!cat && isCableCategory(cat.name)
 
+    // parse draft meter; kalau kosong → pertahankan nilai lama
+    const draft = (cableMeterDraft || "").trim()
+    const parsed = parseFloat(draft.replace(",", "."))
+    const meterVal = isCable && !Number.isNaN(parsed) && parsed >= 0 ? parsed : undefined
+
+    setCategories(prev => prev.map(c =>
+      c.id === pendingCategoryId
+        ? {
+            ...c,
+            photo: dataUrl,
+            photoToken: token,
+            serialNumber: c.requiresSerialNumber ? undefined : c.serialNumber,
+            snDraft: c.requiresSerialNumber ? undefined : c.snDraft,
+            meter: isCable ? (meterVal !== undefined ? meterVal : c.meter) : c.meter,
+          }
+        : c
+    ))
+
+    if (cat?.requiresSerialNumber) await runOCR_SN(pendingCategoryId, blob, token)
+
+    // reset file input
+    resetFileInput(pendingCategoryId)
+
+    // tutup modal
     setCropOpen(false)
     setSrcToCrop(null)
     setPendingCategoryId(null)
+    setIsPendingCable(false)
+    setCableMeterDraft("")
   }
 
   const handleCancelCrop = () => {
+    if (pendingCategoryId) resetFileInput(pendingCategoryId)
     setCropOpen(false)
     setSrcToCrop(null)
     setPendingCategoryId(null)
+    setIsPendingCable(false)
+    setCableMeterDraft("")
   }
-
-  const handleSerialNumberDraftChange = (categoryId: string, value: string) => {
-    setCategories((prev) =>
-      prev.map((cat) => (cat.id === categoryId ? { ...cat, snDraft: value } : cat))
-    )
-  }
-
-  const handleConfirmSerialNumber = (categoryId: string) => {
-    setCategories((prev) =>
-      prev.map((cat) =>
-        cat.id === categoryId
-          ? { ...cat, serialNumber: (cat.snDraft || "").trim().toUpperCase(), snDraft: undefined }
-          : cat
-      )
-    )
-    setOcr((prev) => ({ ...prev, [categoryId]: { status: "done", progress: 100 } }))
-  }
-
-  const handlePrevPage = () => currentPage > 1 && setCurrentPage((p) => p - 1)
-  const handleNextPage = () => currentPage < totalPages && setCurrentPage((p) => p + 1)
 
   return (
     <div className="min-h-screen bg-gray-50">
       <TechnicianHeader title={`Upload Foto - Job #${jobId}`} />
-
       <main className="p-2">
         <div className="max-w-4xl mx-auto">
-          {/* Categories Grid */}
           <div className="grid grid-cols-2 gap-1 mb-4">
-            {currentCategories.map((category) => {
+            {slice.map((category) => {
               const status = getCategoryStatus(category)
               const styles = getCategoryStyles(status)
-              const o = ocr[category.id]
+              const oc = ocr[category.id]
 
               return (
                 <div key={category.id} className="space-y-1">
                   <Card
                     className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[110px] mx-auto`}
-                    onClick={() => fileInputRefs.current[category.id]?.click()}
+                    onClick={() => handleCameraClick(category.id)}
                   >
                     <CardContent className="p-1 flex items-center justify-center h-[50px] w-[110px] relative">
                       {category.photo ? (
-                        <img
-                          src={category.photo}
-                          alt={category.name}
-                          className="max-w-full max-h-full object-contain rounded"
-                        />
+                        <img src={category.photo} alt={category.name} className="max-w-full max-h-full object-contain rounded" />
                       ) : (
                         <div className="absolute inset-0 flex items-center justify-center">
                           <Camera className="h-5 w-5 text-gray-400" />
-                        </div> 
+                        </div>
                       )}
                     </CardContent>
                   </Card>
 
-                  <p className="text-xs font-medium text-center text-gray-700 px-1">
-                    {category.name}
-                  </p>
+                  <p className="text-xs font-medium text-center text-gray-700 px-1">{category.name}</p>
 
-                  {/* Kabel: tampilkan meter bila ada */}
-                  {!category.requiresSerialNumber &&
-                    category.photo &&
-                    /kabel\s*cam\s*\d/i.test(category.name) &&
-                    /(before|after)/i.test(category.name) && (
-                      <p className="text-[11px] text-gray-600 text-center">
-                        {typeof category.meter === "number" ? (
-                          <>
-                            Panjang tertera: <b>{category.meter} m</b>
-                          </>
-                        ) : (
-                          <>Panjang belum terdeteksi</>
-                        )}
-                      </p>
-                    )}
+                  {/* Panjang kabel (manual) */}
+                  {!category.requiresSerialNumber && category.photo && isCableCategory(category.name) && (
+                    <p className="text-[11px] text-gray-600 text-center">
+                      {typeof category.meter === "number" ? <>Panjang: <b>{category.meter} m</b></> : <>Panjang belum diisi</>}
+                    </p>
+                  )}
 
-                  {/* ===== SN (khusus kategori SN) ===== */}
+                  {/* Kategori SN */}
                   {category.requiresSerialNumber && category.photo && (
                     <div className="space-y-2">
                       {category.serialNumber ? (
@@ -438,10 +320,7 @@ export default function UploadFotoPage() {
                       ) : (
                         <>
                           <div className="space-y-1">
-                            <Label
-                              htmlFor={`sn-${category.id}`}
-                              className="text-[10px] text-gray-600 justify-center"
-                            >
+                            <Label htmlFor={`sn-${category.id}`} className="text-[10px] text-gray-600 justify-center">
                               SN (isi manual)
                             </Label>
                             <div className="flex items-center gap-1">
@@ -451,10 +330,7 @@ export default function UploadFotoPage() {
                                 placeholder="Masukkan SN"
                                 value={category.snDraft ?? ""}
                                 onChange={(e) =>
-                                  handleSerialNumberDraftChange(
-                                    category.id,
-                                    e.target.value.toUpperCase()
-                                  )
+                                  setCategories(prev => prev.map(c => c.id === category.id ? { ...c, snDraft: e.target.value.toUpperCase() } : c))
                                 }
                                 className="text-[10px]"
                               />
@@ -469,16 +345,12 @@ export default function UploadFotoPage() {
                             </div>
                           </div>
 
-                          {o && o.status !== "idle" && (
-                            <p className="text-[10px] text-gray-600">
-                              {o.status === "barcode" && "Mencoba baca barcode..."}
-                              {o.status === "ocr" && `Memproses OCR: ${o.progress}%`}
-                              {o.status === "done" && "Selesai ✔"}
-                              {o.status === "error" && (
-                                <span className="text-[10px] justify-center text-red-600">
-                                  Gagal: {o.error || "SN tidak terdeteksi."}
-                                </span>
-                              )}
+                          {oc && oc.status !== "idle" && (
+                            <p className="text-[10px] text-center">
+                              {oc.status === "barcode" && "Mencoba baca barcode..."}
+                              {oc.status === "ocr" && `Memproses OCR: ${oc.progress}%`}
+                              {oc.status === "done" && "Selesai ✔"}
+                              {oc.status === "error" && <span className="text-red-600">Gagal: {oc.error || "SN tidak terdeteksi."}</span>}
                             </p>
                           )}
                         </>
@@ -486,9 +358,9 @@ export default function UploadFotoPage() {
                     </div>
                   )}
 
-                  {/* Hidden file input */}
+                  {/* Input file tersembunyi */}
                   <input
-                    ref={(el) => { fileInputRefs.current[category.id] = el || null }}
+                    ref={(el) => { fileInputRefs.current[category.id] = el }}
                     type="file"
                     accept="image/*"
                     capture="environment"
@@ -504,14 +376,14 @@ export default function UploadFotoPage() {
             <Pagination
               currentPage={currentPage}
               totalPages={totalPages}
-              onPrevPage={handlePrevPage}
-              onNextPage={handleNextPage}
+              onPrevPage={() => currentPage > 1 && setCurrentPage(p => p - 1)}
+              onNextPage={() => currentPage < totalPages && setCurrentPage(p => p + 1)}
             />
           </div>
         </div>
       </main>
 
-      {/* ===== Modal Crop (ReactCrop) ===== */}
+      {/* Modal Crop + input meter (manual khusus kategori kabel) */}
       {cropOpen && srcToCrop && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className={`bg-white rounded-xl p-4 w-[92vw] ${isPortrait ? "max-w-[480px]" : "max-w-[720px]"}`}>
@@ -522,21 +394,11 @@ export default function UploadFotoPage() {
                 crop={crop}
                 onChange={(c) => {
                   const lc = c as unknown as LooseCrop
-                  if (!lc || !lc.width || !lc.height) return
-                  if (ignoreNextChangeRef.current) {
-                    ignoreNextChangeRef.current = false
-                    return
-                  }
-                  if (cropsAlmostEqual((crop as any) as LooseCrop, lc)) return
-                  ignoreNextChangeRef.current = true
-                  setCrop(c as unknown as Crop)
+                  if (!lc?.width || !lc?.height) return
+                  if (ignoreNextChangeRef.current) { ignoreNextChangeRef.current = false; return }
+                  if (!cropsAlmostEqual(crop as any, lc)) { ignoreNextChangeRef.current = true; setCrop(c as unknown as Crop) }
                 }}
-                onComplete={(c) => {
-                  const pc = c as PixelCrop
-                  if (!pc || !pc.width || !pc.height) return
-                  if (cropsAlmostEqual((completedCrop as any) as LooseCrop, pc as any)) return
-                  setCompletedCrop(pc)
-                }}
+                onComplete={(c) => { const pc = c as PixelCrop; if (pc?.width && pc?.height) setCompletedCrop(pc) }}
                 aspect={aspect}
                 keepSelection
               >
@@ -567,6 +429,23 @@ export default function UploadFotoPage() {
                   <option value="16:9">16 : 9</option>
                 </select>
               </div>
+
+              {/* Input panjang kabel — hanya muncul untuk kategori kabel */}
+              {isPendingCable && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-600 min-w-[120px]">Panjang Kabel (m)</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.1"
+                    min="0"
+                    placeholder="mis. 56"
+                    value={cableMeterDraft}
+                    onChange={(e) => setCableMeterDraft(e.target.value)}
+                    className="text-xs border rounded px-2 py-1 w-[140px]"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
