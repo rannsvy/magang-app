@@ -178,15 +178,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ data: shaped });
 }
 
-/**
- * POST /api/assignments
- * Body:
- * {
- *   date: "YYYY-MM-DD",
- *   projectIds?: string[],
- *   assignments: Array<{ projectId, technicianId, isSelected?, isProjectLeader? }>
- * }
- */
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const date: string | undefined = body?.date;
@@ -204,19 +195,17 @@ export async function POST(req: NextRequest) {
   // Kelompokkan per proyek dari items yang dipilih
   const byProject = new Map<string, { selected: Set<string> }>();
   for (const it of items) {
-    const bucket = byProject.get(it.projectId) ?? {
-      selected: new Set<string>(),
-    };
+    const bucket = byProject.get(it.projectId) ?? { selected: new Set<string>() };
     if (it.isSelected !== false) bucket.selected.add(it.technicianId);
     byProject.set(it.projectId, bucket);
   }
-  const projectIdsFromItems = Array.from(byProject.keys());
+  const projectsWithAssignments = Array.from(byProject.keys());
 
-  // scope proyek: pakai body.projectIds kalau ada, fallback ke projectIdsFromItems
+  // scope proyek: pakai body.projectIds kalau ada, fallback ke projectsWithAssignments
   const scopeProjectIds: string[] =
     Array.isArray(body?.projectIds) && body.projectIds.length
       ? body.projectIds
-      : projectIdsFromItems;
+      : projectsWithAssignments;
 
   if (!scopeProjectIds.length) {
     return NextResponse.json({ data: { count: 0 } }, { status: 201 });
@@ -248,56 +237,140 @@ export async function POST(req: NextRequest) {
     (id) => !pendingSet.has(id) && !completedSet.has(id)
   );
 
-  // 1) Upsert membership (jika ada items)
-  if (items.length) {
-    const upsertRows = items.map((it) => ({
-      project_id: it.projectId,
-      technician_id: it.technicianId,
-      assigned_at: new Date(`${date}T00:00:00.000+07:00`).toISOString(),
-      is_leader: !!it.isProjectLeader,
-      removed_at: null,
-    }));
-    if (upsertRows.length) {
-      const { error: upErr } = await supabaseServer
-        .from("project_assignments")
-        .upsert(upsertRows, { onConflict: "project_id,technician_id" });
-      if (upErr) {
-        console.error(
-          "[POST /api/assignments] upsert project_assignments error:",
-          upErr
-        );
-        return NextResponse.json({ error: upErr.message }, { status: 500 });
-      }
+  // WIB awal hari untuk cap assigned_at/removed_at
+  const dayStartIso = new Date(`${date}T00:00:00.000+07:00`).toISOString();
+
+  /* ------------------------------------------------------------------
+   * 1) SOFT-DELETE membership yang tidak lagi dipilih per proyek
+   *    (untuk proyek dalam cakupan aktif). Jika selected kosong,
+   *    maka semua baris aktif proyek tsb akan disoft-delete.
+   * ------------------------------------------------------------------ */
+  for (const pid of activeScopeProjectIds) {
+    const selected = Array.from(byProject.get(pid)?.selected ?? []);
+    let q = supabaseServer
+      .from("project_assignments")
+      .update({ removed_at: dayStartIso, is_leader: false })
+      .eq("project_id", pid)
+      .is("removed_at", null);
+
+    // NOT IN (selected) bila ada yang dipertahankan
+    if (selected.length > 0) {
+      const notInList =
+        "(" + selected.map((s) => `"${s.replace(/"/g, '""')}"`).join(",") + ")";
+      q = q.not("technician_id", "in", notInList);
     }
 
-    // 1.5) Sinkronisasi leader per proyek (reset -> set true pada yang dikirim)
-    const leadersByProject = new Map<string, string[]>();
-    for (const it of items) {
-      if (it.isProjectLeader) {
-        const arr = leadersByProject.get(it.projectId) ?? [];
-        arr.push(it.technicianId);
-        leadersByProject.set(it.projectId, arr);
-      }
+    const { error: rmErr } = await q;
+    if (rmErr) {
+      console.error("[POST /api/assignments] soft-delete error:", rmErr);
+      return NextResponse.json({ error: rmErr.message }, { status: 500 });
     }
-    for (const [projectId, leaders] of leadersByProject.entries()) {
-      await supabaseServer
-        .from("project_assignments")
-        .update({ is_leader: false })
-        .eq("project_id", projectId)
-        .is("removed_at", null);
+  }
 
-      if (leaders.length) {
-        await supabaseServer
-          .from("project_assignments")
-          .update({ is_leader: true, removed_at: null })
-          .eq("project_id", projectId)
-          .in("technician_id", leaders);
+  /* ------------------------------------------------------------------
+   * 2) INSERT hanya pasangan (project, technician) yang BELUM aktif
+   *    setelah langkah soft-delete. Ini menghindari duplikat tanpa UPSERT.
+   * ------------------------------------------------------------------ */
+  // Ambil membership aktif terbaru
+  let activePairs: Array<{ project_id: string; technician_id: string }> = [];
+  if (activeScopeProjectIds.length) {
+    const { data: act, error: actErr } = await supabaseServer
+      .from("project_assignments")
+      .select("project_id, technician_id")
+      .in("project_id", activeScopeProjectIds)
+      .is("removed_at", null);
+    if (actErr) {
+      console.error("[POST /api/assignments] fetch active memberships error:", actErr);
+      return NextResponse.json({ error: actErr.message }, { status: 500 });
+    }
+    activePairs = act ?? [];
+  }
+
+  const activeSet = new Set(
+    activePairs.map((r) => `${r.project_id}::${r.technician_id}`)
+  );
+
+  const toInsert: Array<{
+    project_id: string;
+    technician_id: string;
+    assigned_at: string;
+    is_leader: boolean;
+    removed_at: null;
+  }> = [];
+
+  for (const [pid, bucket] of byProject.entries()) {
+    if (!activeScopeProjectIds.includes(pid)) continue; // hormati pending/completed
+    for (const tid of bucket.selected) {
+      const key = `${pid}::${tid}`;
+      if (!activeSet.has(key)) {
+        toInsert.push({
+          project_id: pid,
+          technician_id: tid,
+          assigned_at: dayStartIso,
+          is_leader: false, // akan di-set di langkah 3
+          removed_at: null,
+        });
+        activeSet.add(key); // cegah duplikat dalam payload yang sama
       }
     }
   }
 
-  // 2) Hapus attendance HANYA untuk proyek yang ada di assignments (tanggal tsb)
-  const projectsWithAssignments = Array.from(byProject.keys());
+  if (toInsert.length) {
+    const { error: insErr } = await supabaseServer
+      .from("project_assignments")
+      .insert(toInsert);
+    if (insErr) {
+      console.error("[POST /api/assignments] insert membership error:", insErr);
+      return NextResponse.json({ error: insErr.message }, { status: 500 });
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 3) Sinkronisasi leader per proyek (maks 1 aktif — index/trigger enforce)
+   * ------------------------------------------------------------------ */
+  const leadersByProject = new Map<string, string[]>();
+  for (const it of items) {
+    if (it.isProjectLeader) {
+      const arr = leadersByProject.get(it.projectId) ?? [];
+      arr.push(it.technicianId);
+      leadersByProject.set(it.projectId, arr);
+    }
+  }
+
+  for (const [projectId, leaders] of leadersByProject.entries()) {
+    if (!activeScopeProjectIds.includes(projectId)) continue;
+
+    // reset leader aktif proyek
+    const { error: clrErr } = await supabaseServer
+      .from("project_assignments")
+      .update({ is_leader: false })
+      .eq("project_id", projectId)
+      .is("removed_at", null);
+    if (clrErr) {
+      console.error("[POST /api/assignments] clear leaders error:", clrErr);
+      return NextResponse.json({ error: clrErr.message }, { status: 500 });
+    }
+
+    if (leaders.length) {
+      const { error: setErr } = await supabaseServer
+        .from("project_assignments")
+        .update({ is_leader: true })
+        .eq("project_id", projectId)
+        .in("technician_id", leaders)
+        .is("removed_at", null);
+      if (setErr) {
+        console.error("[POST /api/assignments] set leaders error:", setErr);
+        return NextResponse.json({ error: setErr.message }, { status: 500 });
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 4) Attendance hari D:
+   *    - Hapus attendance HANYA untuk proyek yang ada di assignments
+   *    - Insert attendance baru dari pilihan UI
+   *    - Preserve attendance proyek aktif lain yang tidak tersentuh
+   * ------------------------------------------------------------------ */
   if (projectsWithAssignments.length) {
     const { error: delErr } = await supabaseServer
       .from("attendance")
@@ -310,7 +383,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 2.5) Ambil leader terbaru (untuk flag di attendance)
+  // Ambil leader aktif terkini untuk flag attendance
   let leaderRows: Array<{ project_id: string; technician_id: string }> = [];
   if (activeScopeProjectIds.length) {
     const { data: lr } = await supabaseServer
@@ -328,7 +401,6 @@ export async function POST(req: NextRequest) {
     leaderMap.set(r.project_id, set);
   }
 
-  // 3) Insert attendance untuk proyek yang ada assignments + preserve existing attendance proyek lain
   const attRows: Array<{
     project_id: string;
     technician_id: string;
@@ -350,8 +422,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Preserve: ambil attendance eksisting (tanggal tsb) untuk proyek AKTIF yang
-  // tidak termasuk di "projectsWithAssignments", kemudian gabungkan.
+  // Preserve attendance eksisting (tanggal tsb) untuk proyek aktif lain (tidak tersentuh)
   if (activeScopeProjectIds.length) {
     const { data: existingAtt } = await supabaseServer
       .from("attendance")
@@ -375,34 +446,35 @@ export async function POST(req: NextRequest) {
   }
 
   if (attRows.length) {
-    const { error: insErr } = await supabaseServer
-      .from("attendance")
-      .insert(attRows);
+    const { error: insErr } = await supabaseServer.from("attendance").insert(attRows);
     if (insErr) {
       console.error("[POST /api/assignments] insert attendance error:", insErr);
       return NextResponse.json({ error: insErr.message }, { status: 500 });
     }
   }
 
-  // 4) Update project_status berdasarkan ada/tidaknya assignment (kecuali pending)
+  /* ------------------------------------------------------------------
+   * 5) Update project_status berbasis attendance aktual HARI D.
+   *    (ongoing jika ada attendance; unassigned jika tidak — kecuali pending)
+   * ------------------------------------------------------------------ */
+  const projectsWithAnyAttendanceToday = new Set(attRows.map((r) => r.project_id));
+
   for (const pid of activeScopeProjectIds) {
-    const hasAssignments = byProject.get(pid)?.selected.size > 0;
     const project = projRows?.find((p: any) => p.id === pid);
-    if (
-      project &&
-      project.project_status !== "pending" &&
-      !project.pending_reason
-    ) {
-      const newProjectStatus = hasAssignments ? "ongoing" : "unassigned";
-      await supabaseServer
+    if (project && project.project_status !== "pending" && !project.pending_reason) {
+      const newProjectStatus = projectsWithAnyAttendanceToday.has(pid)
+        ? "ongoing"
+        : "unassigned";
+      const { error: upProjErr } = await supabaseServer
         .from("projects")
         .update({ project_status: newProjectStatus })
         .eq("id", pid);
+      if (upProjErr) {
+        console.error("[POST /api/assignments] update project status error:", upProjErr);
+        return NextResponse.json({ error: upProjErr.message }, { status: 500 });
+      }
     }
   }
 
-  return NextResponse.json(
-    { data: { count: attRows.length } },
-    { status: 201 }
-  );
+  return NextResponse.json({ data: { count: attRows.length } }, { status: 201 });
 }

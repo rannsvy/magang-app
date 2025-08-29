@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
@@ -62,7 +62,7 @@ interface JobRow {
 interface PhotoCategory {
   id: string;
   name: string;
-  photos: string[];
+  photos: string[]; // url (thumb_url diprioritaskan)
   currentIndex: number;
   snKey?: string | null; // mis. "Device 1" / "Main Unit"
 }
@@ -76,6 +76,8 @@ interface ReportPreview {
   serialNumbers: { [key: string]: string };
   notes: string;
   projectName?: string;
+  salesName?: string | null;
+  presalesName?: string | null;
 }
 
 interface HoverOverlayState {
@@ -86,20 +88,50 @@ interface HoverOverlayState {
   hasError: boolean;
 }
 
-/* =============== Fallback (jika DB kosong) =============== */
-const FALLBACK_CATEGORIES: Array<Pick<PhotoCategory, "id" | "name" | "snKey">> =
-  [
-    { id: "fisik", name: "Fisik", snKey: undefined },
-    { id: "serial-number", name: "Serial Number", snKey: undefined },
-    { id: "cctv-1", name: "CCTV 1", snKey: "Device 1" },
-    { id: "cctv-2", name: "CCTV 2", snKey: "Device 2" },
-    { id: "power-supply", name: "Power Supply", snKey: "Device 2" },
-    { id: "network-switch", name: "Network Switch", snKey: "Main Unit" },
-    { id: "dvr-nvr", name: "DVR/NVR", snKey: "Main Unit" },
-    { id: "monitor-display", name: "Monitor Display", snKey: "Main Unit" },
-    { id: "testing", name: "Testing", snKey: undefined },
-    { id: "dokumentasi-final", name: "Dokumentasi Final", snKey: undefined },
-  ];
+/* ====== Ambil dari API teknisi: hanya kategori yang ada foto ====== */
+type TechItem = {
+  id: string | number;
+  name: string;
+  requiresSerialNumber: boolean;
+  photo?: string | null;
+  photoThumb?: string | null;
+  serialNumber?: string | null;
+  meter?: number | null;
+};
+
+async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
+  categories: PhotoCategory[];
+  serialsByName: Record<string, string>;
+}> {
+  const res = await fetch(`/api/job-photos/${encodeURIComponent(jobId)}`, {
+    cache: "no-store",
+  });
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) {
+    throw new Error(data?.error || `Gagal mengambil foto untuk job ${jobId}`);
+  }
+
+  const items: TechItem[] = (data.items ?? []).filter(
+    (it: TechItem) => it.photoThumb || it.photo
+  );
+
+  const categories: PhotoCategory[] = items.map((it) => ({
+    id: String(it.id),
+    name: it.name,
+    photos: [String(it.photoThumb || it.photo)], // satu foto per kategori (yang ada)
+    currentIndex: 0,
+    snKey: undefined,
+  }));
+
+  const serialsByName: Record<string, string> = {};
+  for (const it of items) {
+    if (it.requiresSerialNumber && it.serialNumber) {
+      serialsByName[it.name] = String(it.serialNumber);
+    }
+  }
+
+  return { categories, serialsByName };
+}
 
 /* =============== Utils =============== */
 const truncateSerialNumber = (sn: string, max = 12) =>
@@ -115,6 +147,11 @@ const fmtDate = (d?: string | null) => {
     return String(d);
   }
 };
+
+function truncateText(s?: string | null, n = 25) {
+  if (!s) return "";
+  return s.length <= n ? s : s.slice(0, n) + "…";
+}
 
 /* =============== Page =============== */
 export default function GenerateLaporanPage() {
@@ -137,6 +174,11 @@ export default function GenerateLaporanPage() {
   const [reportPreview, setReportPreview] = useState<ReportPreview | null>(
     null
   );
+  const previewRef = useRef<ReportPreview | null>(null);
+  useEffect(() => {
+    previewRef.current = reportPreview;
+  }, [reportPreview]);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentGridPage, setCurrentGridPage] = useState(0);
   const [showPreview, setShowPreview] = useState(false);
@@ -149,111 +191,95 @@ export default function GenerateLaporanPage() {
     isLoading: false,
     hasError: false,
   });
-  const [hoverTimeout, setHoverTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [hoverTimeout, setHoverTimeout] = useState<ReturnType<
+    typeof setTimeout
+  > | null>(null);
 
-  /* ======== Ambil Project Group ======== */
-  useEffect(() => {
-    let isMounted = true;
+  /* ======== Ambil Project Group (realtime-aware) ======== */
+  const fetchGroups = useCallback(async () => {
+    setLoadingProjects(true);
+    setErrorMsg(null);
 
-    async function fetchGroups() {
-      setLoadingProjects(true);
-      setErrorMsg(null);
+    // coba pakai tabel job_groups
+    const tryGroups = await supabase
+      .from("job_groups")
+      .select("id,name")
+      .order("name", { ascending: true });
 
-      // Coba pakai tabel job_groups (kalau ada)
-      const tryGroups = await supabase
-        .from("job_groups")
-        .select("id,name")
-        .order("name", { ascending: true });
-
-      if (!isMounted) return;
-
-      if (!tryGroups.error && (tryGroups.data?.length ?? 0) > 0) {
-        setProjectGroups(tryGroups.data as ProjectGroup[]);
-        setLoadingProjects(false);
-        return;
-      }
-
-      // Fallback: distinct job_group_id dari projects
-      const { data, error } = await supabase
-        .from("projects")
-        .select("job_group_id")
-        .not("job_group_id", "is", null)
-        .order("job_group_id", { ascending: true });
-
-      if (!isMounted) return;
-
-      if (error) {
-        console.error(error);
-        setErrorMsg("Gagal memuat daftar project group");
-        setProjectGroups([]);
-      } else {
-        const uniq = Array.from(
-          new Set((data ?? []).map((r: any) => String(r.job_group_id)))
-        );
-        setProjectGroups(uniq.map((id) => ({ id, name: id })));
-      }
-
+    if (!tryGroups.error && (tryGroups.data?.length ?? 0) > 0) {
+      setProjectGroups(tryGroups.data as ProjectGroup[]);
       setLoadingProjects(false);
+      return;
     }
 
-    fetchGroups();
-    return () => {
-      isMounted = false;
-    };
+    // fallback: distinct job_group_id dari projects
+    const { data, error } = await supabase
+      .from("projects")
+      .select("job_group_id")
+      .not("job_group_id", "is", null)
+      .order("job_group_id", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      setErrorMsg("Gagal memuat daftar project group");
+      setProjectGroups([]);
+    } else {
+      const uniq = Array.from(
+        new Set((data ?? []).map((r: any) => String(r.job_group_id)))
+      );
+      setProjectGroups(uniq.map((id) => ({ id, name: id })));
+    }
+
+    setLoadingProjects(false);
   }, []);
 
-  /* ======== Ambil Jobs per group ======== */
   useEffect(() => {
-    let isMounted = true;
+    fetchGroups();
+  }, [fetchGroups]);
 
-    async function fetchJobsByGroup(groupId: string) {
-      setLoadingJobs(true);
-      setErrorMsg(null);
+  /* ======== Ambil Jobs per group ======== */
+  const fetchJobsByGroup = useCallback(async (groupId: string) => {
+    setLoadingJobs(true);
+    setErrorMsg(null);
 
-      // ⚠️ HANYA pilih kolom yang ADA di skema kamu
-      const { data, error } = await supabase
-        .from("projects")
-        .select(
-          "id, job_id, job_group_id, name, lokasi, tanggal_mulai, closed_at, sigma_teknisi, sales_name, presales_name"
-        )
-        .eq("job_group_id", groupId)
-        .order("job_id", { ascending: true });
+    const { data, error } = await supabase
+      .from("projects")
+      .select(
+        "id, job_id, job_group_id, name, lokasi, tanggal_mulai, closed_at, sigma_teknisi, sales_name, presales_name"
+      )
+      .eq("job_group_id", groupId)
+      .order("job_id", { ascending: true });
 
-      if (!isMounted) return;
-
-      if (error) {
-        console.error(error);
-        setErrorMsg("Gagal memuat daftar pekerjaan");
-        setJobs([]);
-      } else {
-        const rows: JobRow[] = (data || []).map((j: any) => ({
-          id: String(j.job_id),
-          job_id: j.job_id ?? null,
-          name: j.name ?? null,
-          project_id: String(j.id),
-          lokasi: j.lokasi ?? null,
-          tanggal_mulai: j.tanggal_mulai ?? null,
-          closed_at: j.closed_at ?? null,
-          sigma_teknisi: j.sigma_teknisi ?? null,
-          sales_name: j.sales_name ?? null,
-          presales_name: j.presales_name ?? null,
-        }));
-        setJobs(rows);
-      }
-
-      setLoadingJobs(false);
+    if (error) {
+      console.error(error);
+      setErrorMsg("Gagal memuat daftar pekerjaan");
+      setJobs([]);
+    } else {
+      const rows: JobRow[] = (data || []).map((j: any) => ({
+        id: String(j.job_id),
+        job_id: j.job_id ?? null,
+        name: j.name ?? null,
+        project_id: String(j.id),
+        lokasi: j.lokasi ?? null,
+        tanggal_mulai: j.tanggal_mulai ?? null,
+        closed_at: j.closed_at ?? null,
+        sigma_teknisi: j.sigma_teknisi ?? null,
+        sales_name: j.sales_name ?? null,
+        presales_name: j.presales_name ?? null,
+      }));
+      setJobs(rows);
     }
 
+    setLoadingJobs(false);
+  }, []);
+
+  useEffect(() => {
     if (formData.projectName) {
       fetchJobsByGroup(formData.projectName);
     } else {
       setJobs([]);
     }
-
-    return () => {
-      isMounted = false;
-    };
-  }, [formData.projectName]);
+  }, [formData.projectName, fetchJobsByGroup]);
 
   // (opsional) auto-pilih group dari query ?project=
   useEffect(() => {
@@ -293,6 +319,136 @@ export default function GenerateLaporanPage() {
 
   const isFormValid = () => Boolean(formData.projectName && formData.jobId);
 
+  /* ================= Builder: susun ulang preview dari sumber data TERBARU ================= */
+  const buildPreview = useCallback(
+    async (jobId: string) => {
+      const selectedJob = jobs.find((j) => j.id === jobId);
+      if (!selectedJob) return;
+
+      // 1) Serial numbers dari tabel (kalau ada)
+      let serialNumbers: Record<string, string> = {};
+      const snQuery = await supabase
+        .from("job_serial_numbers")
+        .select("label, value")
+        .eq("job_id", jobId);
+
+      if (!snQuery.error && snQuery.data) {
+        serialNumbers = (snQuery.data || []).reduce(
+          (acc: Record<string, string>, r: any) => {
+            acc[String(r.label)] = String(r.value);
+            return acc;
+          },
+          {}
+        );
+      }
+
+      // 2) Ambil via API teknisi (prioritas)
+      let categories: PhotoCategory[] = [];
+      let serialsByName: Record<string, string> = {};
+      try {
+        const { categories: fromTech, serialsByName: snByName } =
+          await loadPhotosFromTechnicianApi(jobId);
+        categories = fromTech;
+        serialsByName = snByName;
+      } catch {
+        // abaikan, fallback di bawah
+      }
+
+      // 3) Fallback ke Supabase (kalau API teknisi kosong)
+      if (!categories.length) {
+        const photoRes = await supabase
+          .from("job_photos")
+          .select("category_id, url, thumb_url, created_at")
+          .eq("job_id", jobId)
+          .order("created_at", { ascending: true });
+
+        if (!photoRes.error && (photoRes.data?.length ?? 0) > 0) {
+          const byCat: Record<string, string[]> = {};
+          for (const p of photoRes.data!) {
+            const cid = String(p.category_id);
+            if (!byCat[cid]) byCat[cid] = [];
+            const display = p.thumb_url || p.url;
+            if (display) byCat[cid].push(String(display));
+          }
+
+          const catIds = Object.keys(byCat);
+          let meta = new Map<string, { name: string; snKey?: string }>();
+
+          if (catIds.length) {
+            try {
+              const catIdNums = catIds
+                .map((id) => Number(id))
+                .filter((n) => !Number.isNaN(n));
+              const useIds: (string | number)[] =
+                catIdNums.length === catIds.length ? catIdNums : catIds;
+
+              const catRes = await supabase
+                .from("job_photo_categories")
+                .select("id,name,sn_key")
+                .in("id", useIds);
+
+              meta = new Map(
+                (catRes.data || []).map((c: any) => [
+                  String(c.id),
+                  {
+                    name: String(c.name),
+                    snKey: c.sn_key ? String(c.sn_key) : undefined,
+                  },
+                ])
+              );
+            } catch {
+              // kalau tabel categories belum bisa diakses, lanjut tanpa meta
+            }
+
+            categories = catIds.map((id) => ({
+              id,
+              name: meta.get(id)?.name ?? `Kategori ${id}`,
+              snKey: meta.get(id)?.snKey,
+              photos: byCat[id],
+              currentIndex: 0,
+            }));
+          }
+        }
+      }
+
+      // 4) Header
+      const jobName = selectedJob?.name || selectedJob?.id || "";
+      const location = selectedJob?.lokasi || "";
+      const completedDate =
+        fmtDate(selectedJob?.closed_at) ||
+        fmtDate(selectedJob?.tanggal_mulai) ||
+        "—";
+      const salesName = selectedJob?.sales_name ?? null;
+      const presalesName = selectedJob?.presales_name ?? null;
+
+      const nextPreview: ReportPreview = {
+        jobName,
+        technicianName:
+          salesName ||
+          presalesName ||
+          (typeof selectedJob?.sigma_teknisi === "number"
+            ? `Teknisi (${selectedJob?.sigma_teknisi})`
+            : "Teknisi"),
+        location,
+        completedDate,
+        photoCategories: categories,
+        serialNumbers: { ...serialNumbers, ...serialsByName },
+        notes:
+          "Pekerjaan telah selesai dilakukan dengan baik. Semua perangkat berfungsi normal dan sudah terhubung ke sistem.",
+        projectName: selectedProject?.name ?? undefined,
+        salesName,
+        presalesName,
+      };
+
+      // hindari setState berulang kalau datanya sama (sederhana)
+      const curr = previewRef.current;
+      if (curr && JSON.stringify(curr) === JSON.stringify(nextPreview)) return;
+
+      setReportPreview(nextPreview);
+    },
+    [jobs, selectedProject?.name]
+  );
+
   /* ================= Generate Preview ================= */
   const handleGenerate = async () => {
     if (!isFormValid()) {
@@ -304,113 +460,7 @@ export default function GenerateLaporanPage() {
     setErrorMsg(null);
 
     try {
-      const selectedJob = jobs.find((j) => j.id === formData.jobId);
-
-      // 1) Serial Numbers (opsional, fallback bila tabel belum ada)
-      let serialNumbers: Record<string, string> = {
-        "Device 1": "SN001234567",
-        "Device 2": "SN001234568",
-        "Main Unit": "MU987654321",
-      };
-      const snQuery = await supabase
-        .from("job_serial_numbers")
-        .select("label, value")
-        .eq("job_id", formData.jobId);
-
-      if (!snQuery.error && snQuery.data) {
-        const map = (snQuery.data || []).reduce(
-          (acc: Record<string, string>, r: any) => {
-            acc[String(r.label)] = String(r.value);
-            return acc;
-          },
-          {}
-        );
-        if (Object.keys(map).length) serialNumbers = map;
-      }
-
-      // 2) Categories (opsional)
-      let categories: PhotoCategory[] = FALLBACK_CATEGORIES.map((c) => ({
-        ...c,
-        photos: [],
-        currentIndex: 0,
-      }));
-
-      const catQuery = await supabase
-        .from("job_photo_categories")
-        .select("id, name, sn_key, sort_order")
-        .order("sort_order", { ascending: true });
-
-      if (!catQuery.error && catQuery.data?.length) {
-        categories = (catQuery.data as any[]).map((c) => ({
-          id: String(c.id),
-          name: String(c.name),
-          snKey: c.sn_key ? String(c.sn_key) : undefined,
-          photos: [],
-          currentIndex: 0,
-        }));
-      }
-
-      // 3) Photos per job (opsional)
-      const photoQuery = await supabase
-        .from("job_photos")
-        .select("category_id, url, sort_order")
-        .eq("job_id", formData.jobId)
-        .order("sort_order", { ascending: true });
-
-      if (!photoQuery.error && photoQuery.data) {
-        const photoMap = (photoQuery.data || []).reduce(
-          (acc: Record<string, string[]>, p: any) => {
-            const cid = String(p.category_id);
-            if (!acc[cid]) acc[cid] = [];
-            acc[cid].push(String(p.url || "/placeholder.svg"));
-            return acc;
-          },
-          {}
-        );
-        categories = categories.map((c) => ({
-          ...c,
-          photos:
-            photoMap[c.id] && photoMap[c.id].length
-              ? photoMap[c.id]
-              : ["/placeholder.svg?height=200&width=300"],
-        }));
-      } else {
-        // Jika tabel job_photos belum ada → kasih placeholder biar tile tampil
-        categories = categories.map((c) => ({
-          ...c,
-          photos: c.photos.length
-            ? c.photos
-            : ["/placeholder.svg?height=200&width=300"],
-        }));
-      }
-
-      // Build header preview dari kolom yang ada
-      const jobName = selectedJob?.name || selectedJob?.id || "";
-      const location = selectedJob?.lokasi || "";
-      const completedDate =
-        fmtDate(selectedJob?.closed_at) ||
-        fmtDate(selectedJob?.tanggal_mulai) ||
-        "—";
-      const technicianName =
-        selectedJob?.sales_name ||
-        selectedJob?.presales_name ||
-        (typeof selectedJob?.sigma_teknisi === "number"
-          ? `Teknisi (${selectedJob?.sigma_teknisi})`
-          : "Teknisi");
-
-      const preview: ReportPreview = {
-        jobName,
-        technicianName,
-        location,
-        completedDate,
-        photoCategories: categories,
-        serialNumbers,
-        notes:
-          "Pekerjaan telah selesai dilakukan dengan baik. Semua perangkat berfungsi normal dan sudah terhubung ke sistem.",
-        projectName: selectedProject?.name,
-      };
-
-      setReportPreview(preview);
+      await buildPreview(formData.jobId);
       setCurrentGridPage(0);
       setShowPreview(true);
     } catch (e: any) {
@@ -421,7 +471,44 @@ export default function GenerateLaporanPage() {
     }
   };
 
-  /* ================= Grid & Overlay (seperti Code 1) ================= */
+  /* ============== Realtime subscribe: auto-refresh preview ============== */
+  useEffect(() => {
+    if (!showPreview || !formData.jobId) return;
+
+    let alive = true;
+    let t: ReturnType<typeof setTimeout> | null = null;
+
+    const refresh = () => {
+      if (!alive) return;
+      if (t) clearTimeout(t);
+      t = setTimeout(() => buildPreview(formData.jobId), 150);
+    };
+
+    const channel = supabase
+      .channel(`rt-job-${formData.jobId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "job_photos",
+          filter: `job_id=eq.${formData.jobId}`,
+        },
+        (payload) => {
+          console.log("[RT] job_photos:", payload); // pastikan ini muncul
+          refresh();
+        }
+      )
+      .subscribe((status) => console.log("[RT] status:", status));
+
+    return () => {
+      alive = false;
+      if (t) clearTimeout(t);
+      supabase.removeChannel(channel);
+    };
+  }, [showPreview, formData.jobId, buildPreview]);
+
+  /* ================= Grid & Overlay ================= */
   const itemsPerPage = 20;
   const totalPages = reportPreview
     ? Math.ceil(reportPreview.photoCategories.length / itemsPerPage)
@@ -434,20 +521,15 @@ export default function GenerateLaporanPage() {
     return reportPreview.photoCategories.slice(startIndex, endIndex);
   };
 
-  const handleGridNavigation = (dir: "prev" | "next") => {
-    if (dir === "next" && currentGridPage < totalPages - 1) {
-      setCurrentGridPage((p) => p + 1);
-    } else if (dir === "prev" && currentGridPage > 0) {
-      setCurrentGridPage((p) => p - 1);
-    }
-  };
-
+  // SN prioritas: nama kategori (hasil OCR teknisi) → snKey → legacy map
   const getSerialNumberForCategory = (
     category: PhotoCategory,
     serialNumbers: { [key: string]: string }
   ) => {
-    if (category.snKey && serialNumbers[category.snKey])
+    if (serialNumbers[category.name]) return serialNumbers[category.name];
+    if (category.snKey && serialNumbers[category.snKey]) {
       return serialNumbers[category.snKey];
+    }
     const map: Record<string, string> = {
       "cctv-1": "Device 1",
       "cctv-2": "Device 2",
@@ -463,7 +545,15 @@ export default function GenerateLaporanPage() {
     return key ? serialNumbers[key] : undefined;
   };
 
-  const [hoverOverlayState, setHoverOverlayState] = useState(0); // dummy to force re-render on quick nav
+  const [hoverOverlayState, setHoverOverlayState] = useState(0);
+
+  const handleGridNavigation = (dir: "prev" | "next") => {
+    if (dir === "next" && currentGridPage < totalPages - 1) {
+      setCurrentGridPage((p) => p + 1);
+    } else if (dir === "prev" && currentGridPage > 0) {
+      setCurrentGridPage((p) => p - 1);
+    }
+  };
 
   const handleCarouselNavigation = (
     categoryId: string,
@@ -576,7 +666,7 @@ export default function GenerateLaporanPage() {
 
   const handleBackToForm = () => setShowPreview(false);
 
-  /* ================= UI (Desain Code 1) ================= */
+  /* ================= UI ================= */
   return (
     <div className="min-h-screen bg-gray-50">
       {!showPreview ? (
@@ -810,13 +900,28 @@ export default function GenerateLaporanPage() {
                       </div>
 
                       <div>
-                        <h5 className="font-semibold text-gray-900 mb-2">Sales</h5>
+                        <h5 className="font-semibold text-gray-900 mb-2">
+                          Sales
+                        </h5>
                         <div className="flex items-center text-sm text-gray-600">
                           <User className="h-4 w-4 mr-2" />
-                          {reportPreview?.salesName}
+                          {reportPreview?.salesName
+                            ? truncateText(reportPreview.salesName, 25)
+                            : "-"}
                         </div>
                       </div>
 
+                      {reportPreview?.presalesName ? (
+                        <div>
+                          <h5 className="font-semibold text-gray-900 mb-2">
+                            Presales
+                          </h5>
+                          <div className="flex items-center text-sm text-gray-600">
+                            <User className="h-4 w-4 mr-2" />
+                            {truncateText(reportPreview.presalesName, 25)}
+                          </div>
+                        </div>
+                      ) : null}
                     </CardContent>
                   </Card>
                 </div>
@@ -893,7 +998,6 @@ export default function GenerateLaporanPage() {
                                       role="button"
                                       aria-label={`View ${category.name} photos`}
                                     >
-                                      {/* eslint-disable-next-line @next/next/no-img-element */}
                                       <img
                                         src={
                                           category.photos[
@@ -904,6 +1008,8 @@ export default function GenerateLaporanPage() {
                                           category.currentIndex + 1
                                         }`}
                                         className="w-full h-full object-cover transition-opacity hover:opacity-90"
+                                        loading="lazy"
+                                        decoding="async"
                                       />
                                     </div>
 
@@ -920,15 +1026,7 @@ export default function GenerateLaporanPage() {
                                                 "prev"
                                               )
                                             }
-                                            onMouseEnter={(e) =>
-                                              e.stopPropagation()
-                                            }
-                                            onMouseLeave={(e) =>
-                                              e.stopPropagation()
-                                            }
-                                            className="h-7 w-7 p-0 bg-black/30 hover:bg-black/50 text-white rounded-full pointer-events-auto"
-                                            tabIndex={0}
-                                            aria-label={`Previous ${category.name} photo`}
+                                            className="h-7 w-7 p-0 bg-black/30 hover:bg-black/50 text-white rounded-full"
                                           >
                                             <ChevronLeft className="h-4 w-4" />
                                           </Button>
@@ -945,15 +1043,7 @@ export default function GenerateLaporanPage() {
                                                 "next"
                                               )
                                             }
-                                            onMouseEnter={(e) =>
-                                              e.stopPropagation()
-                                            }
-                                            onMouseLeave={(e) =>
-                                              e.stopPropagation()
-                                            }
-                                            className="h-7 w-7 p-0 bg-black/30 hover:bg-black/50 text-white rounded-full pointer-events-auto"
-                                            tabIndex={0}
-                                            aria-label={`Next ${category.name} photo`}
+                                            className="h-7 w-7 p-0 bg-black/30 hover:bg-black/50 text-white rounded-full"
                                           >
                                             <ChevronRight className="h-4 w-4" />
                                           </Button>
@@ -1039,60 +1129,29 @@ export default function GenerateLaporanPage() {
             </Button>
 
             <div className="relative bg-white rounded-lg overflow-hidden shadow-2xl">
-              {hoverOverlay.isLoading ? (
-                <div className="flex items-center justify-center w-96 h-64">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                </div>
-              ) : hoverOverlay.hasError ? (
-                <div className="flex flex-col items-center justify-center w-96 h-64 text-gray-600">
-                  <p className="mb-4">Gagal memuat gambar</p>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setHoverOverlay((prev) => ({
-                        ...prev,
-                        isLoading: true,
-                        hasError: false,
-                      }));
-                      setTimeout(
-                        () =>
-                          setHoverOverlay((prev) => ({
-                            ...prev,
-                            isLoading: false,
-                          })),
-                        200
-                      );
-                    }}
-                  >
-                    Coba Lagi
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={getCurrentOverlayPhoto() || "/placeholder.svg"}
-                    alt={`${getCurrentOverlayCategory()?.name} ${
-                      hoverOverlay.photoIndex + 1
-                    }`}
-                    className="max-w-full max-h-[70vh] object-contain"
-                    onError={() =>
-                      setHoverOverlay((prev) => ({
-                        ...prev,
-                        hasError: true,
-                        isLoading: false,
-                      }))
-                    }
-                  />
-                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
-                    <p className="text-white text-sm font-medium">
-                      {getCurrentOverlayCategory()?.name} —{" "}
-                      {hoverOverlay.photoIndex + 1}/
-                      {getCurrentOverlayCategory()?.photos.length || 0}
-                    </p>
-                  </div>
-                </>
-              )}
+              <img
+                src={getCurrentOverlayPhoto() || "/placeholder.svg"}
+                alt={`${getCurrentOverlayCategory()?.name} ${
+                  hoverOverlay.photoIndex + 1
+                }`}
+                className="max-w-full max-h-[70vh] object-contain"
+                onError={() =>
+                  setHoverOverlay((prev) => ({
+                    ...prev,
+                    hasError: true,
+                    isLoading: false,
+                  }))
+                }
+                loading="lazy"
+                decoding="async"
+              />
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
+                <p className="text-white text-sm font-medium">
+                  {getCurrentOverlayCategory()?.name} —{" "}
+                  {hoverOverlay.photoIndex + 1}/
+                  {getCurrentOverlayCategory()?.photos.length || 0}
+                </p>
+              </div>
             </div>
           </div>
         </div>
