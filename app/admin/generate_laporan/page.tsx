@@ -660,8 +660,31 @@ export default function GenerateLaporanPage() {
       (c) => c.id === hoverOverlay.categoryId
     );
 
-  const handleDownloadReport = () => {
-    alert("Download report (PDF) belum diimplementasikan.");
+  const handleDownloadReport = async () => {
+    if (!formData.jobId) {
+      alert("Pilih Job dulu");
+      return;
+    }
+    try {
+      const res = await fetch(
+        `/api/laporan/docx?jobId=${encodeURIComponent(formData.jobId)}`
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.error || "Gagal generate DOCX");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Laporan_${formData.jobId}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(e?.message || "Gagal mengunduh laporan");
+    }
   };
 
   const handleBackToForm = () => setShowPreview(false);

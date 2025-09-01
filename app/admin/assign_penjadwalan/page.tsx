@@ -217,7 +217,7 @@ export default function AssignScheduling() {
   const [showProjectShortcut, setShowProjectShortcut] = useState(false);
   const [shortcutPosition, setShortcutPosition] = useState({ x: 0, y: 0 });
   const [selectedProjectForShortcut, setSelectedProjectForShortcut] =
-    useState<string>("");
+    useState<UIProject | null>(null);
   const shortcutRef = useRef<HTMLDivElement>(null);
   const lastClickTimeRef = useRef<number>(0);
 
@@ -475,10 +475,11 @@ export default function AssignScheduling() {
   /* ---------- Interaksi Grid ---------- */
   const handleCellClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
-    if (project?.projectStatus === "pending") return; // Block pending projects
+    if (!project) return;
 
-    // Cek apakah project sudah selesai (completed)
-    if (project?.status === "completed") return; // Block completed projects
+    // Block pending & completed
+    if (project.projectStatus === "pending") return;
+    if (project.status === "completed") return;
 
     const technician = techs.find((t) => t.id === technicianId);
     if (!technician) return;
@@ -491,7 +492,6 @@ export default function AssignScheduling() {
         (a.isSelected || a.isProjectLeader)
     );
 
-    // Jika teknisi sudah di-assign ke project lain yang ongoing, blok perubahan
     if (technicianOtherAssignments.length > 0) {
       const otherProject = projectsData.find(
         (p) =>
@@ -591,7 +591,11 @@ export default function AssignScheduling() {
 
   const handleCellDoubleClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
-    if (project?.projectStatus === "pending") return; // Block pending projects
+    if (!project) return;
+
+    // Block pending & completed
+    if (project.projectStatus === "pending") return;
+    if (project.status === "completed") return;
 
     const technician = techs.find((t) => t.id === technicianId);
     if (!technician) return;
@@ -650,6 +654,9 @@ export default function AssignScheduling() {
     if (checked) {
       const allAssignments: CellAssignment[] = [];
       projectsData.forEach((project) => {
+        // lewati baris yang tidak bisa diubah (pending/completed)
+        const locked =
+          project.projectStatus === "pending" || project.status === "completed";
         techs.forEach((technician) => {
           const existingAssignment = assignments.find(
             (a) =>
@@ -658,7 +665,7 @@ export default function AssignScheduling() {
           allAssignments.push({
             projectId: project.id,
             technicianId: technician.id,
-            isSelected: true,
+            isSelected: locked ? Boolean(existingAssignment?.isSelected) : true,
             initial: technician.initial,
             isProjectLeader: existingAssignment?.isProjectLeader || false,
           });
@@ -757,6 +764,7 @@ export default function AssignScheduling() {
         sigmaManDays: Number(newProjectForm.sigmaManDays),
         sigmaHari: Number(newProjectForm.sigmaHari),
         sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
+        templateKey: newProjectForm.tipeTemplate,
       };
 
       const res = await apiFetch<{ data: DbProjectWithStats }>(
@@ -1001,15 +1009,20 @@ export default function AssignScheduling() {
   };
 
   /* ---------- Shortcut “Generate Laporan” (desain baru) ---------- */
+  const downloadDocx = (jobId: string) => {
+    const url = `/api/laporan/docx?jobId=${encodeURIComponent(jobId)}`;
+    window.open(url, "_blank");
+  };
+
   const handleProjectNameRightClick = (
     event: React.MouseEvent,
-    projectName: string
+    project: UIProject
   ) => {
     event.preventDefault();
     const now = Date.now();
     if (now - lastClickTimeRef.current < 300) return;
     lastClickTimeRef.current = now;
-    if (!projectName.trim()) return;
+    if (!project?.id) return;
 
     const rect = (event.target as HTMLElement).getBoundingClientRect();
     const viewportWidth = window.innerWidth;
@@ -1021,14 +1034,15 @@ export default function AssignScheduling() {
     if (y + 60 > viewportHeight) y = rect.top - 60;
 
     setShortcutPosition({ x, y });
-    setSelectedProjectForShortcut(projectName);
+    setSelectedProjectForShortcut(project);
     setShowProjectShortcut(true);
   };
 
   const handleGenerateLaporan = () => {
-    if (selectedProjectForShortcut) {
-      const encoded = encodeURIComponent(selectedProjectForShortcut);
-      router.push(`/admin/generate_laporan?project=${encoded}`);
+    if (selectedProjectForShortcut?.jobId) {
+      downloadDocx(selectedProjectForShortcut.jobId);
+    } else {
+      alert("Job ID tidak ditemukan untuk project ini.");
     }
     setShowProjectShortcut(false);
   };
@@ -1073,6 +1087,21 @@ export default function AssignScheduling() {
     setDateValidationError("");
     return true;
   };
+
+  type TemplateOption = { value: string; label: string };
+
+  const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/report-templates", { cache: "no-store" });
+        const json = await res.json();
+        setTemplateOptions(json.items ?? []);
+      } catch {
+        setTemplateOptions([]);
+      }
+    })();
+  }, []);
 
   /* ---------- Render ---------- */
   return (
@@ -1232,6 +1261,10 @@ export default function AssignScheduling() {
                     const projectStatusDisplay =
                       getProjectStatusDisplay(project);
 
+                    const isLockedRow =
+                      project.projectStatus === "pending" ||
+                      project.status === "completed";
+
                     return (
                       <tr key={project.id} className={rowBgColor}>
                         <td
@@ -1240,9 +1273,13 @@ export default function AssignScheduling() {
                           <div
                             className="text-xs font-semibold cursor-pointer hover:bg-blue-50 px-1 py-1 rounded transition-colors"
                             onContextMenu={(e) =>
-                              handleProjectNameRightClick(e, project.name)
+                              handleProjectNameRightClick(e, project)
                             }
-                            title="Klik kanan untuk shortcut Generate Laporan"
+                            title={
+                              project.jobId
+                                ? "Klik kanan untuk shortcut Generate Laporan (DOCX)"
+                                : "Job ID belum tersedia"
+                            }
                           >
                             {project.name}
                           </div>
@@ -1320,22 +1357,32 @@ export default function AssignScheduling() {
                           }
                           // NOTE: jika ada membership tapi isSelected=false -> biarkan seperti sel kosong (rowBgColor)
 
+                          const disabledCell =
+                            project.projectStatus === "pending" ||
+                            project.status === "completed";
+
                           return (
                             <td
                               key={`${project.id}-${technician.id}`}
                               className={`px-1 py-1 text-center border-r border-gray-200 ${
-                                project.projectStatus === "pending"
+                                disabledCell
                                   ? "cursor-not-allowed opacity-60"
                                   : "cursor-pointer hover:bg-blue-100"
                               } transition-colors ${cellBgColor}`}
                               onClick={() =>
+                                !disabledCell &&
                                 handleCellClick(project.id, technician.id)
                               }
                               onDoubleClick={() =>
+                                !disabledCell &&
                                 handleCellDoubleClick(project.id, technician.id)
                               }
                               title={
-                                isProjectLeader
+                                disabledCell
+                                  ? project.projectStatus === "pending"
+                                    ? "Proyek sedang pending"
+                                    : "Proyek telah selesai"
+                                  : isProjectLeader
                                   ? `${technician.name} (Project Leader) - Double click to remove leader status`
                                   : isSelected
                                   ? `${technician.name} (Assigned) - Single click: toggle attendance | Double click: set as leader`
@@ -1477,6 +1524,12 @@ export default function AssignScheduling() {
             onClick={handleGenerateLaporan}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 px-3"
             autoFocus
+            disabled={!selectedProjectForShortcut?.jobId}
+            title={
+              selectedProjectForShortcut?.jobId
+                ? `Generate Laporan DOCX untuk Job ${selectedProjectForShortcut.jobId}`
+                : "Job ID tidak tersedia"
+            }
           >
             Generate Laporan
           </Button>
@@ -1846,7 +1899,7 @@ export default function AssignScheduling() {
                     Tanggal Terima PO
                   </Label>
                   <input
-                    id="tanggalTerimaPo" 
+                    id="tanggalTerimaPo"
                     type="date"
                     value={newProjectForm.tanggalTerimaPo}
                     onChange={(e) =>
@@ -1945,9 +1998,11 @@ export default function AssignScheduling() {
                       <option value="" disabled>
                         Pilih Tipe Template
                       </option>
-                      <option value="Template BCA">Template BCA</option>
-                      <option value="Template Mandiri">Template Mandiri</option>
-                      <option value="Template BNI">Template BNI</option>
+                      {templateOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
                     </select>
                     {tipeTemplateError && (
                       <p className="text-xs text-red-500 mt-1">

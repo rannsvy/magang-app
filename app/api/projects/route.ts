@@ -184,12 +184,14 @@ export async function POST(req: NextRequest) {
     sigmaManDays: number;
     sigmaHari: number;
     sigmaTeknisi: number;
+    templateKey: string;
   };
 
   if (
     !body.namaProject ||
     !body.tanggalMulaiProject ||
-    !body.tanggalDeadlineProject
+    !body.tanggalDeadlineProject ||
+    !body.templateKey
   ) {
     return NextResponse.json(
       { error: "Data project tidak lengkap" },
@@ -213,6 +215,7 @@ export async function POST(req: NextRequest) {
     project_status: "unassigned" as const, // enum baru
     jam_datang: "08:00:00",
     jam_pulang: "17:00:00",
+    template_key: body.templateKey,
   };
 
   const { data, error } = await supabaseAdmin

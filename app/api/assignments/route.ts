@@ -80,7 +80,6 @@ export async function GET(req: NextRequest) {
     )
     .in("id", projectIds)
     .lte("tanggal_mulai", date)
-    .or(`tanggal_deadline.is.null,tanggal_deadline.gte.${date}`)
     .is("closed_at", null);
 
   if (projErr) {
@@ -195,7 +194,9 @@ export async function POST(req: NextRequest) {
   // Kelompokkan per proyek dari items yang dipilih
   const byProject = new Map<string, { selected: Set<string> }>();
   for (const it of items) {
-    const bucket = byProject.get(it.projectId) ?? { selected: new Set<string>() };
+    const bucket = byProject.get(it.projectId) ?? {
+      selected: new Set<string>(),
+    };
     if (it.isSelected !== false) bucket.selected.add(it.technicianId);
     byProject.set(it.projectId, bucket);
   }
@@ -280,7 +281,10 @@ export async function POST(req: NextRequest) {
       .in("project_id", activeScopeProjectIds)
       .is("removed_at", null);
     if (actErr) {
-      console.error("[POST /api/assignments] fetch active memberships error:", actErr);
+      console.error(
+        "[POST /api/assignments] fetch active memberships error:",
+        actErr
+      );
       return NextResponse.json({ error: actErr.message }, { status: 500 });
     }
     activePairs = act ?? [];
@@ -401,18 +405,22 @@ export async function POST(req: NextRequest) {
     leaderMap.set(r.project_id, set);
   }
 
+  // Build rows hanya untuk proyek yang disentuh + dedup key
   const attRows: Array<{
     project_id: string;
     technician_id: string;
     work_date: string;
     project_leader?: boolean;
   }> = [];
+  const attKey = new Set<string>();
 
-  // Tambah attendance dari assignments baru
   for (const pid of projectsWithAssignments) {
     const selected = byProject.get(pid)?.selected ?? new Set<string>();
     const leaderSet = leaderMap.get(pid) ?? new Set<string>();
     for (const tid of selected) {
+      const k = `${pid}::${tid}::${date}`;
+      if (attKey.has(k)) continue; // dedup
+      attKey.add(k);
       attRows.push({
         project_id: pid,
         technician_id: tid,
@@ -422,31 +430,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Preserve attendance eksisting (tanggal tsb) untuk proyek aktif lain (tidak tersentuh)
-  if (activeScopeProjectIds.length) {
-    const { data: existingAtt } = await supabaseServer
-      .from("attendance")
-      .select("project_id, technician_id")
-      .eq("work_date", date)
-      .in("project_id", activeScopeProjectIds);
-
-    const keep = (existingAtt ?? []).filter(
-      (r) => !projectsWithAssignments.includes(r.project_id)
-    );
-
-    for (const r of keep) {
-      const leaderSet = leaderMap.get(r.project_id) ?? new Set<string>();
-      attRows.push({
-        project_id: r.project_id,
-        technician_id: r.technician_id,
-        work_date: date,
-        project_leader: leaderSet.has(r.technician_id),
-      });
-    }
-  }
-
   if (attRows.length) {
-    const { error: insErr } = await supabaseServer.from("attendance").insert(attRows);
+    const { error: insErr } = await supabaseServer
+      .from("attendance")
+      .insert(attRows);
     if (insErr) {
       console.error("[POST /api/assignments] insert attendance error:", insErr);
       return NextResponse.json({ error: insErr.message }, { status: 500 });
@@ -457,11 +444,17 @@ export async function POST(req: NextRequest) {
    * 5) Update project_status berbasis attendance aktual HARI D.
    *    (ongoing jika ada attendance; unassigned jika tidak — kecuali pending)
    * ------------------------------------------------------------------ */
-  const projectsWithAnyAttendanceToday = new Set(attRows.map((r) => r.project_id));
+  const projectsWithAnyAttendanceToday = new Set(
+    attRows.map((r) => r.project_id)
+  );
 
   for (const pid of activeScopeProjectIds) {
     const project = projRows?.find((p: any) => p.id === pid);
-    if (project && project.project_status !== "pending" && !project.pending_reason) {
+    if (
+      project &&
+      project.project_status !== "pending" &&
+      !project.pending_reason
+    ) {
       const newProjectStatus = projectsWithAnyAttendanceToday.has(pid)
         ? "ongoing"
         : "unassigned";
@@ -470,11 +463,17 @@ export async function POST(req: NextRequest) {
         .update({ project_status: newProjectStatus })
         .eq("id", pid);
       if (upProjErr) {
-        console.error("[POST /api/assignments] update project status error:", upProjErr);
+        console.error(
+          "[POST /api/assignments] update project status error:",
+          upProjErr
+        );
         return NextResponse.json({ error: upProjErr.message }, { status: 500 });
       }
     }
   }
 
-  return NextResponse.json({ data: { count: attRows.length } }, { status: 201 });
+  return NextResponse.json(
+    { data: { count: attRows.length } },
+    { status: 201 }
+  );
 }
