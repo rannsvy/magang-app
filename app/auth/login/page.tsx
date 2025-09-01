@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { getDailyQuote } from "@/lib/quotes"   // ⬅️ cukup ini
+import { PWAInstallPrompt } from "@/components/pwa-install-prompt"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -103,6 +104,8 @@ export default function LoginPage() {
           </div>
         </CardContent>
       </Card>
+
+      <PWAInstallPrompt/>
     </div>
   )
 }

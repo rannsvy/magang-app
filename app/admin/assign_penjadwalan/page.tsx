@@ -165,6 +165,8 @@ interface NewProjectForm {
   sigmaHari: string
   sigmaTeknisi: string
   tipeTemplate: string
+  paketCount: number
+  paketDetails: Array<{ rw: string; rt: string }>
 }
 
 interface EditProjectForm {
@@ -176,7 +178,21 @@ interface EditProjectForm {
 
 export default function AssignScheduling() {
   const router = useRouter()
+
+  // Hydration guard
+  const [isMounted, setIsMounted] = useState(false)
+  useEffect(() => setIsMounted(true), [])
+
   const [activeDate, setActiveDate] = useState<Date>(new Date())
+  const [dateLabel, setDateLabel] = useState<string>("")
+  useEffect(() => {
+    if (!isMounted) return
+    const dd = String(activeDate.getDate()).padStart(2, "0")
+    const mm = String(activeDate.getMonth() + 1).padStart(2, "0")
+    const yyyy = activeDate.getFullYear()
+    setDateLabel(`${dd}-${mm}-${yyyy}`)
+  }, [activeDate, isMounted])
+
   const [assignments, setAssignments] = useState<CellAssignment[]>([])
   const [selectAll, setSelectAll] = useState(false)
   const [showConfirmation, setShowConfirmation] = useState(false)
@@ -195,8 +211,9 @@ export default function AssignScheduling() {
     sigmaHari: "",
     sigmaTeknisi: "",
     tipeTemplate: "",
+    paketCount: 0,
+    paketDetails: [],
   })
-  const [showSubFields, setShowSubFields] = useState(false)
   const [showEditProject, setShowEditProject] = useState(false)
   const [editProjectForm, setEditProjectForm] = useState<EditProjectForm>({
     projectId: "",
@@ -205,6 +222,12 @@ export default function AssignScheduling() {
     isReadOnlyProject: false,
   })
   const [projectsData, setProjectsData] = useState(projects)
+  const [visibleProjects, setVisibleProjects] = useState(projectsData)
+  useEffect(() => {
+    const next = getProjectsByActiveDate(projectsData, activeDate)
+    setVisibleProjects(next)
+  }, [projectsData, activeDate])
+
   const [dateValidationError, setDateValidationError] = useState<string>("")
   const [tipeTemplateError, setTipeTemplateError] = useState<string>("")
 
@@ -214,74 +237,60 @@ export default function AssignScheduling() {
   const shortcutRef = useRef<HTMLDivElement>(null)
   const lastClickTimeRef = useRef<number>(0)
 
-  const formatDateDDMMYYYY = (date: Date) => {
-    const day = String(date.getDate()).padStart(2, "0")
-    const month = String(date.getMonth() + 1).padStart(2, "0")
-    const year = date.getFullYear()
-    return `${day}-${month}-${year}`
+  // ===== Paket handlers
+  const setPaketCount = (count: number) => {
+    const n = Math.max(0, Math.min(30, Math.floor(count || 0)))
+    setNewProjectForm((prev) => {
+      const nextDetails = [...prev.paketDetails]
+      if (n > nextDetails.length) {
+        for (let i = nextDetails.length; i < n; i++) nextDetails.push({ rw: "", rt: "" })
+      } else {
+        nextDetails.length = n
+      }
+      return { ...prev, paketCount: n, paketDetails: nextDetails }
+    })
   }
 
-  const isSameOrBefore = (dateA: Date, dateB: Date) => {
-    return dateA <= dateB
+  const updatePaketDetail = (idx: number, field: "rw" | "rt", value: string) => {
+    setNewProjectForm((prev) => {
+      const next = [...prev.paketDetails]
+      if (!next[idx]) next[idx] = { rw: "", rt: "" }
+      next[idx] = { ...next[idx], [field]: value }
+      return { ...prev, paketDetails: next }
+    })
   }
 
-  const isSameOrAfter = (dateA: Date, dateB: Date) => {
-    return dateA >= dateB
-  }
+  const isSameOrBefore = (dateA: Date, dateB: Date) => dateA <= dateB
+  const isSameOrAfter = (dateA: Date, dateB: Date) => dateA >= dateB
 
-  const getProjectsByActiveDate = (projects: typeof projectsData, activeDate: Date) => {
-    return projects.filter((project) => {
-      // For demo purposes, we'll simulate project dates based on current date and project properties
-      // In real implementation, these would come from actual project date fields
+  const getProjectsByActiveDate = (projectsArr: typeof projectsData, active: Date) => {
+    return projectsArr.filter((project) => {
       const today = new Date()
       const projectStartDate = new Date(today.getTime() - project.daysElapsed * 24 * 60 * 60 * 1000)
-
       let projectEndDate: Date | null = null
-      if (project.status === "completed") {
-        // Completed projects end on their completion date (simulated as today for demo)
-        projectEndDate = new Date(today.getTime())
-      } else if (project.status === "overdue") {
-        // Overdue projects should have ended but are still ongoing
-        projectEndDate = new Date(today.getTime() - 24 * 60 * 60 * 1000) // Yesterday
-      }
-      // For ongoing/pending projects, projectEndDate remains null (no end date yet)
-
-      // Show project if:
-      // 1. activeDate is on or after project start date
-      // 2. AND either project has no end date OR activeDate is on or before end date
-      const showProject =
-        isSameOrAfter(activeDate, projectStartDate) &&
-        (projectEndDate === null || isSameOrBefore(activeDate, projectEndDate))
-
-      return showProject
+      if (project.status === "completed") projectEndDate = new Date(today.getTime())
+      else if (project.status === "overdue") projectEndDate = new Date(today.getTime() - 24 * 60 * 60 * 1000)
+      return isSameOrAfter(active, projectStartDate) && (projectEndDate === null || isSameOrBefore(active, projectEndDate))
     })
   }
 
   const handleDateNavigation = (direction: "prev" | "next") => {
     setActiveDate((prevDate) => {
       const newDate = new Date(prevDate)
-      if (direction === "prev") {
-        newDate.setDate(newDate.getDate() - 1)
-      } else {
-        newDate.setDate(newDate.getDate() + 1)
-      }
+      if (direction === "prev") newDate.setDate(newDate.getDate() - 1)
+      else newDate.setDate(newDate.getDate() + 1)
       return newDate
     })
   }
 
-  const filteredProjects = getProjectsByActiveDate(projectsData, activeDate)
+  const getCellAssignment = (projectId: string, technicianId: string) =>
+    assignments.find((a) => a.projectId === projectId && a.technicianId === technicianId)
 
-  const getCellAssignment = (projectId: string, technicianId: string) => {
-    return assignments.find((a) => a.projectId === projectId && a.technicianId === technicianId)
-  }
+  const getTechnicianTrackNumber = (technicianId: string) =>
+    assignments.filter((a) => a.technicianId === technicianId && a.isSelected).length
 
-  const getTechnicianTrackNumber = (technicianId: string) => {
-    return assignments.filter((a) => a.technicianId === technicianId && a.isSelected).length
-  }
-
-  const getProjectAssignmentCount = (projectId: string) => {
-    return assignments.filter((a) => a.projectId === projectId && a.isSelected).length
-  }
+  const getProjectAssignmentCount = (projectId: string) =>
+    assignments.filter((a) => a.projectId === projectId && a.isSelected).length
 
   const handleCellClick = (projectId: string, technicianId: string) => {
     const technician = technicians.find((t) => t.id === technicianId)
@@ -302,9 +311,7 @@ export default function AssignScheduling() {
         if (projectAssignments.length === 1 && updated[existingIndex].isSelected) {
           setProjectsData((prevProjects) =>
             prevProjects.map((p) =>
-              p.id === projectId && p.projectStatus === "unassigned"
-                ? { ...p, projectStatus: "ongoing" as ProjectStatus }
-                : p,
+              p.id === projectId && p.projectStatus === "unassigned" ? { ...p, projectStatus: "ongoing" } : p,
             ),
           )
         }
@@ -315,21 +322,14 @@ export default function AssignScheduling() {
         if (existingAssignments.length === 0) {
           setProjectsData((prevProjects) =>
             prevProjects.map((p) =>
-              p.id === projectId && p.projectStatus === "unassigned"
-                ? { ...p, projectStatus: "ongoing" as ProjectStatus }
-                : p,
+              p.id === projectId && p.projectStatus === "unassigned" ? { ...p, projectStatus: "ongoing" } : p,
             ),
           )
         }
 
         return [
           ...prev,
-          {
-            projectId,
-            technicianId,
-            isSelected: true,
-            initial: technician.initial,
-          },
+          { projectId, technicianId, isSelected: true, initial: technician.initial },
         ]
       }
     })
@@ -345,7 +345,6 @@ export default function AssignScheduling() {
       if (existingIndex >= 0) {
         const updated = [...prev]
         const currentAssignment = updated[existingIndex]
-
         updated[existingIndex] = {
           ...currentAssignment,
           isSelected: true,
@@ -356,13 +355,7 @@ export default function AssignScheduling() {
       } else {
         return [
           ...prev,
-          {
-            projectId,
-            technicianId,
-            isSelected: true,
-            isProjectLeader: true,
-            initial: technician.initial,
-          },
+          { projectId, technicianId, isSelected: true, isProjectLeader: true, initial: technician.initial },
         ]
       }
     })
@@ -370,7 +363,6 @@ export default function AssignScheduling() {
 
   const handleSelectAll = (checked: boolean) => {
     setSelectAll(checked)
-
     if (checked) {
       const allAssignments: CellAssignment[] = []
       projects.forEach((project) => {
@@ -395,17 +387,8 @@ export default function AssignScheduling() {
     setShowConfirmation(true)
   }
 
-  const getSelectedCount = () => {
-    return assignments.filter((a) => a.isSelected).length
-  }
-
-  const getCurrentDate = () => {
-    return formatDateDDMMYYYY(activeDate)
-  }
-
-  const getTotalAssignments = () => {
-    return assignments.filter((a) => a.isSelected).length
-  }
+  const getSelectedCount = () => assignments.filter((a) => a.isSelected).length
+  const getTotalAssignments = () => assignments.filter((a) => a.isSelected).length
 
   const getIdleTechnicians = () => {
     const assignedTechnicianIds = new Set(assignments.filter((a) => a.isSelected).map((a) => a.technicianId))
@@ -419,7 +402,6 @@ export default function AssignScheduling() {
 
     let bgColor = "bg-gray-100"
     let textColor = "text-gray-700"
-
     switch (status) {
       case "completed":
         bgColor = "bg-green-100"
@@ -429,33 +411,25 @@ export default function AssignScheduling() {
         bgColor = "bg-red-100"
         textColor = "text-red-700"
         break
-      case "ongoing":
       default:
         bgColor = "bg-gray-100"
         textColor = "text-gray-700"
         break
     }
-
     return { bgColor, textColor, display: `${currentDays}/${sigmaHari}` }
   }
 
   const getSigmaDisplay = (project: (typeof projects)[0]) => {
     const assignedTechnicians = getProjectAssignmentCount(project.id)
     const sigmaTeknisi = project.sigmaTeknisi
-    return {
-      current: assignedTechnicians,
-      target: sigmaTeknisi,
-      display: `${assignedTechnicians}/${sigmaTeknisi}`,
-    }
+    return { current: assignedTechnicians, target: sigmaTeknisi, display: `${assignedTechnicians}/${sigmaTeknisi}` }
   }
 
   const generateJobId = (projectType: string) => {
     const selectedType = projectTypes.find((type) => type.id === projectType)
     if (!selectedType) return ""
-
     const existingProjects = projects.filter((p) => p.name.toLowerCase().includes(selectedType.name.toLowerCase()))
     const nextNumber = String(existingProjects.length + 1).padStart(selectedType.id === "maintenance" ? 3 : 2, "0")
-
     const typeCode = selectedType.name.toUpperCase().replace(/\s+/g, "-")
     return `JOB-${typeCode}-${nextNumber}`
   }
@@ -500,27 +474,22 @@ export default function AssignScheduling() {
       sigmaHari: "",
       sigmaTeknisi: "",
       tipeTemplate: "",
+      paketCount: 0,
+      paketDetails: [],
     })
-    setShowSubFields(false)
   }
 
   const getManDaysDisplay = (project: (typeof projects)[0]) => {
     const assignedTechnicians = getProjectAssignmentCount(project.id)
     const targetManDays = Number.parseInt(project.sigmaManDays) || 30
-    return {
-      current: assignedTechnicians,
-      target: targetManDays,
-      display: `${assignedTechnicians}/${targetManDays}`,
-    }
+    return { current: assignedTechnicians, target: targetManDays, display: `${assignedTechnicians}/${targetManDays}` }
   }
 
   const getManDaysStatus = (project: (typeof projects)[0]) => {
     const assignedTechnicians = getProjectAssignmentCount(project.id)
     const targetManDays = Number.parseInt(project.sigmaManDays) || 30
-
     let bgColor = "bg-gray-100"
     let textColor = "text-gray-700"
-
     if (assignedTechnicians >= targetManDays) {
       bgColor = "bg-green-100"
       textColor = "text-green-700"
@@ -528,16 +497,7 @@ export default function AssignScheduling() {
       bgColor = "bg-red-100"
       textColor = "text-red-700"
     }
-
     return { bgColor, textColor }
-  }
-
-  const getTechnicianStatus = (technicianId: string) => {
-    const hasAssignments = assignments.some((a) => a.technicianId === technicianId && a.isSelected)
-    if (hasAssignments) {
-      return { color: "bg-green-500", label: "berlangsung" }
-    }
-    return { color: "bg-gray-400", label: "belum dimulai" }
   }
 
   const handleEditProject = () => {
@@ -545,77 +505,43 @@ export default function AssignScheduling() {
     if (editProjectForm.status === "pending" && editProjectForm.reason.trim().length < 5) return
 
     const previousProjectsData = [...projectsData]
-
     setProjectsData((prevProjects) =>
       prevProjects.map((p) =>
         p.id === editProjectForm.projectId
-          ? {
-              ...p,
-              projectStatus: editProjectForm.status,
-              pendingReason: editProjectForm.status === "pending" ? editProjectForm.reason : "",
-            }
+          ? { ...p, projectStatus: editProjectForm.status, pendingReason: editProjectForm.status === "pending" ? editProjectForm.reason : "" }
           : p,
       ),
     )
 
     setTimeout(() => {
-      const success = Math.random() > 0.1 // 90% success rate for demo
+      const success = Math.random() > 0.1
       if (!success) {
-        // Revert changes
         setProjectsData(previousProjectsData)
-
-        // Show user-friendly error message
         alert("Gagal mengupdate status project. Silakan coba lagi.")
-
-        // Keep the modal open so user can retry
         return
       }
-
-      // Success - close modal and reset form
       setShowEditProject(false)
-      setEditProjectForm({
-        projectId: "",
-        status: "unassigned",
-        reason: "",
-        isReadOnlyProject: false,
-      })
+      setEditProjectForm({ projectId: "", status: "unassigned", reason: "", isReadOnlyProject: false })
     }, 1000)
   }
 
   const getProjectStatusDisplay = (project: (typeof projectsData)[0]) => {
     const { projectStatus, pendingReason } = project
-
     let bgColor = "bg-gray-100"
     let textColor = "text-gray-700"
     let label = "Belum Diassign"
-
     switch (projectStatus) {
       case "ongoing":
-        bgColor = "bg-green-100"
-        textColor = "text-green-700"
-        label = "Berlangsung"
-        break
+        bgColor = "bg-green-100"; textColor = "text-green-700"; label = "Berlangsung"; break
       case "pending":
-        bgColor = "bg-yellow-100"
-        textColor = "text-yellow-700"
-        label = "Pending"
-        break
-      case "unassigned":
+        bgColor = "bg-yellow-100"; textColor = "text-yellow-700"; label = "Pending"; break
       default:
-        bgColor = "bg-gray-100"
-        textColor = "text-gray-700"
-        label = "Belum Diassign"
-        break
+        bgColor = "bg-gray-100"; textColor = "text-gray-700"; label = "Belum Diassign"; break
     }
-
     return { bgColor, textColor, label, reason: pendingReason }
   }
 
-  const truncateText = (text: string, maxLength = 20) => {
-    if (text.length <= maxLength) return text
-    return text.substring(0, maxLength) + "..."
-  }
-
+  const truncateText = (text: string, maxLength = 20) => (text.length <= maxLength ? text : text.substring(0, maxLength) + "...")
   const handleStatusDoubleClick = (project: (typeof projectsData)[0]) => {
     setEditProjectForm({
       projectId: project.id,
@@ -627,33 +553,20 @@ export default function AssignScheduling() {
   }
 
   const handleProjectNameRightClick = (event: React.MouseEvent, projectName: string) => {
-    // Prevent default browser context menu
     event.preventDefault()
-
-    // Debounce to prevent multiple popups
     const now = Date.now()
     if (now - lastClickTimeRef.current < 300) return
     lastClickTimeRef.current = now
-
-    if (!projectName.trim()) return // Don't show popup for empty project names
+    if (!projectName.trim()) return
 
     const rect = (event.target as HTMLElement).getBoundingClientRect()
     const viewportWidth = window.innerWidth
     const viewportHeight = window.innerHeight
 
-    // Calculate popup position with flip logic to avoid viewport edges
     let x = rect.left + rect.width / 2
     let y = rect.bottom + 8
-
-    // Flip horizontally if too close to right edge
-    if (x + 150 > viewportWidth) {
-      x = rect.left - 150
-    }
-
-    // Flip vertically if too close to bottom edge
-    if (y + 60 > viewportHeight) {
-      y = rect.top - 60
-    }
+    if (x + 150 > viewportWidth) x = rect.left - 150
+    if (y + 60 > viewportHeight) y = rect.top - 60
 
     setShortcutPosition({ x, y })
     setSelectedProjectForShortcut(projectName)
@@ -674,25 +587,16 @@ export default function AssignScheduling() {
         setShowProjectShortcut(false)
       }
     }
-
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setShowProjectShortcut(false)
-      } else if (event.key === "Enter" && showProjectShortcut) {
-        handleGenerateLaporan()
-      }
+      if (event.key === "Escape") setShowProjectShortcut(false)
+      else if (event.key === "Enter" && showProjectShortcut) handleGenerateLaporan()
     }
 
     if (showProjectShortcut) {
       document.addEventListener("mousedown", handleClickOutside)
       document.addEventListener("keydown", handleKeyDown)
-
-      // Focus the popup for keyboard navigation
-      setTimeout(() => {
-        shortcutRef.current?.focus()
-      }, 0)
+      setTimeout(() => shortcutRef.current?.focus(), 0)
     }
-
     return () => {
       document.removeEventListener("mousedown", handleClickOutside)
       document.removeEventListener("keydown", handleKeyDown)
@@ -710,6 +614,46 @@ export default function AssignScheduling() {
     }
     setDateValidationError("")
     return true
+  }
+
+    // === Kolom detail paket: pecah per 10 item ===
+    const paketColumns: Array<Array<{ rw: string; rt: string }>> = (() => {
+      const perCol = 5
+      const total = newProjectForm.paketDetails.length
+      const cols = Math.max(1, Math.ceil(total / perCol))
+      const out: Array<Array<{ rw: string; rt: string }>> = []
+      for (let c = 0; c < cols; c++) {
+        const start = c * perCol
+        const end = start + perCol
+        out.push(newProjectForm.paketDetails.slice(start, end))
+      }
+      return out
+    })()
+
+      const [paketCountInput, setPaketCountInput] = useState<string>("0")
+
+  useEffect(() => {
+    setPaketCountInput(
+      newProjectForm.paketCount > 0 ? String(newProjectForm.paketCount) : "0"
+    )
+  }, [newProjectForm.paketCount])
+
+  const handlePaketInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value
+
+    if (raw === "") {
+      setPaketCountInput("")
+      setPaketCount(0)
+      return
+    }
+
+    if (!/^\d+$/.test(raw)) return
+
+    const normalized = String(parseInt(raw, 10))
+    const clamped = Math.min(30, Math.max(0, parseInt(normalized, 10)))
+
+    setPaketCountInput(normalized)
+    setPaketCount(clamped)
   }
 
   return (
@@ -739,43 +683,23 @@ export default function AssignScheduling() {
               </label>
             </div>
             <div className="flex items-center gap-3">
-              <Button
-                onClick={() => setShowEditProject(true)}
-                className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 text-sm"
-              >
-                <Edit className="h-4 w-4 mr-2" />
-                Edit Project
+              <Button onClick={() => setShowEditProject(true)} className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 text-sm">
+                <Edit className="h-4 w-4 mr-2" /> Edit Project
               </Button>
-              <Button
-                onClick={() => setShowCreateProject(true)}
-                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 text-sm"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Buat Project
+              <Button onClick={() => setShowCreateProject(true)} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 text-sm">
+                <Plus className="h-4 w-4 mr-2" /> Buat Project
               </Button>
               <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDateNavigation("prev")}
-                  className="h-8 w-8 p-0 hover:bg-gray-200"
-                  aria-label="Sebelumnya"
-                >
+                <Button variant="ghost" size="sm" onClick={() => handleDateNavigation("prev")} className="h-8 w-8 p-0 hover:bg-gray-200" aria-label="Sebelumnya">
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
                 <div className="flex items-center gap-2 px-2">
                   <Calendar className="h-4 w-4 text-gray-600" />
                   <span className="text-sm font-medium text-gray-700 min-w-[80px] text-center">
-                    {formatDateDDMMYYYY(activeDate)}
+                    {isMounted ? dateLabel : ""}
                   </span>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDateNavigation("next")}
-                  className="h-8 w-8 p-0 hover:bg-gray-200"
-                  aria-label="Berikutnya"
-                >
+                <Button variant="ghost" size="sm" onClick={() => handleDateNavigation("next")} className="h-8 w-8 p-0 hover:bg-gray-200" aria-label="Berikutnya">
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
@@ -787,47 +711,23 @@ export default function AssignScheduling() {
               <table className="w-full text-xs">
                 <thead className="bg-gray-100 sticky top-0 z-10">
                   <tr>
-                    <th className="px-2 py-2 text-left font-semibold text-gray-900 border-r border-gray-300 w-28">
-                      Nama Proyek
-                    </th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-900 border-r border-gray-300 w-28">Nama Proyek</th>
                     <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-10">
                       <div className="flex flex-col items-center justify-end h-full">
                         <div className="text-lg font-bold mb-2">Σ</div>
-                        <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">
-                          {getTotalAssignments()}
-                        </div>
+                        <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">{getTotalAssignments()}</div>
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-16">
-                      Progress (Hari)
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-16">
-                      Man Days
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">
-                      Datang
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">
-                      Pulang
-                    </th>
+                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-16">Progress (Hari)</th>
+                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-16">Man Days</th>
+                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">Datang</th>
+                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">Pulang</th>
                     {technicians.map((technician) => (
-                      <th
-                        key={technician.id}
-                        className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-6 sticky top-0 bg-gray-100 h-32"
-                        title={technician.name}
-                      >
+                      <th key={technician.id} className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-6 sticky top-0 bg-gray-100 h-32" title={technician.name}>
                         <div className="flex flex-col items-center justify-end h-full">
                           <div
                             className="text-xs font-bold whitespace-nowrap mb-2"
-                            style={{
-                              writingMode: "vertical-lr",
-                              textOrientation: "mixed",
-                              transform: "rotate(180deg)",
-                              height: "70px",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
+                            style={{ writingMode: "vertical-lr", textOrientation: "mixed", transform: "rotate(180deg)", height: "70px", display: "flex", alignItems: "center", justifyContent: "center" }}
                           >
                             {technician.name}
                           </div>
@@ -837,17 +737,13 @@ export default function AssignScheduling() {
                         </div>
                       </th>
                     ))}
-                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
-                      Status
-                    </th>
-                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
-                      Sales
-                    </th>
+                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">Status</th>
+                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">Sales</th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filteredProjects.map((project, projectIndex) => {
+                  {visibleProjects.map((project, projectIndex) => {
                     const rowBgColor = projectIndex % 2 === 0 ? "bg-white" : "bg-gray-50"
                     const progressStatus = getProgressStatus(project)
                     const sigmaDisplay = getSigmaDisplay(project)
@@ -860,9 +756,10 @@ export default function AssignScheduling() {
                         <td className={`px-1 py-1 border-r border-gray-200 font-medium ${rowBgColor}`}>
                           <div
                             className="text-xs font-semibold cursor-pointer hover:bg-blue-50 px-1 py-1 rounded transition-colors"
-                            onContextMenu={(e) => handleProjectNameRightClick(e,project.name)}
-                            title="Klik kanan untuk shortcut Generate Laporan">
-                            {project.name}  
+                            onContextMenu={(e) => handleProjectNameRightClick(e, project.name)}
+                            title="Klik kanan untuk shortcut Generate Laporan"
+                          >
+                            {project.name}
                           </div>
                           <div className="text-[9px] text-gray-500 leading-tight">{project.jobId}</div>
                         </td>
@@ -872,28 +769,19 @@ export default function AssignScheduling() {
                         </td>
 
                         <td className={`px-2 py-1 text-center border-r border-gray-200 ${rowBgColor}`}>
-                          <div
-                            className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${progressStatus.bgColor} ${progressStatus.textColor}`}
-                          >
+                          <div className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${progressStatus.bgColor} ${progressStatus.textColor}`}>
                             <span>{progressStatus.display}</span>
                           </div>
                         </td>
 
                         <td className={`px-2 py-1 text-center border-r border-gray-200 ${rowBgColor}`}>
-                          <div
-                            className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${manDaysStatus.bgColor} ${manDaysStatus.textColor}`}
-                          >
+                          <div className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${manDaysStatus.bgColor} ${manDaysStatus.textColor}`}>
                             <span>{manDaysDisplay.display}</span>
                           </div>
                         </td>
 
-                        <td className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBgColor}`}>
-                          {project.jamDatang}
-                        </td>
-
-                        <td className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBgColor}`}>
-                          {project.jamPulang}
-                        </td>
+                        <td className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBgColor}`}>{project.jamDatang}</td>
+                        <td className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBgColor}`}>{project.jamPulang}</td>
 
                         {technicians.map((technician) => {
                           const assignment = getCellAssignment(project.id, technician.id)
@@ -919,9 +807,7 @@ export default function AssignScheduling() {
                               onDoubleClick={() => handleCellDoubleClick(project.id, technician.id)}
                               title={`Single click: assign ${technician.name} | Double click: set as project leader`}
                             >
-                              <div
-                                className={`h-4 w-4 mx-auto flex items-center justify-center rounded font-bold text-xs ${textColor}`}
-                              >
+                              <div className={`h-4 w-4 mx-auto flex items-center justify-center rounded font-bold text-xs ${textColor}`}>
                                 {assignment?.initial || ""}
                               </div>
                             </td>
@@ -952,7 +838,7 @@ export default function AssignScheduling() {
                     )
                   })}
 
-                  <tr className="bg-blue-50 border-t-2 border-blue-200">
+                  <tr className="bg-blue-50 border-top-2 border-blue-200">
                     <td className="px-1 py-1 border-r border-gray-200 font-medium bg-blue-50">
                       <div className="text-xs font-semibold">Di Kantor</div>
                       <div className="text-[9px] text-gray-500 leading-tight">Teknisi Idle</div>
@@ -975,18 +861,13 @@ export default function AssignScheduling() {
                     </td>
 
                     <td className="px-2 py-1 text-center border-r border-gray-200 text-xs bg-blue-50">-</td>
-
                     <td className="px-2 py-1 text-center border-r border-gray-200 text-xs bg-blue-50">-</td>
 
                     {technicians.map((technician) => {
                       const idleTechnicians = getIdleTechnicians()
                       const isIdle = idleTechnicians.some((idle) => idle.id === technician.id)
-
                       return (
-                        <td
-                          key={`idle-${technician.id}`}
-                          className="px-1 py-1 text-center border-r border-gray-200 bg-blue-50"
-                        >
+                        <td key={`idle-${technician.id}`} className="px-1 py-1 text-center border-r border-gray-200 bg-blue-50">
                           <div className="h-4 w-4 mx-auto flex items-center justify-center rounded font-bold text-xs text-gray-700">
                             {isIdle ? technician.initial : ""}
                           </div>
@@ -1015,23 +896,16 @@ export default function AssignScheduling() {
         <div
           ref={shortcutRef}
           className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 focus:outline-none"
-          style={{
-            left: `${shortcutPosition.x}px`,
-            top: `${shortcutPosition.y}px`,
-            minWidth: "150px",
-          }}
+          style={{ left: `${shortcutPosition.x}px`, top: `${shortcutPosition.y}px`, minWidth: "150px" }}
           tabIndex={-1}
         >
-          <Button
-            onClick={handleGenerateLaporan}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 px-3"
-            autoFocus
-          >
+          <Button onClick={handleGenerateLaporan} className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 px-3" autoFocus>
             Generate Laporan
           </Button>
         </div>
       )}
 
+      {/* ===================== EDIT PROJECT ===================== */}
       <Dialog open={showEditProject} onOpenChange={setShowEditProject}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
@@ -1040,8 +914,7 @@ export default function AssignScheduling() {
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <Label htmlFor="project-select" className="flex items-center gap-1">
-                Nama Project
-                <span className="text-red-500">*</span>
+                Nama Project <span className="text-red-500">*</span>
               </Label>
               <Select
                 value={editProjectForm.projectId}
@@ -1060,21 +933,18 @@ export default function AssignScheduling() {
                 </SelectContent>
               </Select>
               {editProjectForm.isReadOnlyProject && (
-                <div className="text-xs text-gray-500">
-                  Project dipilih otomatis. Gunakan tombol "Edit Project" di header untuk mengganti project.
-                </div>
+                <div className="text-xs text-gray-500">Project dipilih otomatis. Gunakan tombol "Edit Project" di header untuk mengganti project.</div>
               )}
             </div>
 
             <div className="grid gap-2">
               <Label htmlFor="status-select" className="flex items-center gap-1">
-                Ganti Status
-                <span className="text-red-500">*</span>
+                Ganti Status <span className="text-red-500">*</span>
               </Label>
               <Select
                 value={editProjectForm.status}
                 onValueChange={(value: ProjectStatus) => setEditProjectForm((prev) => ({ ...prev, status: value }))}
-                >               
+              >
                 <SelectTrigger autoFocus={editProjectForm.isReadOnlyProject}>
                   <SelectValue placeholder="Pilih status baru" />
                 </SelectTrigger>
@@ -1089,8 +959,7 @@ export default function AssignScheduling() {
             {editProjectForm.status === "pending" && (
               <div className="grid gap-2">
                 <Label htmlFor="pending-reason" className="flex items-center gap-1">
-                  Alasan Pending
-                  <span className="text-red-500">*</span>
+                  Alasan Pending <span className="text-red-500">*</span>
                 </Label>
                 <Textarea
                   id="pending-reason"
@@ -1099,14 +968,6 @@ export default function AssignScheduling() {
                   placeholder="Masukkan alasan mengapa project di-pending..."
                   className="min-h-[80px] resize-none"
                   maxLength={300}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setShowEditProject(false)
-                    }
-                    if (e.key === "Enter" && e.ctrlKey) {
-                      handleEditProject()
-                    }
-                  }}
                 />
                 <div className="text-xs text-gray-500 text-right">{editProjectForm.reason.length}/300 karakter</div>
                 {editProjectForm.reason.trim().length < 5 && editProjectForm.reason.length > 0 && (
@@ -1120,17 +981,7 @@ export default function AssignScheduling() {
               variant="outline"
               onClick={() => {
                 setShowEditProject(false)
-                setEditProjectForm({
-                  projectId: "",
-                  status: "unassigned",
-                  reason: "",
-                  isReadOnlyProject: false,
-                })
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  setShowEditProject(false)
-                }
+                setEditProjectForm({ projectId: "", status: "unassigned", reason: "", isReadOnlyProject: false })
               }}
             >
               Batal
@@ -1143,11 +994,6 @@ export default function AssignScheduling() {
                 (editProjectForm.status === "pending" && editProjectForm.reason.trim().length < 5)
               }
               className="bg-orange-600 hover:bg-orange-700"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  handleEditProject()
-                }
-              }}
             >
               Simpan
             </Button>
@@ -1155,6 +1001,7 @@ export default function AssignScheduling() {
         </DialogContent>
       </Dialog>
 
+      {/* ===================== CREATE PROJECT ===================== */}
       <Dialog open={showCreateProject} onOpenChange={setShowCreateProject}>
         <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -1182,11 +1029,12 @@ export default function AssignScheduling() {
               </div>
             </div>
           </DialogHeader>
+
           <div className="grid gap-6 py-4">
+            {/* Nama Project */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label htmlFor="namaProject" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
-                Nama Project
-                <span className="text-red-500">*</span>
+                Nama Project <span className="text-red-500">*</span>
               </Label>
               <div className="flex-1">
                 <input
@@ -1195,16 +1043,16 @@ export default function AssignScheduling() {
                   value={newProjectForm.namaProject}
                   onChange={(e) => setNewProjectForm((prev) => ({ ...prev, namaProject: e.target.value }))}
                   placeholder="Format: NamaBarang_NamaInstansi_Lokasi"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   required
                 />
               </div>
             </div>
 
+            {/* Lokasi */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label htmlFor="lokasi" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
-                Lokasi
-                <span className="text-red-500">*</span>
+                Lokasi <span className="text-red-500">*</span>
               </Label>
               <div className="flex-1">
                 <input
@@ -1214,7 +1062,7 @@ export default function AssignScheduling() {
                   onChange={(e) => setNewProjectForm((prev) => ({ ...prev, lokasi: e.target.value }))}
                   placeholder="Contoh: Bank Mandiri Darmo"
                   maxLength={140}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   required
                   aria-describedby="lokasi-helper"
                 />
@@ -1224,6 +1072,75 @@ export default function AssignScheduling() {
               </div>
             </div>
 
+            {/* Kiri: Paket (full-width seperti Nama Sales) */}
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <Label htmlFor="paket" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                Paket
+              </Label>
+              <div className="flex-1">
+                <input
+                  id="paket"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="\d*"
+                  value={paketCountInput}
+                  onChange={handlePaketInputChange}
+                  placeholder="Jumlah paket (0–30)"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Detail Paket (RW / RT) – 10 per kolom */}
+            <div className="border rounded-lg p-3">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-sm font-semibold">Detail Paket (RW / RT)</span>
+                <span className="text-xs text-gray-500">{newProjectForm.paketCount} paket</span>
+              </div>
+
+              {newProjectForm.paketCount === 0 ? (
+                <p className="text-xs text-gray-500">Atur jumlah paket untuk menampilkan sub-field RW/RT.</p>
+              ) : (
+                <div
+                  className="grid gap-4"
+                  style={{
+                    // jumlah kolom dinamis berdasarkan banyaknya paket (10 per kolom)
+                    gridTemplateColumns: `repeat(${paketColumns.length}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {paketColumns.map((col, colIdx) => (
+                    <div key={colIdx} className="space-y-3">
+                      {col.map((p, idxInCol) => {
+                        const absoluteIndex = colIdx * 10 + idxInCol // untuk label Paket #n
+                        return (
+                          <div key={absoluteIndex} className="grid grid-cols-3 gap-2 items-center">
+                            <div className="text-xs font-medium text-gray-700">Paket #{absoluteIndex + 1}</div>
+                            <input
+                              type="text"
+                              placeholder="RW"
+                              value={p.rw}
+                              onChange={(e) => updatePaketDetail(absoluteIndex, "rw", e.target.value)}
+                              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                            />
+                            <input
+                              type="text"
+                              placeholder="RT"
+                              value={p.rt}
+                              onChange={(e) => updatePaketDetail(absoluteIndex, "rt", e.target.value)}
+                              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+
+
+            {/* Nama Sales (full width) */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label htmlFor="namaSales" className="min-w-[140px] md:min-w-[140px]">
                 Nama Sales
@@ -1235,11 +1152,12 @@ export default function AssignScheduling() {
                   value={newProjectForm.namaSales}
                   onChange={(e) => setNewProjectForm((prev) => ({ ...prev, namaSales: e.target.value }))}
                   placeholder="Masukkan nama sales"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 />
               </div>
             </div>
 
+            {/* Nama Presales (full width) */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label htmlFor="namaPresales" className="min-w-[140px] md:min-w-[140px]">
                 Nama Presales
@@ -1251,10 +1169,11 @@ export default function AssignScheduling() {
                   value={newProjectForm.namaPresales}
                   onChange={(e) => setNewProjectForm((prev) => ({ ...prev, namaPresales: e.target.value }))}
                   placeholder="Masukkan nama presales"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                 />
               </div>
             </div>
+
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Left Column */}
@@ -1268,14 +1187,13 @@ export default function AssignScheduling() {
                     type="date"
                     value={newProjectForm.tanggalSpkUser}
                     onChange={(e) => setNewProjectForm((prev) => ({ ...prev, tanggalSpkUser: e.target.value }))}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="tanggalMulaiProject" className="flex items-center gap-1 min-w-[120px]">
-                    Tanggal Mulai Project
-                    <span className="text-red-500">*</span>
+                    Tanggal Mulai Project <span className="text-red-500">*</span>
                   </Label>
                   <input
                     id="tanggalMulaiProject"
@@ -1285,15 +1203,14 @@ export default function AssignScheduling() {
                       setNewProjectForm((prev) => ({ ...prev, tanggalMulaiProject: e.target.value }))
                       validateDates(e.target.value, newProjectForm.tanggalDeadlineProject)
                     }}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     required
                   />
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaManDays" className="flex items-center gap-1 min-w-[120px]">
-                    Total Man Days
-                    <span className="text-red-500">*</span>
+                    Total Man Days <span className="text-red-500">*</span>
                   </Label>
                   <input
                     id="sigmaManDays"
@@ -1302,15 +1219,14 @@ export default function AssignScheduling() {
                     value={newProjectForm.sigmaManDays}
                     onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaManDays: e.target.value }))}
                     placeholder="Masukkan target man days"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     required
                   />
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaTeknisi" className="flex items-center gap-1 min-w-[120px]">
-                    Total Teknisi
-                    <span className="text-red-500">*</span>
+                    Total Teknisi <span className="text-red-500">*</span>
                   </Label>
                   <input
                     id="sigmaTeknisi"
@@ -1319,7 +1235,7 @@ export default function AssignScheduling() {
                     value={newProjectForm.sigmaTeknisi}
                     onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaTeknisi: e.target.value }))}
                     placeholder="Masukkan jumlah teknisi"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     required
                   />
                 </div>
@@ -1332,18 +1248,17 @@ export default function AssignScheduling() {
                     Tanggal Terima PO
                   </Label>
                   <input
-                    id="tanggalTerimaPo" 
+                    id="tanggalTerimaPo"
                     type="date"
                     value={newProjectForm.tanggalTerimaPo}
                     onChange={(e) => setNewProjectForm((prev) => ({ ...prev, tanggalTerimaPo: e.target.value }))}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-start gap-2">
                   <Label htmlFor="tanggalDeadlineProject" className="flex items-center gap-1 min-w-[120px] md:mt-2">
-                    Tanggal Deadline Project
-                    <span className="text-red-500">*</span>
+                    Tanggal Deadline Project <span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
                     <input
@@ -1354,7 +1269,7 @@ export default function AssignScheduling() {
                         setNewProjectForm((prev) => ({ ...prev, tanggalDeadlineProject: e.target.value }))
                         validateDates(newProjectForm.tanggalMulaiProject, e.target.value)
                       }}
-                      className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+                      className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
                         dateValidationError ? "border-red-500" : "border-input"
                       }`}
                       required
@@ -1365,8 +1280,7 @@ export default function AssignScheduling() {
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaHari" className="flex items-center gap-1 min-w-[120px]">
-                    Total Hari
-                    <span className="text-red-500">*</span>
+                    Total Hari <span className="text-red-500">*</span>
                   </Label>
                   <input
                     id="sigmaHari"
@@ -1375,12 +1289,12 @@ export default function AssignScheduling() {
                     value={newProjectForm.sigmaHari}
                     onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaHari: e.target.value }))}
                     placeholder="Masukkan durasi project (hari)"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     required
                   />
                 </div>
 
-                <div className="flex flex-col md:flex-row md:items-start gap-2">
+                              <div className="flex flex-col md:flex-row md:items-start gap-2">
                   <Label htmlFor="tipeTemplate" className="flex items-center gap-1 min-w-[120px] md:mt-2">
                     Tipe Template
                     <span className="text-red-500">*</span>
@@ -1424,12 +1338,7 @@ export default function AssignScheduling() {
                 <CheckCircle className="h-10 w-10 text-green-600" />
               </div>
               <h3 className="text-2xl font-bold text-gray-900 mb-4">Projek Baru Telah Selesai Dibuat</h3>
-              <Button
-                onClick={() => setShowProjectSuccess(false)}
-                className="w-full bg-green-600 hover:bg-green-700 text-lg py-3"
-              >
-                OK
-              </Button>
+              <Button onClick={() => setShowProjectSuccess(false)} className="w-full bg-green-600 hover:bg-green-700 text-lg py-3">OK</Button>
             </div>
           </div>
         </div>
@@ -1443,15 +1352,8 @@ export default function AssignScheduling() {
                 <CheckCircle className="h-10 w-10 text-green-600" />
               </div>
               <h3 className="text-2xl font-bold text-gray-900 mb-4">Assignment Berhasil Disimpan!</h3>
-              <p className="text-lg text-gray-600 mb-6">
-                {getSelectedCount()} assignment teknisi telah berhasil disimpan ke sistem.
-              </p>
-              <Button
-                onClick={() => setShowConfirmation(false)}
-                className="w-full bg-green-600 hover:bg-green-700 text-lg py-3"
-              >
-                OK
-              </Button>
+              <p className="text-lg text-gray-600 mb-6">{getSelectedCount()} assignment teknisi telah berhasil disimpan ke sistem.</p>
+              <Button onClick={() => setShowConfirmation(false)} className="w-full bg-green-600 hover:bg-green-700 text-lg py-3">OK</Button>
             </div>
           </div>
         </div>
