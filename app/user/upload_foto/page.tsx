@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import type React from "react"
 import { useEffect, useRef, useState } from "react"
@@ -476,6 +476,10 @@ export default function UploadFotoPage() {
                           src={category.photo}
                           alt={category.name}
                           className="max-w-full max-h-full object-contain rounded"
+                          loading="lazy"
+                          decoding="async"
+                          width={130}
+                          height={80}
                         />
                       ) : (
                         <div className="absolute inset-0 flex items-center justify-center">
@@ -485,7 +489,9 @@ export default function UploadFotoPage() {
                     </CardContent>
                   </Card>
 
-                  <p className="text-xs font-medium text-center text-gray-700 px-1">{category.name}</p>
+                  <p className="text-xs font-medium text-center text-gray-700 px-1">
+                    {category.name}
+                  </p>
 
                   {/* Status kecil upload */}
                   {category.uploadState && (
@@ -570,7 +576,7 @@ export default function UploadFotoPage() {
                     onChange={(e) => handlePhotoCapture(category.id, e)}
                   />
                 </div>
-              )
+              );
             })}
           </div>
 
@@ -664,5 +670,5 @@ export default function UploadFotoPage() {
         </div>
       )}
     </div>
-  )
+  );
 }

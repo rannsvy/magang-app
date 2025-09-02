@@ -76,13 +76,13 @@ export default function ComplainPage() {
 
               {/* Complaint Text Field */}
               <div className="space-y-2">
-                <Label htmlFor="complaint-text">Komplain</Label>
+                <Label htmlFor="complaint-text">Alasan</Label>
                 <Textarea
                   id="complaint-text"
                   value={complaintText}
                   onChange={(e) => setComplaintText(e.target.value)}
                   className="min-h-[200px] resize-none"
-                  placeholder="Tulis komplain Anda..."
+                  placeholder="Tulis alasan Anda..."
                 />
               </div>
 
