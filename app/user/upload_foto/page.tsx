@@ -18,6 +18,13 @@ import { type OcrInfo, recognizeSerialNumber } from "@/lib/ocr"
 // Auto-crop (barcode/teks → COCO → saliency)
 import { suggestAutoCrop } from "@/lib/auto-crop"
 
+// ====== OFFLINE UPLOAD ======
+import { useOnlineStatus, useAutoSync } from "@/lib/offline/online"
+import { safeUpload } from "@/lib/offline/uploader"
+
+/* ===== Konfigurasi API Upload ===== */
+const UPLOAD_ENDPOINT = "/api/upload-photo" // <-- GANTI sesuai backend kamu
+
 /* ===== Types ===== */
 interface PhotoCategory {
   id: string
@@ -28,6 +35,11 @@ interface PhotoCategory {
   snDraft?: string
   meter?: number            // panjang kabel (manual)
   photoToken?: number
+
+  // ====== Tambahan untuk offline-queue ======
+  uploadState?: "queued" | "uploading" | "uploaded" | "error"
+  queueId?: string
+  uploadError?: string
 }
 
 /* ===== Data kategori ===== */
@@ -127,7 +139,7 @@ async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<B
   )
 }
 
-// === NEW: crop ke DataURL untuk kebutuhan OCR, dengan perlebar 'expand'
+// === crop ke DataURL (untuk OCR) dengan perlebar
 async function cropElToDataUrl(
   img: HTMLImageElement,
   cropPx: PixelCrop,
@@ -146,7 +158,6 @@ async function cropElToDataUrl(
   let sw = Math.round(ew * scaleX)
   let sh = Math.round(eh * scaleY)
 
-  // clamp
   if (sx + sw > img.naturalWidth) sw = img.naturalWidth - sx
   if (sy + sh > img.naturalHeight) sh = img.naturalHeight - sy
   sw = Math.max(1, sw); sh = Math.max(1, sh)
@@ -171,6 +182,18 @@ export default function UploadFotoPage() {
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
   const jobId = useSearchParams().get("job") ?? ""
+
+  // ====== OFFLINE status & auto-sync ======
+  const online = useOnlineStatus()
+  useAutoSync((syncedIds) => {
+    setCategories(prev =>
+      prev.map(c =>
+        c.queueId && syncedIds.includes(c.queueId)
+          ? { ...c, uploadState: "uploaded", queueId: undefined, uploadError: undefined }
+          : c
+      )
+    )
+  })
 
   // crop states
   const [cropOpen, setCropOpen] = useState(false)
@@ -199,12 +222,18 @@ export default function UploadFotoPage() {
     if (el) el.value = ""
   }
 
-  const getCategoryStatus = (c: PhotoCategory) =>
-    !c.photo ? "empty" : c.requiresSerialNumber && (c.serialNumber ?? "").trim().length < 8 ? "incomplete" : "complete"
+  const getCategoryStatus = (c: PhotoCategory) => {
+    if (c.uploadState === "queued" || c.uploadState === "uploading") return "pending"
+    if (c.uploadState === "error") return "error"
+    if (!c.photo) return "empty"
+    if (c.requiresSerialNumber && (c.serialNumber ?? "").trim().length < 8) return "incomplete"
+    return "complete"
+  }
 
   const getCategoryStyles = (s: string) =>
     s === "complete" ? "bg-green-50 border-green-300 text-green-600"
       : s === "incomplete" ? "bg-red-50 border-red-300 text-red-600"
+      : s === "error" ? "bg-red-50 border-red-300 text-red-600"
       : s === "pending" ? "bg-yellow-50 border-yellow-300 text-yellow-600"
       : "bg-gray-100 border-gray-300 text-gray-500"
 
@@ -235,7 +264,6 @@ export default function UploadFotoPage() {
     }
     fr.readAsDataURL(file)
 
-    // reset supaya pilih file yang sama tetap memicu onChange
     ;(e.target as HTMLInputElement).value = ""
   }
 
@@ -243,7 +271,6 @@ export default function UploadFotoPage() {
     imgRef.current = img
     setIsPortrait(img.naturalHeight >= img.naturalWidth)
 
-    // default crop (center)
     const iw = img.width
     const ih = img.height
     const base = Math.round(Math.min(iw, ih) * 0.85)
@@ -261,7 +288,6 @@ export default function UploadFotoPage() {
       height: h,
     })
 
-    // ==== AUTO-CROP suggestion ====
     ;(async () => {
       try {
         if (!srcToCrop || !pendingCategoryId) return
@@ -280,7 +306,7 @@ export default function UploadFotoPage() {
 
         setCrop({ unit: "px", x: nx, y: ny, width: nw, height: nh })
       } catch {
-        // diamkan, fallback pakai default crop
+        // fallback pakai default crop
       }
     })()
   }
@@ -291,8 +317,8 @@ export default function UploadFotoPage() {
     onImageLoaded(imgRef.current)
   }, [aspect])
 
-  // === NEW: OCR SN mencoba beberapa sumber (crop diperlebar → fallback full image)
-  async function runOCR_SN(catId: string, sources: (Blob | string)[], token: number) {
+  // === OCR SN: mengembalikan SN agar bisa dikirim bersama upload
+  async function runOCR_SN(catId: string, sources: (Blob | string)[], token: number): Promise<string | null> {
     setOcr(prev => ({ ...prev, [catId]: { status: "barcode", progress: 0 } }))
     let sn: string | null = null
     for (let i = 0; i < sources.length; i++) {
@@ -309,8 +335,10 @@ export default function UploadFotoPage() {
         (c.id === catId && c.photoToken === token) ? { ...c, serialNumber: sn! } : c
       ))
       setOcr(prev => ({ ...prev, [catId]: { status: "done", progress: 100 } }))
+      return sn
     } else {
       setOcr(prev => ({ ...prev, [catId]: { status: "error", progress: 0, error: "SN tidak terdeteksi." } }))
+      return null
     }
   }
 
@@ -354,11 +382,57 @@ export default function UploadFotoPage() {
         : c
     ))
 
-    // OCR SN (pakai crop diperlebar 20% → fallback full)
+    // ====== OCR SN (agar SN ikut terkirim) ======
+    let snResult: string | null = null
     if (cat?.requiresSerialNumber) {
       const expandedCropDataUrl = await cropElToDataUrl(imgRef.current, completedCrop, 0.2)
-      const originalSrc = srcToCrop! // full image dataUrl dari upload
-      await runOCR_SN(pendingCategoryId, [expandedCropDataUrl, originalSrc], token)
+      const originalSrc = srcToCrop!
+      snResult = await runOCR_SN(pendingCategoryId, [expandedCropDataUrl, originalSrc], token)
+    }
+
+    // ====== UPLOAD aman: online → kirim; offline/5xx → antre; 4xx → error
+    try {
+      const fd = new FormData()
+      const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`
+      fd.append("photo", new File([blob], fileName, { type: "image/jpeg" }))
+
+      // metadata (ubah sesuai kebutuhan backend)
+      fd.append("jobId", jobId)
+      fd.append("categoryId", pendingCategoryId)
+      if (typeof meterVal === "number") fd.append("meter", String(meterVal))
+      if (snResult) fd.append("serialNumber", snResult)
+
+      // tandai status awal
+      setCategories(prev => prev.map(c =>
+        c.id === pendingCategoryId ? { ...c, uploadState: online ? "uploading" : "queued", uploadError: undefined } : c
+      ))
+
+      const result = await safeUpload({
+        endpoint: UPLOAD_ENDPOINT,
+        formData: fd,
+        meta: { jobId, categoryId: pendingCategoryId, token },
+      })
+
+      if (result.status === "uploaded") {
+        setCategories(prev => prev.map(c =>
+          c.id === pendingCategoryId ? { ...c, uploadState: "uploaded", queueId: undefined, uploadError: undefined } : c
+        ))
+      } else if (result.status === "queued") {
+        setCategories(prev => prev.map(c =>
+          c.id === pendingCategoryId ? { ...c, uploadState: "queued", queueId: result.queueId, uploadError: undefined } : c
+        ))
+      } else {
+        const msg = result.httpStatus
+          ? `HTTP ${result.httpStatus}${result.message ? ` — ${result.message}` : ""}`
+          : (result.message || "Gagal upload")
+        setCategories(prev => prev.map(c =>
+          c.id === pendingCategoryId ? { ...c, uploadState: "error", uploadError: msg } : c
+        ))
+      }
+    } catch {
+      setCategories(prev => prev.map(c =>
+        c.id === pendingCategoryId ? { ...c, uploadState: "queued", uploadError: undefined } : c
+      ))
     }
 
     // reset file input & tutup modal
@@ -412,6 +486,20 @@ export default function UploadFotoPage() {
                   </Card>
 
                   <p className="text-xs font-medium text-center text-gray-700 px-1">{category.name}</p>
+
+                  {/* Status kecil upload */}
+                  {category.uploadState && (
+                    <p className="text-[10px] text-center text-gray-600">
+                      {category.uploadState === "uploaded" && "Terkirim ✔"}
+                      {category.uploadState === "uploading" && "Mengunggah..."}
+                      {category.uploadState === "queued" && "Menunggu koneksi—akan otomatis dikirim"}
+                      {category.uploadState === "error" && (
+                        <span className="text-red-600">
+                          Gagal{category.uploadError ? `: ${category.uploadError}` : ""} — periksa koneksi/akses.
+                        </span>
+                      )}
+                    </p>
+                  )}
 
                   {/* Panjang kabel (manual) */}
                   {!category.requiresSerialNumber && category.photo && isCableCategory(category.name) && (
