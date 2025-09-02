@@ -32,6 +32,121 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
     t = setTimeout(() => fn(...args), ms);
   };
 }
+import { useState } from "react"
+import { useRouter } from "next/navigation"
+import { Card, CardContent } from "@/components/ui/card"
+import { TechnicianHeader } from "@/components/technician-header"
+import { Pagination } from "@/components/pagination"
+import { Star } from "lucide-react"
+import { PWAInstallPrompt } from "@/components/pwa-install-prompt"
+
+interface Job {
+  id: string
+  name: string
+  location: string
+  status: "not-started" | "in-progress" | "completed"
+  progress?: number
+  assignedTechnicians: { name: string; isLeader: boolean }[]
+  jobId: string
+}
+
+// Mock data for demonstration
+const mockJobs: Job[] = [
+  {
+    id: "1",
+    name: "Pemasangan CCTV RW 06",
+    location: "Jl. Merdeka No. 123",
+    status: "not-started",
+    assignedTechnicians: [
+      { name: "Edo", isLeader: true },
+      { name: "Ahmad", isLeader: false },
+      { name: "Fahmi", isLeader: false },
+    ],
+    jobId: "JOB-PEMASANGAN-CCTV-01",
+  },
+  {
+    id: "2",
+    name: "Maintenance Server Kantor",
+    location: "Gedung Perkantoran Lt. 5",
+    status: "in-progress",
+    progress: 30,
+    assignedTechnicians: [
+      { name: "Ahmad", isLeader: true },
+      { name: "Budi", isLeader: false },
+    ],
+    jobId: "JOB-MAINTENANCE-SERVER-01",
+  },
+  {
+    id: "3",
+    name: "Instalasi Jaringan WiFi",
+    location: "Komplek Perumahan Blok A",
+    status: "completed",
+    assignedTechnicians: [
+      { name: "Fahmi", isLeader: true },
+      { name: "Edo", isLeader: false },
+      { name: "Ahmad", isLeader: false },
+    ],
+    jobId: "JOB-INSTALASI-JARINGAN-WIFI-01",
+  },
+  {
+    id: "4",
+    name: "Perbaikan Router Mikrotik",
+    location: "Warnet Cyber Net",
+    status: "in-progress",
+    progress: 75,
+    assignedTechnicians: [
+      { name: "Ahmad", isLeader: true },
+      { name: "Candra", isLeader: false },
+    ],
+    jobId: "JOB-PERBAIKAN-ROUTER-MIKROTIK-01",
+  },
+  {
+    id: "5",
+    name: "Setup Access Point",
+    location: "Cafe Corner Street",
+    status: "not-started",
+    assignedTechnicians: [
+      { name: "Budi", isLeader: true },
+      { name: "Fahmi", isLeader: false },
+    ],
+    jobId: "JOB-SETUP-ACCESS-POINT-01",
+  },
+  {
+    id: "6",
+    name: "Konfigurasi Firewall",
+    location: "PT. Teknologi Maju",
+    status: "completed",
+    assignedTechnicians: [
+      { name: "Edo", isLeader: true },
+      { name: "Ahmad", isLeader: false },
+    ],
+    jobId: "JOB-KONFIGURASI-FIREWALL-01",
+  },
+  {
+    id: "7",
+    name: "Instalasi CCTV Toko",
+    location: "Toko Elektronik Jaya",
+    status: "not-started",
+    assignedTechnicians: [
+      { name: "Ahmad", isLeader: true },
+      { name: "Candra", isLeader: false },
+      { name: "Budi", isLeader: false },
+    ],
+    jobId: "JOB-INSTALASI-CCTV-TOKO-01",
+  },
+  {
+    id: "8",
+    name: "Maintenance UPS Server",
+    location: "Data Center Regional",
+    status: "in-progress",
+    progress: 50,
+    assignedTechnicians: [
+      { name: "Fahmi", isLeader: true },
+      { name: "Edo", isLeader: false },
+    ],
+    jobId: "JOB-MAINTENANCE-UPS-SERVER-01",
+  },
+]
 
 export default function TechnicianDashboard() {
   const router = useRouter();
@@ -357,6 +472,8 @@ export default function TechnicianDashboard() {
           )}
         </div>
       </main>
+
+      <PWAInstallPrompt/>
     </div>
   );
 }

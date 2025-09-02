@@ -1124,30 +1124,16 @@ export default function AssignScheduling() {
               </label>
             </div>
             <div className="flex items-center gap-3">
-              <Button
-                onClick={() => setShowEditProject(true)}
-                className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 text-sm"
-              >
-                <Edit className="h-4 w-4 mr-2" />
-                Edit Project
+              <Button onClick={() => setShowEditProject(true)} className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 text-sm">
+                <Edit className="h-4 w-4 mr-2" /> Edit Project
               </Button>
-              <Button
-                onClick={() => setShowCreateProject(true)}
-                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 text-sm"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Buat Project
+              <Button onClick={() => setShowCreateProject(true)} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 text-sm">
+                <Plus className="h-4 w-4 mr-2" /> Buat Project
               </Button>
 
               {/* Navigasi tanggal ala desain baru */}
               <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDateNavigation("prev")}
-                  className="h-8 w-8 p-0 hover:bg-gray-200"
-                  aria-label="Sebelumnya"
-                >
+                <Button variant="ghost" size="sm" onClick={() => handleDateNavigation("prev")} className="h-8 w-8 p-0 hover:bg-gray-200" aria-label="Sebelumnya">
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
                 <div className="flex items-center gap-2 px-2">
@@ -1156,13 +1142,7 @@ export default function AssignScheduling() {
                     {formatDateDDMMYYYY(currentDate)}
                   </span>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDateNavigation("next")}
-                  className="h-8 w-8 p-0 hover:bg-gray-200"
-                  aria-label="Berikutnya"
-                >
+                <Button variant="ghost" size="sm" onClick={() => handleDateNavigation("next")} className="h-8 w-8 p-0 hover:bg-gray-200" aria-label="Berikutnya">
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
@@ -1174,15 +1154,11 @@ export default function AssignScheduling() {
               <table className="w-full text-xs">
                 <thead className="bg-gray-100 sticky top-0 z-10">
                   <tr>
-                    <th className="px-2 py-2 text-left font-semibold text-gray-900 border-r border-gray-300 w-28">
-                      Nama Proyek
-                    </th>
+                    <th className="px-2 py-2 text-left font-semibold text-gray-900 border-r border-gray-300 w-28">Nama Proyek</th>
                     <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-10">
                       <div className="flex flex-col items-center justify-end h-full">
                         <div className="text-lg font-bold mb-2">Σ</div>
-                        <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">
-                          {getTotalAssignments()}
-                        </div>
+                        <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">{getTotalAssignments()}</div>
                       </div>
                     </th>
                     <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-16">
@@ -1206,15 +1182,7 @@ export default function AssignScheduling() {
                         <div className="flex flex-col items-center justify-end h-full">
                           <div
                             className="text-xs font-bold whitespace-nowrap mb-2"
-                            style={{
-                              writingMode: "vertical-lr",
-                              textOrientation: "mixed",
-                              transform: "rotate(180deg)",
-                              height: "70px",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
+                            style={{ writingMode: "vertical-lr", textOrientation: "mixed", transform: "rotate(180deg)", height: "70px", display: "flex", alignItems: "center", justifyContent: "center" }}
                           >
                             {technician.name}
                           </div>
@@ -1224,12 +1192,8 @@ export default function AssignScheduling() {
                         </div>
                       </th>
                     ))}
-                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
-                      Status
-                    </th>
-                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
-                      Sales
-                    </th>
+                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">Status</th>
+                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">Sales</th>
                   </tr>
                 </thead>
 
@@ -1496,11 +1460,7 @@ export default function AssignScheduling() {
         <div
           ref={shortcutRef}
           className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 focus:outline-none"
-          style={{
-            left: `${shortcutPosition.x}px`,
-            top: `${shortcutPosition.y}px`,
-            minWidth: "150px",
-          }}
+          style={{ left: `${shortcutPosition.x}px`, top: `${shortcutPosition.y}px`, minWidth: "150px" }}
           tabIndex={-1}
         >
           <Button
@@ -1687,7 +1647,9 @@ export default function AssignScheduling() {
             </div>
           </DialogHeader>
 
+
           <div className="grid gap-6 py-4">
+            {/* Nama Project */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label
                 htmlFor="namaProject"
@@ -1714,6 +1676,7 @@ export default function AssignScheduling() {
               </div>
             </div>
 
+            {/* Lokasi */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label
                 htmlFor="lokasi"
@@ -1932,11 +1895,9 @@ export default function AssignScheduling() {
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="sigmaHari"
-                    className="flex items-center gap-1 min-w-[120px]"
-                  >
-                    Sigma Hari<span className="text-red-500">*</span>
+                  <Label htmlFor="sigmaHari" className="flex items-center gap-1 min-w-[120px]">
+                    Sigma Hari
+                    <span className="text-red-500">*</span>
                   </Label>
                   <input
                     id="sigmaHari"
@@ -1956,11 +1917,9 @@ export default function AssignScheduling() {
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-start gap-2">
-                  <Label
-                    htmlFor="tipeTemplate"
-                    className="flex items-center gap-1 min-w-[120px] md:mt-2"
-                  >
-                    Tipe Template<span className="text-red-500">*</span>
+                  <Label htmlFor="tipeTemplate" className="flex items-center gap-1 min-w-[120px] md:mt-2">
+                    Tipe Template
+                    <span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
                     <select
@@ -2054,9 +2013,7 @@ export default function AssignScheduling() {
               <div className="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-green-100 mb-4">
                 <CheckCircle className="h-10 w-10 text-green-600" />
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4">
-                Projek Baru Telah Selesai Dibuat
-              </h3>
+              <h3 className="text-2xl font-bold text-gray-900 mb-4">Projek Baru Telah Selesai Dibuat</h3>
               <Button
                 onClick={() => setShowProjectSuccess(false)}
                 className="w-full bg-green-600 hover:bg-green-700 text-lg py-3"
@@ -2075,12 +2032,9 @@ export default function AssignScheduling() {
               <div className="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-green-100 mb-4">
                 <CheckCircle className="h-10 w-10 text-green-600" />
               </div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-4">
-                Assignment Berhasil Disimpan!
-              </h3>
+              <h3 className="text-2xl font-bold text-gray-900 mb-4">Assignment Berhasil Disimpan!</h3>
               <p className="text-lg text-gray-600 mb-6">
-                {getSelectedCount()} assignment teknisi telah berhasil disimpan
-                ke sistem.
+                {getSelectedCount()} assignment teknisi telah berhasil disimpan ke sistem.
               </p>
               <Button
                 onClick={() => setShowConfirmation(false)}
