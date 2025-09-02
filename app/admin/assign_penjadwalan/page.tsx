@@ -473,61 +473,44 @@ export default function AssignScheduling() {
     ).length;
 
   /* ---------- Interaksi Grid ---------- */
+  // == REPLACE seluruh handleCellClick dengan ini ==
   const handleCellClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
     if (!project) return;
 
-    // Block pending & completed
+    // Tetap blok jika pending/completed
     if (project.projectStatus === "pending") return;
     if (project.status === "completed") return;
 
     const technician = techs.find((t) => t.id === technicianId);
     if (!technician) return;
 
-    // Cek apakah teknisi sudah di-assign ke project lain yang sedang ongoing
-    const technicianOtherAssignments = assignments.filter(
-      (a) =>
-        a.technicianId === technicianId &&
-        a.projectId !== projectId &&
-        (a.isSelected || a.isProjectLeader)
-    );
-
-    if (technicianOtherAssignments.length > 0) {
-      const otherProject = projectsData.find(
-        (p) =>
-          technicianOtherAssignments.some((a) => a.projectId === p.id) &&
-          p.status === "ongoing" &&
-          p.projectStatus === "ongoing"
-      );
-      if (otherProject) {
-        alert(
-          `Teknisi ${technician.name} sedang bekerja di project ${otherProject.name} dan tidak dapat dipindahkan sampai project tersebut selesai.`
-        );
-        return;
-      }
-    }
+    // ⬇️⬇️ HAPUS blok "Cek apakah teknisi sudah di-assign ke project lain..."
+    //    -> sekarang teknisi bisa multi-assign ke banyak proyek pada hari yang sama
 
     setAssignments((prev) => {
       const existingIndex = prev.findIndex(
         (a) => a.projectId === projectId && a.technicianId === technicianId
       );
+
       if (existingIndex >= 0) {
         const existing = prev[existingIndex];
+
+        // Jika sudah selected → klik single menonaktifkan (kecuali dia leader)
         if (existing.isSelected) {
-          // Jika project leader, tidak bisa dihapus dengan single click
           if (existing.isProjectLeader) {
-            return prev; // Tidak ada perubahan
+            // leader tidak bisa dihapus dengan single click
+            return prev;
           }
 
-          // Hapus assignment dari array
-          const updated = prev.filter((_, index) => index !== existingIndex);
+          const updated = prev.filter((_, idx) => idx !== existingIndex);
 
-          // Jika tidak ada assignment lain, set unassigned
-          const remainingProjectAssignments = updated.filter(
+          // Jika setelah dihapus tidak ada siapa pun di proyek ini → set unassigned
+          const remaining = updated.filter(
             (a) =>
               a.projectId === projectId && (a.isSelected || a.isProjectLeader)
           );
-          if (remainingProjectAssignments.length === 0) {
+          if (remaining.length === 0) {
             setProjectsData((prevProjects) =>
               prevProjects.map((p) =>
                 p.id === projectId ? { ...p, projectStatus: "unassigned" } : p
@@ -535,38 +518,22 @@ export default function AssignScheduling() {
             );
           }
           return updated;
-        } else {
-          // toggle ke selected, pertahankan leader
-          const updated = [...prev];
-          updated[existingIndex] = {
-            ...existing,
-            isSelected: true,
-            initial: technician.initial,
-            isProjectLeader: existing.isProjectLeader || false,
-          };
-
-          const projectAssignments = updated.filter(
-            (a) =>
-              a.projectId === projectId && (a.isSelected || a.isProjectLeader)
-          );
-          if (projectAssignments.length === 1) {
-            setProjectsData((prevProjects) =>
-              prevProjects.map((p) =>
-                p.id === projectId && p.projectStatus === "unassigned"
-                  ? { ...p, projectStatus: "ongoing" }
-                  : p
-              )
-            );
-          }
-          return updated;
         }
-      } else {
-        // Buat assignment baru
-        const existingAssignments = prev.filter(
+
+        // Ada data tetapi belum selected → aktifkan (pertahankan flag leader)
+        const updated = [...prev];
+        updated[existingIndex] = {
+          ...existing,
+          isSelected: true,
+          initial: technician.initial,
+          isProjectLeader: existing.isProjectLeader || false,
+        };
+
+        const projectAssignments = updated.filter(
           (a) =>
             a.projectId === projectId && (a.isSelected || a.isProjectLeader)
         );
-        if (existingAssignments.length === 0) {
+        if (projectAssignments.length === 1) {
           setProjectsData((prevProjects) =>
             prevProjects.map((p) =>
               p.id === projectId && p.projectStatus === "unassigned"
@@ -575,17 +542,33 @@ export default function AssignScheduling() {
             )
           );
         }
-        return [
-          ...prev,
-          {
-            projectId,
-            technicianId,
-            isSelected: true,
-            initial: technician.initial,
-            isProjectLeader: false,
-          },
-        ];
+        return updated;
       }
+
+      // Tidak ada data sebelumnya → buat assignment baru (selected)
+      const wasEmpty = !prev.some(
+        (a) => a.projectId === projectId && (a.isSelected || a.isProjectLeader)
+      );
+      if (wasEmpty) {
+        setProjectsData((prevProjects) =>
+          prevProjects.map((p) =>
+            p.id === projectId && p.projectStatus === "unassigned"
+              ? { ...p, projectStatus: "ongoing" }
+              : p
+          )
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          projectId,
+          technicianId,
+          isSelected: true,
+          initial: technician.initial,
+          isProjectLeader: false,
+        },
+      ];
     });
   };
 
