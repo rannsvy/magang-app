@@ -37,12 +37,10 @@
     "@radix-ui/react-toggle": "1.1.1",
     "@radix-ui/react-toggle-group": "1.1.1",
     "@radix-ui/react-tooltip": "1.1.6",
+    "@supabase/ssr": "^0.7.0",
+    "@supabase/supabase-js": "^2.56.1",
     "@tensorflow-models/coco-ssd": "^2.2.3",
     "@tensorflow/tfjs": "^4.22.0",
-    "@zxing/browser": "^0.1.5",
-    "@zxing/library": "^0.21.3",
-    "@supabase/ssr": "^0.7.0",
-    "@supabase/supabase-js": "^2.56.0",
     "@zxing/browser": "^0.1.5",
     "@zxing/library": "^0.21.3",
     "autoprefixer": "^10.4.20",
@@ -57,7 +55,6 @@
     "input-otp": "1.4.1",
     "lucide-react": "^0.454.0",
     "next": "^15.5.2",
-    "next": "^15.5.2",
     "next-themes": "^0.4.6",
     "node-fetch": "^3.3.2",
     "pizzip": "^3.2.0",
@@ -65,9 +62,7 @@
     "react-day-picker": "9.8.0",
     "react-dom": "18.3.1",
     "react-easy-crop": "^5.5.0",
-    "react-easy-crop": "^5.5.0",
     "react-hook-form": "^7.60.0",
-    "react-image-crop": "^11.0.10",
     "react-image-crop": "^11.0.10",
     "react-resizable-panels": "^2.1.7",
     "recharts": "2.15.4",
@@ -75,8 +70,8 @@
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
     "tesseract.js": "^6.0.1",
-    "tesseract.js": "^6.0.1",
     "vaul": "^0.9.9",
+    "xmldom": "npm:@xmldom/xmldom@^0.8.10",
     "zod": "3.25.67"
   },
   "devDependencies": {
@@ -92,4 +87,3 @@
     "typescript": "^5"
   }
 }
-

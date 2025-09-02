@@ -6,7 +6,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { TechnicianHeader } from "@/components/technician-header";
 import { Pagination } from "@/components/pagination";
 import { Star } from "lucide-react";
-import { createClient } from "@supabase/supabase-js";
+import {PWAInstallPrompt} from "@/components/pwa-install-prompt";
+import { createClient } from "@supabase/supabase-js"
+
 
 type Job = {
   id: string; // projects.id (uuid)
@@ -358,7 +360,7 @@ export default function TechnicianDashboard() {
         </div>
       </main>
 
-      <PWAInstallPrompt />
+      {<PWAInstallPrompt />}
     </div>
   );
 }
