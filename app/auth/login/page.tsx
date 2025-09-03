@@ -2,13 +2,14 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { getDailyQuote } from "@/lib/quotes"
 import { PWAInstallPrompt } from "@/components/pwa-install-prompt"
 
 export default function LoginPage() {
@@ -17,6 +18,8 @@ export default function LoginPage() {
   const [error, setError] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
+
+  const  quote = useMemo (() => getDailyQuote(), [])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -50,6 +53,9 @@ export default function LoginPage() {
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold text-gray-900">Sistem Laporan Otomatis Teknisi</CardTitle>
           <CardDescription>Masuk ke akun Anda untuk melanjutkan</CardDescription>
+          <div className="mt-4 rounded-md border bg-white px-4 py-3 text-sm italic text-gray-700">
+            “{quote}”
+          </div>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-4">
