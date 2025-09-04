@@ -1,5 +1,5 @@
-/* public/sw.js */
-const VERSION = "magang-app-v1.0.16";
+/* public/sw.js — patched */
+const VERSION = "magang-app-v1.0.31";
 const STATIC_CACHE  = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -9,7 +9,6 @@ const APP_SHELL = [
   "/user/upload_foto",
   "/auth/login",
   "/offline",
-  "/favicon.ico",
   "/manifest.json",
   "/icon-192x192.png",
   "/icon-512x512.png",
@@ -18,11 +17,12 @@ const APP_SHELL = [
 /* ===== IndexedDB Queue (upload offline) ===== */
 const QUEUE_DB = "photo-upload-queue-db";
 const QUEUE_STORE = "requests";
-const UPLOAD_PATH = "/api/job-photos/upload";
+const UPLOAD_PATH = "/api/job-photos/upload"; // HARUS sama dengan client
+const META_PATH   = "/api/job-photos/meta";
 
 function idbOpen() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(QUEUE_DB, 1);
+    const req = indexedDB.open(QUEUE_DB, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(QUEUE_STORE)) {
@@ -68,23 +68,45 @@ async function notifyClients(msg) {
   const arr = await self.clients.matchAll({ includeUncontrolled: true });
   for (const c of arr) { try { c.postMessage(msg); } catch(_) {} }
 }
+
+/* ===== Replay helpers ===== */
+function sanitizeHeaders(raw) {
+  const h = {};
+  if (!raw) return h;
+  for (const k in raw) {
+    const lk = k.toLowerCase();
+    if (["content-length", "connection", "keep-alive", "proxy-connection", "transfer-encoding"].includes(lk)) continue;
+    h[lk] = raw[k];
+  }
+  return h;
+}
+
 async function processQueue() {
   const items = await queueAll();
   const okIds = [];
+
   for (const item of items) {
     try {
+      const headers = sanitizeHeaders(item.headers || {});
       const res = await fetch(item.url, {
         method: item.method || "POST",
-        headers: item.headers || {},
+        headers,
         body: item.body || null,
       });
+
       if (res && res.ok) {
         await queueDel(item.id);
         okIds.push(item.id);
         await notifyClients({ type: "upload-synced", queueId: item.id });
+      } else {
+        const code = res ? res.status : 0;
+        await notifyClients({ type: "upload-error", queueId: item.id, status: code, message: `Replay failed: ${code}` });
       }
-    } catch (_) {}
+    } catch (e) {
+      await notifyClients({ type: "upload-error", queueId: item.id, message: String(e) });
+    }
   }
+
   if (okIds.length) await notifyClients({ type: "sync-complete", queueIds: okIds });
 }
 
@@ -95,7 +117,6 @@ async function precache(cache, urls) {
   }));
 }
 async function putDual(cache, req, res) {
-  // res di sini SUDAH clone dari luar
   try { await cache.put(req, res.clone()); } catch(_) {}
   try {
     const url = new URL(req.url);
@@ -145,10 +166,21 @@ self.addEventListener("activate", (e) => {
 
 /* ===== Background Sync & Messages ===== */
 self.addEventListener("sync", (e) => {
-  if (e.tag === "photo-upload-sync") e.waitUntil(processQueue());
+  if (e.tag === "photo-upload-sync" || e.tag === "meta-sync") e.waitUntil(processQueue());
 });
 self.addEventListener("message", (e) => {
-  if (e.data?.type === "force-sync") e.waitUntil(processQueue());
+  if (e.data?.type === "force-sync") {
+    e.waitUntil(processQueue());
+  }
+  if (e.data?.type === "heartbeat") {
+    e.waitUntil((async () => {
+      const items = await queueAll();
+      if (items.length) await processQueue();
+    })());
+  }
+  if (e.data?.type === "persist-now") {
+    notifyClients({ type: "persist-now" });
+  }
 });
 
 /* ===== Fetch ===== */
@@ -156,19 +188,39 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
-  // 0) Intercept upload: online-first; gagal → antre
-  if (req.method === "POST" && url.pathname === UPLOAD_PATH) {
+  // 0) Intercept upload/meta: online-first; gagal → antre
+  if (req.method === "POST" && (url.pathname === UPLOAD_PATH || url.pathname === META_PATH)) {
     e.respondWith((async () => {
       try {
         const onlineRes = await fetch(req.clone());
+        // Kirim ACK ke client kalau upload endpoint
+        if (url.pathname === UPLOAD_PATH) {
+          try {
+            const resClone = onlineRes.clone();
+            const data = await resClone.json().catch(() => null);
+            if (data && (data.ok || data.photoUrl || data.thumbUrl)) {
+              await notifyClients({
+                type: "upload-online-ack",
+                categoryId: data.categoryId || null,
+                thumbUrl: data.thumbUrl || null,
+                serialNumber: data.serialNumber || null,
+                meter: typeof data.meter === "number" ? data.meter : null
+              });
+              await notifyClients({ type: "persist-now" });
+            }
+          } catch(_) {}
+        }
         return onlineRes;
       } catch {
+        // enqueue saat offline
         const body = await req.clone().arrayBuffer();
         const headers = {};
         req.headers.forEach((v, k) => (headers[k] = v));
         const id = Date.now() + "-" + Math.random().toString(36).slice(2);
-        await queueAdd({ id, url: req.url, method: "POST", headers, body, createdAt: Date.now() });
-        try { await self.registration.sync.register("photo-upload-sync"); } catch(_) {}
+        await queueAdd({ id, url: req.url, method: "POST", headers, body, createdAt: Date.now(), kind: (url.pathname === META_PATH ? "meta" : "upload") });
+        try {
+          await self.registration.sync.register(url.pathname === META_PATH ? "meta-sync" : "photo-upload-sync");
+        } catch(_) {}
         return new Response(JSON.stringify({ status: "queued", queueId: id }), {
           headers: { "Content-Type": "application/json" },
         });
@@ -183,15 +235,13 @@ self.addEventListener("fetch", (e) => {
   const accept = req.headers.get("accept") || "";
   const isHTML  = req.mode === "navigate" || accept.includes("text/html");
 
-  // 1) HTML → network-first; cache pakai waitUntil + clone AWAL
+  // 1) HTML → network-first; cache
   if (isHTML) {
     e.respondWith((async () => {
       try {
         const res = await fetch(req);
-        const resForCache = res.clone(); // ⬅️ clone sebelum dikonsumsi page
-        e.waitUntil(
-          caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache))
-        );
+        const resForCache = res.clone();
+        e.waitUntil(caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache)));
         return res;
       } catch {
         return (
@@ -205,7 +255,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // 2) Static (termasuk /_next/*) → SWR
+  // 2) Static assets → stale-while-revalidate
   const isStatic =
     isSameOrigin &&
     (url.pathname.startsWith("/_next/") ||
@@ -216,8 +266,8 @@ self.addEventListener("fetch", (e) => {
       const cache = await caches.open(DYNAMIC_CACHE);
       const cached = await cache.match(req, { ignoreSearch: true });
       const network = fetch(req).then((res) => {
-        const copy = res.clone();                  // ⬅️ clone lebih awal
-        e.waitUntil(cache.put(req, copy));         // ⬅️ tulis cache via waitUntil
+        const copy = res.clone();
+        e.waitUntil(cache.put(req, copy));
         return res;
       }).catch(() => null);
       return cached || (await network) || (await matchHtml("/offline"));
@@ -230,36 +280,23 @@ self.addEventListener("fetch", (e) => {
     e.respondWith((async () => {
       try {
         const res = await fetch(req);
-        const copy = res.clone();
-        e.waitUntil(caches.open(DYNAMIC_CACHE).then((c) => c.put(req, copy)));
+        const resForCache = res.clone();
+        e.waitUntil(caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache)));
         return res;
       } catch {
-        return (
-          (await caches.match(req, { ignoreSearch: true })) ||
-          new Response(JSON.stringify({ offline: true }), {
-            headers: { "Content-Type": "application/json" },
-          })
-        );
+        const hit = await caches.match(req, { ignoreSearch: true });
+        return hit || new Response(JSON.stringify({ error: "offline" }), {
+          headers: { "Content-Type": "application/json" },
+          status: 503,
+        });
       }
     })());
     return;
   }
 
-  // 4) Default → cache-first + update
+  // 4) Lainnya → network-first biasa
   e.respondWith((async () => {
-    const cached = await caches.match(req, { ignoreSearch: true });
-    if (cached) return cached;
-    try {
-      const res = await fetch(req);
-      const copy = res.clone();
-      e.waitUntil(caches.open(DYNAMIC_CACHE).then((c) => c.put(req, copy)));
-      return res;
-    } catch {
-      return (
-        (await matchHtml(req)) ||
-        (await caches.match("/offline", { ignoreSearch: true })) ||
-        new Response("", { status: 504 })
-      );
-    }
+    try { return await fetch(req); }
+    catch { return (await caches.match(req, { ignoreSearch: true })) || Response.error(); }
   })());
 });

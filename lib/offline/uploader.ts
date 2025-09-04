@@ -1,48 +1,45 @@
-// app/lib/offline/uploader.ts
-import { enqueueUpload } from "./queue";
-
-export type SafeUploadResult =
-  | { status: "uploaded"; response: Response }
-  | { status: "queued"; queueId: string }
-  | { status: "error"; httpStatus?: number; message?: string; response?: Response };
-
-export async function safeUpload(params: {
+// lib/offline/uploader.ts
+export async function safeUpload(opts: {
   endpoint: string;
   formData: FormData;
-  method?: "POST" | "PUT";
-  headers?: Record<string, string>;
   meta?: Record<string, any>;
-}): Promise<SafeUploadResult> {
-  const { endpoint, formData, method = "POST", headers, meta } = params;
-
-  const toQueue = async (): Promise<SafeUploadResult> => {
-    const queueId = await enqueueUpload({ endpoint, formData, method, headers, meta });
-    return { status: "queued", queueId };
-  };
-
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
-    return toQueue();
-  }
-
+}): Promise<
+  | { status: "uploaded"; jobId?: string; categoryId?: string; photoUrl?: string; thumbUrl?: string; serialNumber?: string; meter?: number }
+  | { status: "queued"; queueId: string }
+  | { status: "error"; message?: string; httpStatus?: number }
+> {
   try {
-    const res = await fetch(endpoint, { method, body: formData, headers });
+    const res = await fetch(opts.endpoint, { method: "POST", body: opts.formData });
 
-    if (res.ok) return { status: "uploaded", response: res };
+    // kalau SW mengantrikan permintaan (offline), server-side respon akan berisi status queued
+    let json: any = null;
+    try { json = await res.clone().json(); } catch { json = null; }
 
-    if (res.status >= 400 && res.status < 500) {
-      let message = "";
-      try {
-        const ct = res.headers.get("content-type") || "";
-        message = ct.includes("application/json")
-          ? ((await res.clone().json())?.message ?? (await res.clone().text()))
-          : await res.clone().text();
-      } catch {}
-      return { status: "error", httpStatus: res.status, message, response: res };
+    if (json && json.status === "queued") {
+      return { status: "queued", queueId: String(json.queueId) };
     }
 
-    if (res.status >= 500) return toQueue();
-    return toQueue();
-  } catch {
-    return toQueue();
+    if (!res.ok) {
+      return { status: "error", httpStatus: res.status, message: json?.error || res.statusText };
+    }
+
+    // ONLINE sukses → umumkan ke halaman, supaya UI update & langsung persist
+    if (json?.ok) {
+      try {
+        if (navigator.serviceWorker?.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: "upload-online-ack",
+            ...json, // jobId, categoryId, photoUrl, thumbUrl, serialNumber, meter
+          });
+          navigator.serviceWorker.controller.postMessage({ type: "persist-now" });
+        }
+      } catch {}
+      return { status: "uploaded", ...json };
+    }
+
+    return { status: "uploaded" };
+  } catch (err: any) {
+    // benar2 gagal fetch (mis. offline & SW tak intercept) — kembalikan error generik
+    return { status: "error", message: err?.message || "Network error" };
   }
 }

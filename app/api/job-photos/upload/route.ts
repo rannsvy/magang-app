@@ -2,31 +2,67 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServers";
 
+export const runtime = "nodejs"; // pastikan Buffer tersedia
+
 const BUCKET = "job-photos";
 
-function dataUrlToBuffer(dataUrl: string): { buf: Buffer; mime: string } {
+function dataUrlToBuffer(dataUrl: string): { buf: Buffer; mime: string; ext: string } {
   const m = dataUrl.match(/^data:(.+?);base64,(.+)$/);
   if (!m) throw new Error("Invalid dataUrl");
   const mime = m[1];
   const b64 = m[2];
   const buf = Buffer.from(b64, "base64");
-  return { buf, mime };
+  const ext = extFromMime(mime);
+  return { buf, mime, ext };
 }
 
-async function fileToBuffer(f: File | null): Promise<{ buf: Buffer; mime: string } | null> {
-  if (!f) return null;
-  const arr = await f.arrayBuffer();
-  return { buf: Buffer.from(arr), mime: f.type || "image/jpeg" };
+function extFromMime(mime?: string | null) {
+  const m = (mime || "").toLowerCase();
+  if (m.includes("png")) return "png";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("gif")) return "gif";
+  if (m.includes("bmp")) return "bmp";
+  // default jpeg
+  return "jpg";
 }
 
 async function ensureBucket(supabase: ReturnType<typeof supabaseServer>) {
+  // best-effort: kalau service role tersedia
   try {
-    const { data } = await supabase.storage.listBuckets();
+    const { data, error } = await supabase.storage.listBuckets();
+    if (error) return; // no permission? abaikan
     if (data?.some((b) => b.name === BUCKET)) return;
-    await supabase.storage.createBucket(BUCKET, { public: true, fileSizeLimit: "20MB" });
+    await supabase.storage.createBucket(BUCKET, {
+      public: true,
+      fileSizeLimit: "20MB",
+    });
   } catch {
-    // abaikan kalau tidak punya izin (bucket sudah ada)
+    // abaikan kalau tidak punya izin (bucket mungkin sudah ada)
   }
+}
+
+async function uploadToSupabase(
+  supabase: ReturnType<typeof supabaseServer>,
+  jobId: string,
+  categoryId: string,
+  fileBuf: Buffer,
+  mime: string,
+  ts: number,
+  kind: "full" | "thumb",
+  fileExt?: string
+) {
+  const ext = fileExt || extFromMime(mime);
+  const base = `${encodeURIComponent(jobId)}/${String(categoryId)}/${ts}`;
+  const path = kind === "thumb" ? `${base}-thumb.${ext}` : `${base}.${ext}`;
+
+  const up = await supabase.storage.from(BUCKET).upload(path, fileBuf, {
+    contentType: mime || "image/jpeg",
+    upsert: true,
+  });
+  if (up.error) throw up.error;
+
+  const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
+  return data.publicUrl;
 }
 
 export async function POST(req: Request) {
@@ -34,161 +70,122 @@ export async function POST(req: Request) {
     const supabase = supabaseServer();
     await ensureBucket(supabase);
 
-    const ct = req.headers.get("content-type") || "";
+    const contentType = req.headers.get("content-type") || "";
 
-    // ====== 1) Multipart (disarankan untuk PWA offline queue) ======
-    if (ct.includes("multipart/form-data")) {
+    let jobId = "";
+    let categoryId = "";
+    let photoUrl = "";
+    let thumbUrl = "";
+
+    const ts = Date.now();
+
+    if (contentType.includes("multipart/form-data")) {
+      // === MODE BARU: FormData (photo & thumb sebagai File) ===
       const form = await req.formData();
-      const jobId = String(form.get("jobId") || "");
-      const categoryId = String(form.get("categoryId") || "");
-      if (!jobId || !categoryId) {
-        return NextResponse.json({ error: "jobId dan categoryId wajib" }, { status: 400 });
+
+      jobId = String(form.get("jobId") || "");
+      categoryId = String(form.get("categoryId") || "");
+      const photo = form.get("photo") as File | null;
+      const thumb = form.get("thumb") as File | null;
+
+      if (!jobId || !categoryId || !photo || !thumb) {
+        return NextResponse.json(
+          { error: "jobId, categoryId, photo, thumb required" },
+          { status: 400 }
+        );
       }
 
-      const meterRaw = form.get("meter");
-      const serialNumber = form.get("serialNumber");
-      const meter = meterRaw != null && meterRaw !== "" ? Number(meterRaw) : null;
+      // File → Buffer
+      const photoBuf = Buffer.from(await photo.arrayBuffer());
+      const thumbBuf = Buffer.from(await thumb.arrayBuffer());
 
-      const photoFile = form.get("photo") as File | null;
-      const thumbFile = (form.get("thumb") as File | null) ?? null;
-      if (!photoFile) {
-        return NextResponse.json({ error: "photo file wajib" }, { status: 400 });
+      // mime & ext
+      const photoMime = photo.type || "image/jpeg";
+      const thumbMime = thumb.type || "image/jpeg";
+      const photoExt = extFromMime(photoMime);
+      const thumbExt = extFromMime(thumbMime);
+
+      // Upload ke Supabase
+      photoUrl = await uploadToSupabase(
+        supabase,
+        jobId,
+        categoryId,
+        photoBuf,
+        photoMime,
+        ts,
+        "full",
+        photoExt
+      );
+      thumbUrl = await uploadToSupabase(
+        supabase,
+        jobId,
+        categoryId,
+        thumbBuf,
+        thumbMime,
+        ts,
+        "thumb",
+        thumbExt
+      );
+    } else {
+      // === MODE LAMA (backward-compat): JSON dataUrl ===
+      const { jobId: j, categoryId: c, dataUrl, thumbDataUrl } = await req.json();
+      jobId = String(j || "");
+      categoryId = String(c || "");
+
+      if (!jobId || !categoryId || !dataUrl || !thumbDataUrl) {
+        return NextResponse.json(
+          { error: "jobId, categoryId, dataUrl, thumbDataUrl required" },
+          { status: 400 }
+        );
       }
 
-      const ts = Date.now();
-      const fullPath = `${encodeURIComponent(jobId)}/${categoryId}/${ts}.jpg`;
-      const thumbPath = `${encodeURIComponent(jobId)}/${categoryId}/${ts}-thumb.jpg`;
+      const full = dataUrlToBuffer(dataUrl);
+      const th = dataUrlToBuffer(thumbDataUrl);
 
-      const full = await fileToBuffer(photoFile);
-      const thumb = await fileToBuffer(thumbFile);
-      if (!full) throw new Error("File kosong");
-
-      const up1 = await supabase.storage.from(BUCKET).upload(fullPath, full.buf, {
-        contentType: full.mime || "image/jpeg",
-        upsert: true,
-      });
-      if (up1.error) throw up1.error;
-
-      if (thumb) {
-        const up2 = await supabase.storage.from(BUCKET).upload(thumbPath, thumb.buf, {
-          contentType: thumb.mime || "image/jpeg",
-          upsert: true,
-        });
-        if (up2.error) throw up2.error;
-      }
-
-      const fullUrl = supabase.storage.from(BUCKET).getPublicUrl(fullPath).data.publicUrl;
-      const thumbUrl = thumb
-        ? supabase.storage.from(BUCKET).getPublicUrl(thumbPath).data.publicUrl
-        : undefined;
-
-      const updates: any = {
-        job_id: jobId,
-        category_id: String(categoryId),
-        url: fullUrl,
-        thumb_url: thumbUrl ?? null,
-        updated_at: new Date().toISOString(),
-      };
-      if (meter !== null && !Number.isNaN(meter)) updates.meter = meter;
-
-      const upsertPhoto = await supabase
-        .from("job_photos")
-        .upsert(updates, { onConflict: "job_id,category_id" })
-        .select("job_id")
-        .maybeSingle();
-      if (upsertPhoto.error) throw upsertPhoto.error;
-
-      // simpan SN bila dikirim, tapi jangan gagal kalau tabelnya tidak ada
-      if (serialNumber) {
-        try {
-          await supabase
-            .from("job_serial_numbers")
-            .upsert(
-              {
-                job_id: jobId,
-                category_id: String(categoryId),
-                serial_number: String(serialNumber),
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: "job_id,category_id" }
-            )
-            .select("job_id")
-            .maybeSingle();
-        } catch {
-          // ignore
-        }
-      }
-
-      return NextResponse.json({ ok: true, photoUrl: fullUrl, thumbUrl: thumbUrl ?? null });
-    }
-
-    // ====== 2) JSON (kompatibel dengan versi lama) ======
-    const { jobId, categoryId, dataUrl, thumbDataUrl, meter, serialNumber } = await req.json();
-    if (!jobId || !categoryId || !dataUrl || !thumbDataUrl) {
-      return NextResponse.json(
-        { error: "jobId, categoryId, dataUrl, thumbDataUrl required" },
-        { status: 400 }
+      photoUrl = await uploadToSupabase(
+        supabase,
+        jobId,
+        categoryId,
+        full.buf,
+        full.mime,
+        ts,
+        "full",
+        full.ext
+      );
+      thumbUrl = await uploadToSupabase(
+        supabase,
+        jobId,
+        categoryId,
+        th.buf,
+        th.mime,
+        ts,
+        "thumb",
+        th.ext
       );
     }
 
-    const ts = Date.now();
-    const fullPath = `${encodeURIComponent(jobId)}/${categoryId}/${ts}.jpg`;
-    const thumbPath = `${encodeURIComponent(jobId)}/${categoryId}/${ts}-thumb.jpg`;
-
-    const { buf: fullBuf, mime: fullMime } = dataUrlToBuffer(dataUrl);
-    const up1 = await supabase.storage.from(BUCKET).upload(fullPath, fullBuf, {
-      contentType: fullMime || "image/jpeg",
-      upsert: true,
-    });
-    if (up1.error) throw up1.error;
-
-    const { buf: thumbBuf, mime: thumbMime } = dataUrlToBuffer(thumbDataUrl);
-    const up2 = await supabase.storage.from(BUCKET).upload(thumbPath, thumbBuf, {
-      contentType: thumbMime || "image/jpeg",
-      upsert: true,
-    });
-    if (up2.error) throw up2.error;
-
-    const fullUrl = supabase.storage.from(BUCKET).getPublicUrl(fullPath).data.publicUrl;
-    const thumbUrl = supabase.storage.from(BUCKET).getPublicUrl(thumbPath).data.publicUrl;
-
-    const updates: any = {
-      job_id: jobId,
-      category_id: String(categoryId),
-      url: fullUrl,
-      thumb_url: thumbUrl,
-      updated_at: new Date().toISOString(),
-    };
-    if (typeof meter === "number") updates.meter = meter;
-
+    // Upsert metadata ke table (1 row per job+category)
     const upsert = await supabase
       .from("job_photos")
-      .upsert(updates, { onConflict: "job_id,category_id" })
+      .upsert(
+        {
+          job_id: jobId,
+          category_id: String(categoryId),
+          url: photoUrl,
+          thumb_url: thumbUrl,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "job_id,category_id" }
+      )
       .select("job_id")
       .maybeSingle();
+
     if (upsert.error) throw upsert.error;
 
-    if (serialNumber) {
-      try {
-        await supabase
-          .from("job_serial_numbers")
-          .upsert(
-            {
-              job_id: jobId,
-              category_id: String(categoryId),
-              serial_number: String(serialNumber),
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "job_id,category_id" }
-          )
-          .select("job_id")
-          .maybeSingle();
-      } catch {}
-    }
-
-    return NextResponse.json({ ok: true, photoUrl: fullUrl, thumbUrl });
+    // Sukses → cocok dengan safeUpload
+    return NextResponse.json({ status: "uploaded", photoUrl, thumbUrl });
   } catch (e: any) {
-    console.error(e);
-    return NextResponse.json({ error: e?.message || "Upload failed" }, { status: 500 });
+    const message = e?.message || "Upload failed";
+    return NextResponse.json({ status: "error", message }, { status: 500 });
   }
 }
