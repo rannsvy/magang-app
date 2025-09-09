@@ -79,6 +79,8 @@ type UIProject = {
   sales?: string;
 };
 
+type ProjectCategory = "instalasi" | "survey" | null;
+
 interface CellAssignment {
   projectId: string; // UUID project
   technicianId: string; // code teknisi (1..30) atau UUID
@@ -100,6 +102,25 @@ interface NewProjectForm {
   sigmaHari: string;
   sigmaTeknisi: string;
   tipeTemplate: string; // tambahan dari desain baru
+  durasi?: string;
+  insentif?: string;
+  paketCount?: number;
+  paketDetails?: Array <{rw: string; rt: string}>;
+}
+
+interface NewSurveyProjectForm {
+  namaProject: string;
+  namaGedung: string;
+  lokasi: string;
+  lantai: string;              // jumlah lantai (string biar konsisten dgn input)
+  ruanganPerLantai: string;    // jumlah ruangan / lantai (string)
+  roomDetails: Array<{ floor: number; rooms: string[] }>;
+  tanggalMulaiProject: string;
+  tanggalDeadlineProject: string;
+  totalHari: string;
+  totalTeknisi: string;
+  totalManDays: string;
+  tipeTemplate: string;
 }
 
 interface EditProjectForm {
@@ -179,6 +200,25 @@ export default function AssignScheduling() {
     {}
   );
 
+  const [projectCategory, setProjectCategory] = useState<ProjectCategory>(null);
+
+  const [newSurveyProjectForm, setNewSurveyProjectForm] = useState<NewSurveyProjectForm>({
+    namaProject: "",
+    namaGedung: "",
+    lokasi: "",
+    lantai: "",
+    ruanganPerLantai: "",
+    roomDetails: [],
+    tanggalMulaiProject: "",
+    tanggalDeadlineProject: "",
+    totalHari: "",
+    totalTeknisi: "",
+    totalManDays: "",
+    tipeTemplate: "",
+  });
+
+  const [currentFloorPage, setCurrentFloorPage] = useState(1);
+
   // UI states
   const [assignments, setAssignments] = useState<CellAssignment[]>([]);
   const [selectAll, setSelectAll] = useState(false);
@@ -199,6 +239,10 @@ export default function AssignScheduling() {
     sigmaHari: "",
     sigmaTeknisi: "",
     tipeTemplate: "",
+    durasi : "120",
+    insentif: "2000",
+    paketCount : 0,
+    paketDetails : [],
   });
   const [showSubFields, setShowSubFields] = useState(false);
   const [showEditProject, setShowEditProject] = useState(false);
@@ -1088,6 +1132,99 @@ export default function AssignScheduling() {
     return true;
   };
 
+    // ===== Helper Survey: generate rooms per floor =====
+  const generateRoomDetails = (floors: number, roomsPerFloor: number) => {
+    const details: Array<{ floor: number; rooms: string[] }> = []
+    for (let floor = 1; floor <= floors; floor++) {
+      const rooms: string[] = []
+      for (let room = 1; room <= roomsPerFloor; room++) {
+        rooms.push(`Ruangan #${room}`)
+      }
+      details.push({ floor, rooms })
+    }
+    setCurrentFloorPage(1) // reset ke lantai 1 setiap regenerate
+    return details
+  }
+
+  // Auto-generate roomDetails saat lantai/ruanganPerLantai berubah
+  useEffect(() => {
+    const f = parseInt(newSurveyProjectForm.lantai || "0", 10)
+    const r = parseInt(newSurveyProjectForm.ruanganPerLantai || "0", 10)
+    if (f > 0 && r > 0) {
+      const newDetails = generateRoomDetails(f, r)
+      setNewSurveyProjectForm(prev => ({ ...prev, roomDetails: newDetails }))
+    } else if (newSurveyProjectForm.roomDetails.length) {
+      // kosongkan jika input tidak valid
+      setNewSurveyProjectForm(prev => ({ ...prev, roomDetails: [] }))
+    }
+  }, [newSurveyProjectForm.lantai, newSurveyProjectForm.ruanganPerLantai])
+
+  const goToPreviousFloor = () => setCurrentFloorPage(p => Math.max(1, p - 1))
+  const goToNextFloor = () =>
+  setCurrentFloorPage(p => Math.min(newSurveyProjectForm.roomDetails.length || 1, p + 1))
+
+  // ----- Konstanta tampilan paket per kolom -----
+    const PER_COL = 5;
+
+    // Selalu punya nilai array:
+    const details = newProjectForm.paketDetails ?? [];
+
+    // (boleh IIFE seperti ini)
+    const paketGroups = (() => {
+      const groups: { start: number; items: Array<{ rw: string; rt: string }> }[] = [];
+      for (let start = 0; start < details.length; start += PER_COL) {
+        groups.push({
+          start,
+          items: details.slice(start, start + PER_COL),
+        });
+      }
+      return groups;
+    })();
+
+  // Setter jumlah paket dengan clamp 0..30 + sinkronisasi array detail
+  const setPaketCount = (count: number) => {
+    const n = Math.max(0, Math.min(30, Math.floor(count || 0)));
+    setNewProjectForm(prev => {
+      const nextDetails = [...(prev.paketDetails ?? [])];
+      if (n > nextDetails.length) {
+        for (let i = nextDetails.length; i < n; i++) nextDetails.push({ rw: "", rt: "" });
+      } else {
+        nextDetails.length = n;
+      }
+      return { ...prev, paketCount: n, paketDetails: nextDetails };
+    });
+  };
+
+  // Update 1 field RW/RT pada indeks tertentu
+  const updatePaketDetail = (idx: number, field: "rw" | "rt", value: string) => {
+    setNewProjectForm(prev => {
+      const next = [...(prev.paketDetails ?? [])];
+      if (!next[idx]) next[idx] = { rw: "", rt: "" };
+      next[idx] = { ...next[idx], [field]: value };
+      return { ...prev, paketDetails: next };
+    });
+  };
+
+  // Input terikat untuk jumlah paket (string agar user bisa hapus semua digit)
+  const [paketCountInput, setPaketCountInput] = useState<string>("0");
+  useEffect(() => {
+    setPaketCountInput((newProjectForm.paketCount ?? 0) > 0 ? String(newProjectForm.paketCount) : "0");
+  }, [newProjectForm.paketCount]);
+
+  const handlePaketInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    if (raw === "") {
+      setPaketCountInput("");
+      setPaketCount(0);
+      return;
+    }
+    if (!/^\d+$/.test(raw)) return;
+    const normalized = String(parseInt(raw, 10));
+    const clamped = Math.min(30, Math.max(0, parseInt(normalized, 10)));
+    setPaketCountInput(normalized);
+    setPaketCount(clamped);
+  };
+
   type TemplateOption = { value: string; label: string };
 
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
@@ -1676,17 +1813,51 @@ export default function AssignScheduling() {
         </DialogContent>
       </Dialog>
 
-      {/* Create Project (desain baru, payload tetap API lama) */}
+       {/* Create Project (desain baru, payload tetap API lama) */}
+       {/* Create Project (dengan switch Instalasi / Survey) */}
       <Dialog open={showCreateProject} onOpenChange={setShowCreateProject}>
         <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <div className="flex items-start justify-between">
-              <DialogTitle>Buat Project Baru</DialogTitle>
+              <div className="flex flex-col gap-4">
+                <DialogTitle>Buat Project Baru</DialogTitle>
+
+                {/* Toggle kategori */}
+                <div className="flex gap-2">
+                  <Button
+                    variant={projectCategory === "instalasi" ? "default" : "outline"}
+                    onClick={() => setProjectCategory("instalasi")}
+                    className="font-sans"
+                    size="sm"
+                  >
+                    Instalasi
+                  </Button>
+                  <Button
+                    variant={projectCategory === "survey" ? "default" : "outline"}
+                    onClick={() => setProjectCategory("survey")}
+                    className="font-sans"
+                    size="sm"
+                  >
+                    Survey
+                  </Button>
+                </div>
+              </div>
+
+              {/* Tombol submit:
+                  - aktif untuk instalasi (pakai API existing)
+                  - untuk survey hanya menampilkan alert (belum di-wire ke API) */}
               <div className="flex flex-col items-end gap-2 mr-6">
                 <Button
-                  onClick={handleCreateProject}
+                  onClick={() => {
+                    if (projectCategory === "survey") {
+                      alert("Form Survey belum terhubung ke API. Hanya UI ditambahkan.");
+                      return;
+                    }
+                    handleCreateProject(); // flow instalasi yang sudah ada
+                  }}
                   disabled={
                     isSavingProject ||
+                    projectCategory !== "instalasi" ||
                     !newProjectForm.namaProject ||
                     !newProjectForm.tanggalMulaiProject ||
                     !newProjectForm.tanggalDeadlineProject ||
@@ -1705,318 +1876,648 @@ export default function AssignScheduling() {
             </div>
           </DialogHeader>
 
-          <div className="grid gap-6 py-4">
-            <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <Label
-                htmlFor="namaProject"
-                className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-              >
-                Nama Project<span className="text-red-500">*</span>
-              </Label>
-              <div className="flex-1">
-                <input
-                  id="namaProject"
-                  type="text"
-                  value={newProjectForm.namaProject}
-                  onChange={(e) =>
-                    setNewProjectForm((prev) => ({
-                      ...prev,
-                      namaProject: e.target.value,
-                    }))
-                  }
-                  onClick={() => setShowSubFields(true)}
-                  placeholder="Format: NamaBarang_NamaInstansi_Lokasi"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col md:flex-row md:items-center gap-2">
-              <Label
-                htmlFor="lokasi"
-                className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-              >
-                Lokasi
-              </Label>
-              <div className="flex-1">
-                <input
-                  id="lokasi"
-                  type="text"
-                  value={newProjectForm.lokasi}
-                  onChange={(e) =>
-                    setNewProjectForm((prev) => ({
-                      ...prev,
-                      lokasi: e.target.value,
-                    }))
-                  }
-                  placeholder="Contoh: Bank Mandiri Darmo"
-                  maxLength={140}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Maksimal 140 karakter ({newProjectForm.lokasi.length}/140)
-                </p>
-              </div>
-            </div>
-
-            {showSubFields && (
-              <div className="grid gap-3 p-3 bg-gray-50 rounded-md">
-                <div className="grid gap-2">
-                  <Label htmlFor="namaSales">Nama Sales</Label>
-                  <input
-                    id="namaSales"
-                    type="text"
-                    value={newProjectForm.namaSales}
-                    onChange={(e) =>
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        namaSales: e.target.value,
-                      }))
-                    }
-                    placeholder="Masukkan nama sales"
-                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="namaPresales">Nama Presales</Label>
-                  <input
-                    id="namaPresales"
-                    type="text"
-                    value={newProjectForm.namaPresales}
-                    onChange={(e) =>
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        namaPresales: e.target.value,
-                      }))
-                    }
-                    placeholder="Masukkan nama presales"
-                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Left Column */}
-              <div className="space-y-4">
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="tanggalSpkUser" className="min-w-[120px]">
-                    Tanggal SPK User
-                  </Label>
-                  <input
-                    id="tanggalSpkUser"
-                    type="date"
-                    value={newProjectForm.tanggalSpkUser}
-                    onChange={(e) =>
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        tanggalSpkUser: e.target.value,
-                      }))
-                    }
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  />
-                </div>
-
+          <div className="grid gap-4 py-2">
+            {/* ====================== FORM INSTALASI (tetap) ====================== */}
+            {projectCategory === "instalasi" && (
+              <>
+                {/* — Nama Project */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label
-                    htmlFor="tanggalMulaiProject"
-                    className="flex items-center gap-1 min-w-[120px]"
+                    htmlFor="namaProject"
+                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
                   >
-                    Tanggal Mulai Project<span className="text-red-500">*</span>
-                  </Label>
-                  <input
-                    id="tanggalMulaiProject"
-                    type="date"
-                    value={newProjectForm.tanggalMulaiProject}
-                    onChange={(e) => {
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        tanggalMulaiProject: e.target.value,
-                      }));
-                      validateDates(
-                        e.target.value,
-                        newProjectForm.tanggalDeadlineProject
-                      );
-                    }}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="sigmaManDays"
-                    className="flex items-center gap-1 min-w-[120px]"
-                  >
-                    Sigma Man Days<span className="text-red-500">*</span>
-                  </Label>
-                  <input
-                    id="sigmaManDays"
-                    type="number"
-                    min="0"
-                    value={newProjectForm.sigmaManDays}
-                    onChange={(e) =>
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        sigmaManDays: e.target.value,
-                      }))
-                    }
-                    placeholder="Masukkan target man days"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="sigmaTeknisi"
-                    className="flex items-center gap-1 min-w-[120px]"
-                  >
-                    Sigma Teknisi<span className="text-red-500">*</span>
-                  </Label>
-                  <input
-                    id="sigmaTeknisi"
-                    type="number"
-                    min="0"
-                    value={newProjectForm.sigmaTeknisi}
-                    onChange={(e) =>
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        sigmaTeknisi: e.target.value,
-                      }))
-                    }
-                    placeholder="Masukkan jumlah teknisi"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* Right Column */}
-              <div className="space-y-4">
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="tanggalTerimaPo" className="min-w-[120px]">
-                    Tanggal Terima PO
-                  </Label>
-                  <input
-                    id="tanggalTerimaPo"
-                    type="date"
-                    value={newProjectForm.tanggalTerimaPo}
-                    onChange={(e) =>
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        tanggalTerimaPo: e.target.value,
-                      }))
-                    }
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  />
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-start gap-2">
-                  <Label
-                    htmlFor="tanggalDeadlineProject"
-                    className="flex items-center gap-1 min-w-[120px] md:mt-2"
-                  >
-                    Tanggal Deadline Project
-                    <span className="text-red-500">*</span>
+                    Nama Project<span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
                     <input
-                      id="tanggalDeadlineProject"
-                      type="date"
-                      value={newProjectForm.tanggalDeadlineProject}
-                      onChange={(e) => {
+                      id="namaProject"
+                      type="text"
+                      value={newProjectForm.namaProject}
+                      onChange={(e) =>
                         setNewProjectForm((prev) => ({
                           ...prev,
-                          tanggalDeadlineProject: e.target.value,
-                        }));
-                        validateDates(
-                          newProjectForm.tanggalMulaiProject,
-                          e.target.value
-                        );
-                      }}
-                      className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                        dateValidationError ? "border-red-500" : "border-input"
-                      }`}
+                          namaProject: e.target.value,
+                        }))
+                      }
+                      onClick={() => setShowSubFields(true)}
+                      placeholder="Format: NamaBarang_NamaInstansi_Lokasi"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
                     />
-                    {dateValidationError && (
-                      <p className="text-xs text-red-500 mt-1">
-                        {dateValidationError}
-                      </p>
-                    )}
+                  </div>
+                </div>
+
+                {/* — Lokasi */}
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label
+                    htmlFor="lokasi"
+                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
+                  >
+                    Lokasi
+                  </Label>
+                  <div className="flex-1">
+                    <input
+                      id="lokasi"
+                      type="text"
+                      value={newProjectForm.lokasi}
+                      onChange={(e) =>
+                        setNewProjectForm((prev) => ({
+                          ...prev,
+                          lokasi: e.target.value,
+                        }))
+                      }
+                      placeholder="Contoh: Bank Mandiri Darmo"
+                      maxLength={140}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Maksimal 140 karakter ({newProjectForm.lokasi.length}/140)
+                    </p>
+                  </div>
+                </div>
+
+                {/* — Paket + Detail Paket (RW/RT) */}
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label htmlFor="paket" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                    Paket <span className="text-red-500">*</span>
+                  </Label>
+                  <div className="flex-1">
+                    <input
+                      id="paket"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="\d*"
+                      value={paketCountInput}
+                      onChange={handlePaketInputChange}
+                      placeholder="Jumlah paket (0–30)"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="border rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-semibold">Detail Paket (RW / RT)</span>
+                    <span className="text-xs text-gray-500">{newProjectForm.paketCount} paket</span>
+                  </div>
+
+                  {newProjectForm.paketCount === 0 ? (
+                    <p className="text-xs text-gray-500">Atur jumlah paket untuk menampilkan sub-field RW/RT.</p>
+                  ) : (
+                    <div
+                      className="grid gap-4"
+                      style={{ gridTemplateColumns: `repeat(${paketGroups.length}, minmax(0, 1fr))` }}
+                    >
+                      {paketGroups.map((group, colIdx) => (
+                        <div key={colIdx} className="space-y-3">
+                          {group.items.map((p, idxInCol) => {
+                            const absoluteIndex = group.start + idxInCol;
+                            return (
+                              <div key={absoluteIndex} className="grid grid-cols-3 gap-2 items-center">
+                                <div className="text-xs font-medium text-gray-700">
+                                  Paket #{absoluteIndex + 1}
+                                </div>
+                                <input
+                                  type="text"
+                                  placeholder="RW"
+                                  value={p.rw}
+                                  onChange={(e) => updatePaketDetail(absoluteIndex, "rw", e.target.value)}
+                                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="RT"
+                                  value={p.rt}
+                                  onChange={(e) => updatePaketDetail(absoluteIndex, "rt", e.target.value)}
+                                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* — Sales & Presales */}
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label htmlFor="namaSales" className="min-w-[140px] md:min-w-[140px]">
+                    Nama Sales <span className="text-red-500">*</span>
+                  </Label>
+                  <div className="flex-1">
+                    <input
+                      id="namaSales"
+                      type="text"
+                      value={newProjectForm.namaSales}
+                      onChange={(e) => setNewProjectForm((prev) => ({ ...prev, namaSales: e.target.value }))}
+                      placeholder="Masukkan nama sales"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
                   </div>
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="sigmaHari"
-                    className="flex items-center gap-1 min-w-[120px]"
-                  >
-                    Sigma Hari<span className="text-red-500">*</span>
-                  </Label>
-                  <input
-                    id="sigmaHari"
-                    type="number"
-                    min="0"
-                    value={newProjectForm.sigmaHari}
-                    onChange={(e) =>
-                      setNewProjectForm((prev) => ({
-                        ...prev,
-                        sigmaHari: e.target.value,
-                      }))
-                    }
-                    placeholder="Masukkan durasi project (hari)"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-start gap-2">
-                  <Label
-                    htmlFor="tipeTemplate"
-                    className="flex items-center gap-1 min-w-[120px] md:mt-2"
-                  >
-                    Tipe Template<span className="text-red-500">*</span>
+                  <Label htmlFor="namaPresales" className="min-w-[140px] md:min-w-[140px]">
+                    Nama Presales
                   </Label>
                   <div className="flex-1">
-                    <select
-                      id="tipeTemplate"
-                      value={newProjectForm.tipeTemplate}
-                      onChange={(e) => {
-                        setNewProjectForm((prev) => ({
-                          ...prev,
-                          tipeTemplate: e.target.value,
-                        }));
-                        if (e.target.value) setTipeTemplateError("");
-                      }}
-                      className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                        tipeTemplateError ? "border-red-500" : "border-input"
-                      }`}
-                      required
-                    >
-                      <option value="" disabled>
-                        Pilih Tipe Template
-                      </option>
-                      {templateOptions.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                    {tipeTemplateError && (
-                      <p className="text-xs text-red-500 mt-1">
-                        {tipeTemplateError}
-                      </p>
-                    )}
+                    <input
+                      id="namaPresales"
+                      type="text"
+                      value={newProjectForm.namaPresales}
+                      onChange={(e) => setNewProjectForm((prev) => ({ ...prev, namaPresales: e.target.value }))}
+                      placeholder="Masukkan nama presales"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    />
                   </div>
                 </div>
-              </div>
-            </div>
+
+                {/* — Grid kiri/kanan */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Kiri */}
+                  <div className="space-y-4">
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="tanggalSpkUser" className="min-w-[120px]">
+                        Tanggal SPK User
+                      </Label>
+                      <input
+                        id="tanggalSpkUser"
+                        type="date"
+                        value={newProjectForm.tanggalSpkUser}
+                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, tanggalSpkUser: e.target.value }))}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="tanggalMulaiProject" className="flex items-center gap-1 min-w-[120px]">
+                        Tanggal Mulai Project<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="tanggalMulaiProject"
+                        type="date"
+                        value={newProjectForm.tanggalMulaiProject}
+                        onChange={(e) => {
+                          setNewProjectForm((prev) => ({ ...prev, tanggalMulaiProject: e.target.value }));
+                          validateDates(e.target.value, newProjectForm.tanggalDeadlineProject);
+                        }}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="sigmaManDays" className="flex items-center gap-1 min-w-[120px]">
+                        Man Days<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="sigmaManDays"
+                        type="number"
+                        min="0"
+                        value={newProjectForm.sigmaManDays}
+                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaManDays: e.target.value }))}
+                        placeholder="Target Man Days"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="sigmaTeknisi" className="flex items-center gap-1 min-w-[120px]">
+                        Total Teknisi<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="sigmaTeknisi"
+                        type="number"
+                        min="0"
+                        value={newProjectForm.sigmaTeknisi}
+                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaTeknisi: e.target.value }))}
+                        placeholder="Jumlah Teknisi"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+
+                    {/* Durasi (menit) */}
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="durasi" className="flex items-center gap-1 min-w-[120px]">
+                        Durasi <span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="durasi"
+                        type="number"
+                        min="1"
+                        value={newProjectForm.durasi}
+                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, durasi: e.target.value }))}
+                        placeholder="Durasi pengumpulan foto (menit)"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  {/* Kanan */}
+                  <div className="space-y-4">
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="tanggalTerimaPo" className="min-w-[120px]">
+                        Tanggal Terima PO
+                      </Label>
+                      <input
+                        id="tanggalTerimaPo"
+                        type="date"
+                        value={newProjectForm.tanggalTerimaPo}
+                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, tanggalTerimaPo: e.target.value }))}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-start gap-2">
+                      <Label htmlFor="tanggalDeadlineProject" className="flex items-center gap-1 min-w-[120px] md:mt-2">
+                        Tanggal Deadline Project<span className="text-red-500">*</span>
+                      </Label>
+                      <div className="flex-1">
+                        <input
+                          id="tanggalDeadlineProject"
+                          type="date"
+                          value={newProjectForm.tanggalDeadlineProject}
+                          onChange={(e) => {
+                            setNewProjectForm((prev) => ({ ...prev, tanggalDeadlineProject: e.target.value }));
+                            validateDates(newProjectForm.tanggalMulaiProject, e.target.value);
+                          }}
+                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
+                            dateValidationError ? "border-red-500" : "border-input"
+                          }`}
+                          required
+                        />
+                        {dateValidationError && (
+                          <p className="text-xs text-red-500 mt-1">{dateValidationError}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="sigmaHari" className="flex items-center gap-1 min-w-[120px]">
+                        Total Hari<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="sigmaHari"
+                        type="number"
+                        min="0"
+                        value={newProjectForm.sigmaHari}
+                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaHari: e.target.value }))}
+                        placeholder="Durasi Project (Hari)"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-start gap-2">
+                      <Label htmlFor="tipeTemplate" className="flex items-center gap-1 min-w-[120px] md:mt-2">
+                        Tipe Template<span className="text-red-500">*</span>
+                      </Label>
+                      <div className="flex-1">
+                        <select
+                          id="tipeTemplate"
+                          value={newProjectForm.tipeTemplate}
+                          onChange={(e) => {
+                            setNewProjectForm((prev) => ({ ...prev, tipeTemplate: e.target.value }));
+                            if (e.target.value) setTipeTemplateError("");
+                          }}
+                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
+                            tipeTemplateError ? "border-red-500" : "border-input"
+                          }`}
+                          required
+                        >
+                          <option value="" disabled>Pilih Tipe Template</option>
+                          {templateOptions.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                        {tipeTemplateError && (
+                          <p className="text-xs text-red-500 mt-1">{tipeTemplateError}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="insentif" className="flex items-center gap-1 min-w-[120px]">
+                        Insentif <span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="insentif"
+                        type="number"
+                        min="1"
+                        value={newProjectForm.insentif}
+                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, insentif: e.target.value }))}
+                        placeholder="Insentif Per Project"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ====================== FORM SURVEY (tambahan no.2) ====================== */}
+            {projectCategory === "survey" && (
+              <>
+                {/* Basic Info */}
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label htmlFor="surveyNamaProject" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                    Nama Project<span className="text-red-500">*</span>
+                  </Label>
+                  <div className="flex-1">
+                    <input
+                      id="surveyNamaProject"
+                      type="text"
+                      value={newSurveyProjectForm.namaProject}
+                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, namaProject: e.target.value }))}
+                      placeholder="Format: Survey_NamaGedung_Lokasi"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label htmlFor="namaGedung" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                    Nama Gedung<span className="text-red-500">*</span>
+                  </Label>
+                  <div className="flex-1">
+                    <input
+                      id="namaGedung"
+                      type="text"
+                      value={newSurveyProjectForm.namaGedung}
+                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, namaGedung: e.target.value }))}
+                      placeholder="Contoh: Gedung Grahadi"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label htmlFor="surveyLokasi" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                    Lokasi<span className="text-red-500">*</span>
+                  </Label>
+                  <div className="flex-1">
+                    <input
+                      id="surveyLokasi"
+                      type="text"
+                      value={newSurveyProjectForm.lokasi}
+                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, lokasi: e.target.value }))}
+                      placeholder="Contoh: Jl. Tunjungan Surabaya"
+                      maxLength={140}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Maksimal 140 karakter ({newSurveyProjectForm.lokasi.length}/140)
+                    </p>
+                  </div>
+                </div>
+
+                {/* Floor & Room */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="flex flex-col md:flex-row md:items-center gap-2">
+                    <Label htmlFor="lantai" className="flex items-center gap-1 min-w-[120px]">
+                      Lantai<span className="text-red-500">*</span>
+                    </Label>
+                    <input
+                      id="lantai"
+                      type="number"
+                      min="1"
+                      value={newSurveyProjectForm.lantai}
+                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, lantai: e.target.value }))}
+                      placeholder="Jumlah lantai"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                    />
+                  </div>
+
+                  <div className="flex flex-col md:flex-row md:items-center gap-2">
+                    <Label htmlFor="ruanganPerLantai" className="flex items-center gap-1 min-w-[120px]">
+                      Ruangan per Lantai<span className="text-red-500">*</span>
+                    </Label>
+                    <input
+                      id="ruanganPerLantai"
+                      type="number"
+                      min="1"
+                      value={newSurveyProjectForm.ruanganPerLantai}
+                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, ruanganPerLantai: e.target.value }))}
+                      placeholder="Ruangan per lantai"
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      required
+                    />
+                  </div>
+                </div>
+
+                {/* Dynamic Room Details */}
+                {newSurveyProjectForm.roomDetails.length > 0 && (
+                  <div className="border rounded-lg p-4 bg-gray-50">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-lg font-medium">Detail Ruangan (per Lantai)</h3>
+                        {newSurveyProjectForm.roomDetails.length > 1 && (
+                          <div className="flex items-center gap-1 ml-4">
+                            <button
+                              type="button"
+                              onClick={goToPreviousFloor}
+                              disabled={currentFloorPage === 1}
+                              className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <ChevronLeft className="h-3 w-3" />
+                            </button>
+
+                            <span className="text-xs font-medium text-gray-600 px-1">
+                              {currentFloorPage}/{newSurveyProjectForm.roomDetails.length}
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={goToNextFloor}
+                              disabled={currentFloorPage === newSurveyProjectForm.roomDetails.length}
+                              className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <ChevronRight className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-6">
+                      {newSurveyProjectForm.roomDetails
+                        .filter((_, index) => index === currentFloorPage - 1)
+                        .map((floor, floorIndex) => {
+                          const actualFloorIndex = currentFloorPage - 1;
+                          return (
+                            <div key={floor.floor} className="space-y-3">
+                              <h5 className="font-medium text-gray-800 border-b pb-1">Lantai #{floor.floor}</h5>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {floor.rooms.map((room, roomIndex) => (
+                                  <div key={roomIndex} className="flex flex-col gap-1">
+                                    <Label
+                                      htmlFor={`room-${actualFloorIndex}-${roomIndex}`}
+                                      className="text-xs text-gray-600"
+                                    >
+                                      Ruangan #{roomIndex + 1}
+                                    </Label>
+                                    <input
+                                      id={`room-${actualFloorIndex}-${roomIndex}`}
+                                      type="text"
+                                      value={room}
+                                      onChange={(e) => {
+                                        // helper update yang sudah kamu buat:
+                                        // updateRoomDetail(actualFloorIndex, roomIndex, e.target.value)
+                                        const val = e.target.value;
+                                        setNewSurveyProjectForm(prev => {
+                                          const updated = [...prev.roomDetails];
+                                          updated[actualFloorIndex].rooms[roomIndex] = val;
+                                          return { ...prev, roomDetails: updated };
+                                        });
+                                      }}
+                                      placeholder={`Nama ruangan ${roomIndex + 1}`}
+                                      className="flex h-8 w-full rounded-md border border-input bg-white px-2 py-1 text-xs"
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Timeline & Resource */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Left */}
+                  <div className="space-y-4">
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="surveyTanggalMulai" className="flex items-center gap-1 min-w-[120px]">
+                        Tanggal Mulai Project<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="surveyTanggalMulai"
+                        type="date"
+                        value={newSurveyProjectForm.tanggalMulaiProject}
+                        onChange={(e) => {
+                          setNewSurveyProjectForm(prev => ({ ...prev, tanggalMulaiProject: e.target.value }));
+                          validateDates(e.target.value, newSurveyProjectForm.tanggalDeadlineProject);
+                        }}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="totalHari" className="flex items-center gap-1 min-w-[120px]">
+                        Total Hari<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="totalHari"
+                        type="number"
+                        min="0"
+                        value={newSurveyProjectForm.totalHari}
+                        onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, totalHari: e.target.value }))}
+                        placeholder="Durasi project (hari)"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="totalManDays" className="flex items-center gap-1 min-w-[120px]">
+                        Total Man Days<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="totalManDays"
+                        type="number"
+                        min="0"
+                        value={newSurveyProjectForm.totalManDays}
+                        onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, totalManDays: e.target.value }))}
+                        placeholder="Target man days"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  {/* Right */}
+                  <div className="space-y-4">
+                    <div className="flex flex-col md:flex-row md:items-start gap-2">
+                      <Label htmlFor="surveyTanggalDeadline" className="flex items-center gap-1 min-w-[120px] md:mt-2">
+                        Tanggal Deadline Project<span className="text-red-500">*</span>
+                      </Label>
+                      <div className="flex-1">
+                        <input
+                          id="surveyTanggalDeadline"
+                          type="date"
+                          value={newSurveyProjectForm.tanggalDeadlineProject}
+                          onChange={(e) => {
+                            setNewSurveyProjectForm(prev => ({ ...prev, tanggalDeadlineProject: e.target.value }));
+                            validateDates(newSurveyProjectForm.tanggalMulaiProject, e.target.value);
+                          }}
+                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
+                            dateValidationError ? "border-red-500" : "border-input"
+                          }`}
+                          required
+                        />
+                        {dateValidationError && <p className="text-xs text-red-500 mt-1">{dateValidationError}</p>}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                      <Label htmlFor="totalTeknisi" className="flex items-center gap-1 min-w-[120px]">
+                        Total Teknisi<span className="text-red-500">*</span>
+                      </Label>
+                      <input
+                        id="totalTeknisi"
+                        type="number"
+                        min="1"
+                        value={newSurveyProjectForm.totalTeknisi}
+                        onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, totalTeknisi: e.target.value }))}
+                        placeholder="Jumlah teknisi"
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex flex-col md:flex-row md:items-start gap-2">
+                      <Label htmlFor="surveyTipeTemplate" className="flex items-center gap-1 min-w-[120px] md:mt-2">
+                        Tipe Template<span className="text-red-500">*</span>
+                      </Label>
+                      <div className="flex-1">
+                        <select
+                          id="surveyTipeTemplate"
+                          value={newSurveyProjectForm.tipeTemplate}
+                          onChange={(e) => {
+                            setNewSurveyProjectForm(prev => ({ ...prev, tipeTemplate: e.target.value }));
+                            if (e.target.value) setTipeTemplateError("");
+                          }}
+                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
+                            tipeTemplateError ? "border-red-500" : "border-input"
+                          }`}
+                          required
+                        >
+                          <option value="" disabled>Pilih Tipe Template</option>
+                          {templateOptions.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                        {tipeTemplateError && <p className="text-xs text-red-500 mt-1">{tipeTemplateError}</p>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* Footer actions */}
+          {/* Footer actions (tetap) */}
           <div className="flex justify-end gap-3">
             <Button
               variant="outline"
@@ -2054,7 +2555,8 @@ export default function AssignScheduling() {
                 !newProjectForm.sigmaHari ||
                 !newProjectForm.sigmaTeknisi ||
                 !newProjectForm.tipeTemplate ||
-                !!dateValidationError
+                !!dateValidationError ||
+                projectCategory !== "instalasi" // submit hanya untuk instalasi
               }
               className="bg-green-600 hover:bg-green-700"
             >
@@ -2063,6 +2565,7 @@ export default function AssignScheduling() {
           </div>
         </DialogContent>
       </Dialog>
+
 
       {/* Notifs */}
       {showProjectSuccess && (

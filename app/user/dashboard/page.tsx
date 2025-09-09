@@ -6,19 +6,22 @@ import { Card, CardContent } from "@/components/ui/card";
 import { TechnicianHeader } from "@/components/technician-header";
 import { Pagination } from "@/components/pagination";
 import { Star } from "lucide-react";
-import {PWAInstallPrompt} from "@/components/pwa-install-prompt";
-import { createClient } from "@supabase/supabase-js"
-
+import { PWAInstallPrompt } from "@/components/pwa-install-prompt";
+import { createClient } from "@supabase/supabase-js";
 
 type Job = {
-  id: string; // projects.id (uuid)
-  job_id: string; // projects.job_id (kode job)
+  id: string;               // projects.id (uuid)
+  job_id: string;           // projects.job_id (kode job)
   name: string;
   lokasi: string | null;
   status: "not-started" | "in-progress" | "completed";
   progress?: number | null; // 0..100
-  isPending?: boolean; // dari /api/job-photos/[jobId]
+  isPending?: boolean;      // dari /api/job-photos/[jobId]
   assignedTechnicians: { name: string; isLeader: boolean }[];
+
+  // kompat fitur kode 1
+  type?: "survey" | "instalasi";
+  building_name?: string | null;
 };
 
 const supabase = createClient(
@@ -26,7 +29,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// debounce kecil biar gak refetch berkali-kali saat event bertubi-tubi
+// debounce kecil
 function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
   let t: any;
   return (...args: any[]) => {
@@ -46,16 +49,14 @@ export default function TechnicianDashboard() {
   const [currentPage, setCurrentPage] = useState(1);
   const jobsPerPage = 4;
 
+  // segmented filter di header
+  const [filterType, setFilterType] =
+    useState<"all" | "survey" | "instalasi">("all");
+
   const technicianKeyRef = useRef<string | null>(null);
-  const baseChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
-    null
-  );
-  const projectsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
-    null
-  );
-  const photosChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
-    null
-  );
+  const baseChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const projectsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const photosChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   async function getJobProgress(
     jobId: string
@@ -75,7 +76,6 @@ export default function TechnicianDashboard() {
   }
 
   async function attachProgress(items: Job[]): Promise<Job[]> {
-    // kamu bisa batasi hanya current page biar lebih hemat request.
     const enriched = await Promise.all(
       items.map(async (j) => {
         const { percent, isPending } = await getJobProgress(j.job_id);
@@ -111,25 +111,22 @@ export default function TechnicianDashboard() {
           ? localStorage.getItem("technician_id")
           : null;
 
-      const technician = qTech || lsId || lsCode; // urutan prioritas
+      const technician = qTech || lsId || lsCode;
       technicianKeyRef.current = technician;
 
       const qs = technician
         ? `?technician=${encodeURIComponent(technician)}`
         : `?debug=1`;
 
-      const res = await fetch(`/api/technicians/jobs${qs}`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/technicians/jobs${qs}`, { cache: "no-store" });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Gagal memuat pekerjaan");
 
       const withProgress = await attachProgress(json.items ?? []);
       setJobs(withProgress);
 
-      // (re)subscribe ke tabel untuk ID yang sedang ditugaskan
-      const projectIds = (json.items ?? []).map((j: Job) => j.id); // projects.id
-      const jobIds = (json.items ?? []).map((j: Job) => j.job_id); // projects.job_id
+      const projectIds = (json.items ?? []).map((j: Job) => j.id);
+      const jobIds = (json.items ?? []).map((j: Job) => j.job_id);
       resubscribeProjects(projectIds);
       resubscribePhotos(jobIds);
     } catch (e: any) {
@@ -140,13 +137,11 @@ export default function TechnicianDashboard() {
     }
   };
 
-  // panggil saat mount & saat query berubah
   useEffect(() => {
     loadJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // ====== Realtime global: assignment & project changes → refetch daftar
   useEffect(() => {
     const debouncedReload = debounce(loadJobs, 200);
 
@@ -162,25 +157,17 @@ export default function TechnicianDashboard() {
         { event: "*", schema: "public", table: "projects" },
         debouncedReload
       )
-      // opsional: kalau mau dengar semua upload apa pun (bisa noisy)
-      // .on(
-      //   "postgres_changes",
-      //   { event: "*", schema: "public", table: "job_photos" },
-      //   debouncedReload
-      // )
       .subscribe();
 
     baseChannelRef.current = ch;
 
     return () => {
-      if (baseChannelRef.current)
-        supabase.removeChannel(baseChannelRef.current);
+      if (baseChannelRef.current) supabase.removeChannel(baseChannelRef.current);
       baseChannelRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // subscribe khusus projects yang aktif di list (lebih hemat)
   function resubscribeProjects(projectIds: string[]) {
     if (projectsChannelRef.current) {
       supabase.removeChannel(projectsChannelRef.current);
@@ -210,7 +197,6 @@ export default function TechnicianDashboard() {
     projectsChannelRef.current = ch;
   }
 
-  // subscribe khusus job_photos untuk job_id yang tampil
   function resubscribePhotos(jobIds: string[]) {
     if (photosChannelRef.current) {
       supabase.removeChannel(photosChannelRef.current);
@@ -218,7 +204,6 @@ export default function TechnicianDashboard() {
     }
     if (!jobIds.length) return;
 
-    // job_id bertipe text, jadi harus di-quote
     const q = jobIds.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
 
     const ch = supabase
@@ -238,14 +223,18 @@ export default function TechnicianDashboard() {
     photosChannelRef.current = ch;
   }
 
+  const filteredJobs = useMemo(() => {
+    if (filterType === "all") return jobs;
+    return jobs.filter((j) => (j.type ?? "instalasi") === filterType);
+  }, [jobs, filterType]);
+
   const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(jobs.length / jobsPerPage)),
-    [jobs.length]
+    () => Math.max(1, Math.ceil(filteredJobs.length / jobsPerPage)),
+    [filteredJobs.length]
   );
   const startIndex = (currentPage - 1) * jobsPerPage;
-  const currentJobs = jobs.slice(startIndex, startIndex + jobsPerPage);
+  const currentJobs = filteredJobs.slice(startIndex, startIndex + jobsPerPage);
 
-  // badge rules: Pending > Selesai(100%) > Persentase
   const getStatusDisplay = (job: Job) => {
     if (job.isPending) {
       return { text: "Pending", color: "bg-amber-100 text-amber-700" };
@@ -266,26 +255,41 @@ export default function TechnicianDashboard() {
     return "bg-gray-50 border-gray-200";
   };
 
-  const handleJobClick = (jobId: string) => {
-    router.push(`/user/upload_foto?job=${encodeURIComponent(jobId)}`);
+  const handleJobClick = (job: Job) => {
+    if (job.type === "survey") {
+      router.push(`/user/survey/floors?jobId=${encodeURIComponent(job.id)}`);
+    } else {
+      router.push(`/user/upload_foto?job=${encodeURIComponent(job.job_id)}`);
+    }
   };
 
   const handlePrevPage = () => setCurrentPage((p) => Math.max(1, p - 1));
-  const handleNextPage = () =>
-    setCurrentPage((p) => Math.min(totalPages, p + 1));
+  const handleNextPage = () => setCurrentPage((p) => Math.min(totalPages, p + 1));
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <TechnicianHeader title="Sistem Laporan Teknisi" />
+      {/* Header + segmented filter di kanan */}
+      <TechnicianHeader
+        title="SiLapor"
+        showFilter
+        filterValue={filterType}
+        onFilterChange={(v) => {
+          setFilterType(v);
+          setCurrentPage(1);
+        }}
+        // Kalau mau hilangkan burger:
+        // showMenuButton={false}
+      />
+
       <main className="p-4">
         <div className="max-w-md mx-auto">
           {loading ? (
             <div className="text-center text-sm text-gray-600">Memuat...</div>
           ) : err ? (
             <div className="text-center text-sm text-red-600">{err}</div>
-          ) : jobs.length === 0 ? (
+          ) : filteredJobs.length === 0 ? (
             <div className="text-center text-sm text-gray-600">
-              Tidak ada tugas untuk teknisi ini.
+              Tidak ada tugas untuk filter ini.
             </div>
           ) : (
             <>
@@ -298,7 +302,7 @@ export default function TechnicianDashboard() {
                     <Card
                       key={job.id}
                       className={`cursor-pointer transition-all hover:shadow-md ${bg}`}
-                      onClick={() => handleJobClick(job.job_id)}
+                      onClick={() => handleJobClick(job)}
                     >
                       <CardContent className="px-2 py-1">
                         <div className="flex justify-between items-start mb-1">
@@ -306,19 +310,24 @@ export default function TechnicianDashboard() {
                             <h3 className="font-bold text-sm text-gray-900 mb-0.5 leading-tight">
                               {job.name}
                             </h3>
+
+                            {job.type === "survey" && job.building_name ? (
+                              <p className="text-xs font-medium text-gray-700 leading-tight mb-0.5">
+                                Nama Gedung: {job.building_name}
+                              </p>
+                            ) : null}
+
                             <p className="text-xs text-gray-600 leading-tight mb-0.5">
                               {job.lokasi ?? "-"}
                             </p>
+
                             <div className="text-xs text-gray-600 mb-0.5">
                               <span className="font-medium">
                                 Ditugaskan bersama:
                               </span>
                               <div className="mt-0.5">
                                 {job.assignedTechnicians.map((tech, idx) => (
-                                  <div
-                                    key={idx}
-                                    className="flex items-center gap-1"
-                                  >
+                                  <div key={idx} className="flex items-center gap-1">
                                     <span>
                                       {idx + 1}. {tech.name}
                                     </span>
@@ -330,6 +339,7 @@ export default function TechnicianDashboard() {
                               </div>
                             </div>
                           </div>
+
                           <div className="flex flex-col items-end gap-0.5">
                             <div
                               className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
@@ -360,7 +370,7 @@ export default function TechnicianDashboard() {
         </div>
       </main>
 
-      {<PWAInstallPrompt />}
+      <PWAInstallPrompt />
     </div>
   );
 }
