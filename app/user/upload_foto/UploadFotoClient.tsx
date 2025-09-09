@@ -39,9 +39,9 @@ interface PhotoCategory {
   id: string;
   name: string;
   requiresSerialNumber: boolean;
-  photo?: string;          // url full
-  photoThumb?: string;     // url thumb (online)
-  offlineThumb?: string;   // dataURL thumb (offline cache)
+  photo?: string;
+  photoThumb?: string;
+  offlineThumb?: string;
   serialNumber?: string;
   snDraft?: string;
   meter?: number;
@@ -63,6 +63,15 @@ const cropsAlmostEqual = (a?: LooseCrop | null, b?: LooseCrop | null, e = 0.5) =
   Math.abs(a.height - b.height) < e &&
   a.unit === b.unit;
 
+function runInBackground(fn: () => void) {
+  const ric: any = (window as any).requestIdleCallback;
+  if (typeof ric === "function") {
+    ric(fn, { timeout: 1000 });
+  } else {
+    setTimeout(fn, 0);
+  }
+}
+
 async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<Blob> {
   const scaleX = img.naturalWidth / img.width;
   const scaleY = img.naturalHeight / img.height;
@@ -83,36 +92,8 @@ async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<B
   );
 }
 
-async function cropElToDataUrl(img: HTMLImageElement, cropPx: PixelCrop, expand = 0.2): Promise<string> {
-  const scaleX = img.naturalWidth / img.width;
-  const scaleY = img.naturalHeight / img.height;
-
-  const ex = Math.max(0, cropPx.x - cropPx.width * expand);
-  const ey = Math.max(0, cropPx.y - cropPx.height * expand);
-  const ew = cropPx.width * (1 + 2 * expand);
-  const eh = cropPx.height * (1 + 2 * expand);
-
-  let sx = Math.round(ex * scaleX);
-  let sy = Math.round(ey * scaleY);
-  let sw = Math.round(ew * scaleX);
-  let sh = Math.round(eh * scaleY);
-
-  if (sx + sw > img.naturalWidth) sw = img.naturalWidth - sx;
-  if (sy + sh > img.naturalHeight) sh = img.naturalHeight - sy;
-  sw = Math.max(1, sw); sh = Math.max(1, sh);
-
-  const c = document.createElement("canvas");
-  c.width = sw; c.height = sh;
-  const ctx = c.getContext("2d")!;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-  return c.toDataURL("image/png");
-}
-
 const isCableCategory = (name: string) => /kabel\s*cam\s*\d/i.test(name) && /(before|after)/i.test(name);
 
-// fetch image → dataURL (backfill offlineThumb)
 async function urlToDataUrl(u: string): Promise<string> {
   const r = await fetch(u, { cache: "force-cache" });
   const b = await r.blob();
@@ -264,19 +245,13 @@ export default function UploadFotoClient() {
       if (!local) return it;
       return {
         ...it,
-        // status antrean lokal tetap
         uploadState: local.uploadState,
         queueId: local.queueId,
         uploadError: local.uploadError,
         photoToken: local.photoToken ?? it.photoToken,
-        // thumb offline tetap dipertahankan untuk ditampilkan dulu
         offlineThumb: local.offlineThumb ?? undefined,
-
-        // ⬇⬇ fix: JANGAN timpa SN & meter lokal oleh server yang masih lama
         serialNumber: (local.serialNumber ?? it.serialNumber),
         meter: (typeof local.meter === "number" ? local.meter : it.meter),
-
-        // untuk thumbnail server tetap dipakai jika ada
         photoThumb: it.photoThumb ?? local.photoThumb,
       };
     });
@@ -331,7 +306,7 @@ export default function UploadFotoClient() {
     return () => window.removeEventListener("offline", onOffline);
   }, [cacheKey]);
 
-  // backfill offlineThumb saat online (ambil dari URL server → dataURL)
+  // backfill offlineThumb saat online
   useEffect(() => {
     if (!online) return;
     let cancelled = false;
@@ -375,7 +350,7 @@ export default function UploadFotoClient() {
     return () => { active = false; supabase.removeChannel(channel); };
   }, [jobId, cacheKey]);
 
-  // dengar pesan dari SW
+  // pesan dari SW
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       const d: any = e.data;
@@ -387,7 +362,6 @@ export default function UploadFotoClient() {
             c.id === d.categoryId
               ? {
                   ...c,
-                  // ack bisa bawa thumb / meta terbaru
                   offlineThumb: d.thumbUrl || c.offlineThumb || c.photoThumb,
                   photoThumb: d.thumbUrl || c.photoThumb,
                   ...(typeof d.meter === "number" ? { meter: d.meter } : {}),
@@ -583,10 +557,17 @@ export default function UploadFotoClient() {
   const handleConfirmCrop = async () => {
     if (!imgRef.current || !completedCrop || !pendingCategoryId) return;
 
+    // 1) Render hasil crop → Blob
     const fullBlob = await cropElToBlob(imgRef.current, completedCrop);
-    const thumbBlob = await makeThumbnail(fullBlob, 640, true, 0.8);
 
-    const [, thumbDataUrl] = await Promise.all([blobToDataUrl(fullBlob), blobToDataUrl(thumbBlob)]);
+    // 2) Thumbnail ringan untuk HP (560px, q=0.75)
+    const thumbBlob = await makeThumbnail(fullBlob, 560, true, 0.75);
+    const thumbDataUrl = await blobToDataUrl(thumbBlob);
+
+    // 3) Snapshot sumber OCR lebih awal (AMAN meski modal ditutup)
+    const srcSnap = srcToCrop; // bisa null, tidak masalah
+    const croppedDataUrl = await blobToDataUrl(fullBlob); // hasil crop resolusi penuh
+
     const token = Date.now();
 
     const cat = categories.find((c) => c.id === pendingCategoryId);
@@ -596,7 +577,7 @@ export default function UploadFotoClient() {
     const parsed = parseFloat(draft.replace(",", "."));
     const meterVal = isCable && !Number.isNaN(parsed) && parsed >= 0 ? parsed : undefined;
 
-    // tampilkan perubahan lokal (langsung persist snapshot NEXT)
+    // 4) Update UI seketika
     const initialState: PhotoCategory["uploadState"] = online ? "uploading" : "queued";
     setCategories(prev => {
       const next = prev.map((c) =>
@@ -612,12 +593,12 @@ export default function UploadFotoClient() {
             }
           : c
       );
-      persistSnapshotNow(cacheKey, next);
+      try { localStorage.setItem(cacheKey, JSON.stringify(next)); } catch {}
       return next;
     });
 
+    // 5) Kirim ke server / antre via SW
     try {
-      // kirim multipart
       const fd = new FormData();
       const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`;
       fd.append("photo", new File([fullBlob], fileName, { type: "image/jpeg" }));
@@ -638,7 +619,7 @@ export default function UploadFotoClient() {
           const next = prev.map((c) =>
             c.id === pendingCategoryId ? { ...c, uploadState: "uploaded" as const, queueId: undefined, uploadError: undefined } : c
           );
-          persistSnapshotNow(cacheKey, next);
+          try { localStorage.setItem(cacheKey, JSON.stringify(next)); } catch {}
           return next;
         });
       } else if (result?.status === "queued") {
@@ -646,7 +627,7 @@ export default function UploadFotoClient() {
           const next = prev.map((c) =>
             c.id === pendingCategoryId ? { ...c, uploadState: "queued" as const, queueId: result.queueId as string, uploadError: undefined } : c
           );
-          persistSnapshotNow(cacheKey, next);
+          try { localStorage.setItem(cacheKey, JSON.stringify(next)); } catch {}
           return next;
         });
       } else {
@@ -655,7 +636,7 @@ export default function UploadFotoClient() {
           const next = prev.map((c) =>
             c.id === pendingCategoryId ? { ...c, uploadState: "error" as const, uploadError: msg } : c
           );
-          persistSnapshotNow(cacheKey, next);
+          try { localStorage.setItem(cacheKey, JSON.stringify(next)); } catch {}
           return next;
         });
       }
@@ -664,26 +645,37 @@ export default function UploadFotoClient() {
         const next = prev.map((c) =>
           c.id === pendingCategoryId ? { ...c, uploadState: "queued" as const, uploadError: undefined } : c
         );
-        persistSnapshotNow(cacheKey, next);
+        try { localStorage.setItem(cacheKey, JSON.stringify(next)); } catch {}
         return next;
       });
     }
 
-    // simpan META meter (offline-ready via SW)
+    // 6) Simpan META meter non-blocking
     if (typeof meterVal === "number") {
-      await saveMeta(jobId, pendingCategoryId, { meter: meterVal, ocrStatus: "done" });
-      persistSnapshotNow(cacheKey, categoriesRef.current);
+      runInBackground(() => {
+        safePostJSON("/api/job-photos/meta", {
+          jobId,
+          categoryId: pendingCategoryId,
+          meter: meterVal,
+          ocrStatus: "done",
+        }).catch(() => {});
+      });
     }
 
-    // OCR SN jika perlu
+    // 7) OCR SN di background pakai SNAPSHOT (tidak lagi bergantung ref/state yang dibersihkan)
     if (cat?.requiresSerialNumber && !cat.serialNumber) {
-      const expandedCropDataUrl = await cropElToDataUrl(imgRef.current, completedCrop, 0.2);
-      const originalSrc = srcToCrop!;
-      await runOCR_SN(pendingCategoryId, [expandedCropDataUrl, originalSrc], token);
-      persistSnapshotNow(cacheKey, categoriesRef.current);
+      const sources: (string | Blob)[] = [croppedDataUrl];
+      if (srcSnap) sources.push(srcSnap);
+      runInBackground(async () => {
+        try {
+          await runOCR_SN(pendingCategoryId, sources, token);
+        } catch {
+          // abaikan error background
+        }
+      });
     }
 
-    // reset & tutup modal
+    // 8) Reset & tutup modal
     resetFileInput(pendingCategoryId);
     setCropOpen(false);
     setSrcToCrop(null);
@@ -732,7 +724,6 @@ export default function UploadFotoClient() {
                   const styles = getCategoryStyles(status);
                   const oc = ocr[category.id];
 
-                  // ⬇⬇ fix: utamakan offlineThumb agar UI langsung update walau baru balik ONLINE
                   const imgSrc =
                     category.offlineThumb ||
                     category.photoThumb ||
