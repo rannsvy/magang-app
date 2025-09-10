@@ -14,7 +14,6 @@ function dataUrlToBuffer(dataUrl: string): { buf: Buffer; mime: string } {
 }
 
 async function ensureBucket(supabase: ReturnType<typeof supabaseServer>) {
-  // best-effort: kalau service role tersedia
   try {
     const { data } = await supabase.storage.listBuckets();
     if (data?.some((b) => b.name === BUCKET)) return;
@@ -23,27 +22,35 @@ async function ensureBucket(supabase: ReturnType<typeof supabaseServer>) {
       fileSizeLimit: "20MB",
     });
   } catch {
-    // abaikan kalau tidak punya izin (bucket mungkin sudah ada)
+    // abaikan
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const { jobId, categoryId, dataUrl, thumbDataUrl } = await req.json();
-    if (!jobId || !categoryId || !dataUrl || !thumbDataUrl)
+    const {
+      jobId,
+      categoryId,
+      dataUrl,
+      thumbDataUrl,
+      serialNumber,
+      cableMeter,
+    } = await req.json();
+
+    if (!jobId || !categoryId || !dataUrl || !thumbDataUrl) {
       return NextResponse.json(
         { error: "jobId, categoryId, dataUrl, thumbDataUrl required" },
         { status: 400 }
       );
+    }
 
     const supabase = supabaseServer();
     await ensureBucket(supabase);
 
     const ts = Date.now();
-    const fullPath = `${encodeURIComponent(jobId)}/${categoryId}/${ts}.jpg`;
-    const thumbPath = `${encodeURIComponent(
-      jobId
-    )}/${categoryId}/${ts}-thumb.jpg`;
+    const basePath = `${encodeURIComponent(jobId)}/${categoryId}`;
+    const fullPath = `${basePath}/${ts}.jpg`;
+    const thumbPath = `${basePath}/${ts}-thumb.jpg`;
 
     // upload full
     const { buf: fullBuf, mime: fullMime } = dataUrlToBuffer(dataUrl);
@@ -63,28 +70,31 @@ export async function POST(req: Request) {
       });
     if (up2.error) throw up2.error;
 
-    // public URL
     const fullUrl = supabase.storage.from(BUCKET).getPublicUrl(fullPath)
       .data.publicUrl;
     const thumbUrl = supabase.storage.from(BUCKET).getPublicUrl(thumbPath)
       .data.publicUrl;
 
-    // upsert metadata ke table (1 row per job+category)
+    // Upsert metadata (+ optional serial/cable meter)
+    const payload: any = {
+      job_id: jobId,
+      category_id: String(categoryId),
+      url: fullUrl,
+      thumb_url: thumbUrl,
+      updated_at: new Date().toISOString(),
+    };
+    if (serialNumber !== undefined)
+      payload.serial_number = String(serialNumber || "");
+    if (cableMeter !== undefined) {
+      const n = Number(cableMeter);
+      if (Number.isFinite(n)) payload.cable_meter = n; // meter
+    }
+
     const upsert = await supabase
       .from("job_photos")
-      .upsert(
-        {
-          job_id: jobId,
-          category_id: String(categoryId),
-          url: fullUrl,
-          thumb_url: thumbUrl,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "job_id,category_id" }
-      )
+      .upsert(payload, { onConflict: "job_id,category_id" })
       .select("job_id")
       .maybeSingle();
-
     if (upsert.error) throw upsert.error;
 
     return NextResponse.json({ ok: true, photoUrl: fullUrl, thumbUrl });

@@ -17,11 +17,13 @@ const supabaseSrvKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const supabase = createClient(supabaseUrl, supabaseSrvKey);
 
 /* ===================== Konstanta ===================== */
+// Kotak seragam semua gambar (px @96DPI)
+const IMG_BOX_W = 220;
+const IMG_BOX_H = 150;
+
 const BLANK_IMAGE_DATAURL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII=";
 
-// Pemetaan label → nama file di /public/report-templates
-// KEY sudah DISANITIZE (lowercase & non-alnum dihapus)
 const TEMPLATE_FILE_MAP: Record<string, string> = {
   templatecctvrtrw: "Template_CCTV_RTRW.docx",
   templatebca: "Template_BCA.docx",
@@ -29,23 +31,40 @@ const TEMPLATE_FILE_MAP: Record<string, string> = {
   templatebni: "Template_BNI.docx",
 };
 
+// Bucket untuk menyimpan salinan file laporan (opsional tapi direkomendasikan)
+const REPORT_BUCKET = "generated-reports";
+
 /* ===================== Utils ===================== */
 const tplDir = () => path.join(process.cwd(), "public", "report-templates");
 const sanitize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
 
-/** Ambil file template sebagai STRING BINER (latin1) */
+/** Pastikan bucket storage tersedia */
+async function ensureReportBucket() {
+  try {
+    const { data: buckets, error } = await supabase.storage.listBuckets();
+    if (error) throw error;
+    if (!buckets?.some((b) => b.name === REPORT_BUCKET)) {
+      await supabase.storage.createBucket(REPORT_BUCKET, {
+        public: true,
+        fileSizeLimit: "50MB",
+      });
+    }
+  } catch (e) {
+    // jangan gagalkan proses download; hanya log
+    console.warn("[docx] ensureReportBucket warn:", e);
+  }
+}
+
+/** Baca template sebagai STRING BINER */
 async function readTemplateBinaryString(
   req: NextRequest,
   filename: string
 ): Promise<string> {
   const full = path.join(tplDir(), path.basename(filename));
-
-  // 1) Baca langsung dari filesystem (Node)
   try {
     const bin = await fs.readFile(full, { encoding: "binary" });
-    return bin; // ← string biner (BUKAN Promise/Buffer)
+    return bin;
   } catch {
-    // 2) Fallback: fetch dari public URL (dev tertentu)
     const url = new URL(
       `/report-templates/${encodeURIComponent(filename)}`,
       req.url
@@ -57,7 +76,7 @@ async function readTemplateBinaryString(
   }
 }
 
-/** Prefetch image URL jadi data URL (base64) agar getImage sinkron */
+/** Prefetch image URL → dataURL (base64) supaya getImage sinkron */
 async function fetchToDataUrl(url: string): Promise<string> {
   const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) throw new Error(`Gagal fetch image: ${url}`);
@@ -67,68 +86,48 @@ async function fetchToDataUrl(url: string): Promise<string> {
   return `data:${ct};base64,${b64}`;
 }
 
-/** Image module (sinkron) */
+/** Image module: seragam ukuran dan aman */
 function buildImageModule(): ImageModule {
   return new ImageModule({
     getImage: (tagValue: string) => {
-      try {
-        if (!tagValue) return Buffer.from([]);
-        // kita pastikan tagValue sudah data:URL
-        if (tagValue.startsWith("data:")) {
-          const base64 = tagValue.split(",")[1] ?? "";
-          return Buffer.from(base64, "base64");
-        }
-        // fallback: blank
-        const base64 = BLANK_IMAGE_DATAURL.split(",")[1] ?? "";
-        return Buffer.from(base64, "base64");
-      } catch {
-        const base64 = BLANK_IMAGE_DATAURL.split(",")[1] ?? "";
-        return Buffer.from(base64, "base64");
-      }
+      const src = tagValue || BLANK_IMAGE_DATAURL;
+      const base64 = src.startsWith("data:")
+        ? src.split(",")[1] ?? ""
+        : BLANK_IMAGE_DATAURL.split(",")[1] ?? "";
+      return Buffer.from(base64, "base64");
     },
-    getSize: () => [480, 360],
+    getSize: () => [IMG_BOX_W, IMG_BOX_H],
   } as ImageModuleOptions);
 }
 
-// GANTI seluruh fungsi ini di app/api/laporan/docx/route.ts
+/* ===================== Resolusi template ===================== */
 async function resolveTemplateFilenameByLabel(label: string): Promise<string> {
-  // default aman
   if (!label) return "Template_CCTV_RTRW.docx";
-
   const trimmed = label.trim();
 
-  // 1) Jika label tampak seperti NAMA FILE .docx → pakai langsung jika ada
   const maybeFile = path.basename(trimmed);
   if (maybeFile.toLowerCase().endsWith(".docx")) {
     try {
       await fs.access(path.join(tplDir(), maybeFile));
-      return maybeFile; // ketemu file persis
-    } catch {
-      // lanjutkan ke heuristik di bawah
-    }
+      return maybeFile;
+    } catch {}
   }
 
-  // 2) Coba lewat map eksplisit (label disanitasi)
-  const key = sanitize(trimmed); // "Template BCA" -> "templatebca"
+  const key = sanitize(trimmed);
   if (TEMPLATE_FILE_MAP[key]) return TEMPLATE_FILE_MAP[key];
 
-  // 3) Scan folder template
   const files = await fs.readdir(tplDir());
   const docx = files.filter((f) => f.toLowerCase().endsWith(".docx"));
 
-  // 3a) exact match setelah sanitize (tanpa ekstensi)
   for (const f of docx) {
     const base = path.basename(f, ".docx");
     if (sanitize(base) === key) return f;
   }
-
-  // 3b) contains dua arah (lebih fleksibel)
   for (const f of docx) {
     const baseSan = sanitize(path.basename(f, ".docx"));
     if (baseSan.includes(key) || key.includes(baseSan)) return f;
   }
 
-  // 3c) coba variasi dengan/ tanpa prefix "template "
   const altKeys = [
     sanitize(`template ${trimmed}`),
     sanitize(trimmed.replace(/^template\s+/i, "")),
@@ -137,8 +136,6 @@ async function resolveTemplateFilenameByLabel(label: string): Promise<string> {
     const s = sanitize(path.basename(f, ".docx"));
     if (altKeys.includes(s)) return f;
   }
-
-  // 4) fallback default
   return "Template_CCTV_RTRW.docx";
 }
 
@@ -163,63 +160,159 @@ async function resolveTemplateFilename(
   templateKeyParam?: string
 ): Promise<string> {
   if (templateKeyParam) {
-    // kalau ini nama file yang ada → langsung pakai
     const candidate = path.basename(templateKeyParam);
     try {
       await fs.access(path.join(tplDir(), candidate));
       return candidate;
     } catch {
-      // kalau bukan file → anggap label
       return resolveTemplateFilenameByLabel(templateKeyParam);
     }
   }
-  // kalau tidak ada param → baca dari DB berdasarkan jobId
   return resolveTemplateFromDB(jobId);
 }
 
-/* ===================== Foto loader ===================== */
-async function loadPhotos(req: NextRequest, jobId: string) {
-  // coba /api/job-photos/[jobId]
-  let res = await fetch(
-    new URL(`/api/job-photos/${encodeURIComponent(jobId)}`, req.url),
-    {
-      cache: "no-store",
+/* ===================== Loader foto + SN + meter ===================== */
+type RowMerged = {
+  category_id: string;
+  url: string | null; // pakai thumb kalau ada (lebih kecil)
+  serial_number: string | null; // SN per kategori
+  cable_meter: number | null; // meter (number|null)
+};
+
+const asNum = (v: any): number | null => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+async function loadPhotosMerged(
+  req: NextRequest,
+  jobId: string
+): Promise<RowMerged[]> {
+  // 1) API teknisi
+  let apiItems: RowMerged[] = [];
+  try {
+    let res = await fetch(
+      new URL(`/api/job-photos/${encodeURIComponent(jobId)}`, req.url),
+      {
+        cache: "no-store",
+      }
+    );
+    if (!res.ok) {
+      const alt = new URL(`/api/job-photos`, req.url);
+      alt.searchParams.set("jobId", jobId);
+      res = await fetch(alt, { cache: "no-store" });
     }
-  );
+    if (res.ok) {
+      const data = await res.json();
+      const items = Array.isArray(data)
+        ? data
+        : Array.isArray(data.items)
+        ? data.items
+        : [];
+      apiItems = (items as any[]).map((it) => ({
+        category_id: String(it.id),
+        url: (it.photoThumb || it.photo || null) as string | null,
+        serial_number: (it.serialNumber ?? null) as string | null,
+        cable_meter: asNum(it.meter),
+      }));
+    }
+  } catch {}
 
-  if (!res.ok) {
-    // fallback /api/job-photos?jobId=
-    const alt = new URL(`/api/job-photos`, req.url);
-    alt.searchParams.set("jobId", jobId);
-    res = await fetch(alt, { cache: "no-store" });
+  // 2) Supabase direct
+  const rowsFromDb: RowMerged[] = [];
+  const { data: dbRows } = await supabase
+    .from("job_photos")
+    .select("category_id, url, thumb_url, serial_number, cable_meter")
+    .eq("job_id", jobId);
+
+  for (const r of (dbRows || []) as any[]) {
+    rowsFromDb.push({
+      category_id: String(r.category_id),
+      url: (r.thumb_url || r.url || null) as string | null,
+      serial_number: (r.serial_number ?? null) as string | null,
+      cable_meter: asNum(r.cable_meter),
+    });
   }
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    throw new Error(err?.error || "Gagal ambil data foto");
+  // 3) Merge (DB jadi prioritas, lalu API)
+  const byId = new Map<string, RowMerged>();
+  for (const r of [...rowsFromDb, ...apiItems]) {
+    const cur = byId.get(r.category_id);
+    byId.set(r.category_id, {
+      category_id: r.category_id,
+      url: cur?.url ?? r.url ?? null,
+      serial_number: cur?.serial_number ?? r.serial_number ?? null,
+      cable_meter: cur?.cable_meter ?? r.cable_meter ?? null,
+    });
   }
+  return Array.from(byId.values());
+}
 
-  const data = await res.json();
-  const items = Array.isArray(data)
-    ? data
-    : Array.isArray(data.items)
-    ? data.items
-    : [];
+/* ===================== Helper: simpan file + catat laporan ===================== */
+async function uploadReportAndLog({
+  jobId,
+  templateFilename,
+  fileBuffer,
+  req,
+}: {
+  jobId: string;
+  templateFilename: string;
+  fileBuffer: Buffer;
+  req: NextRequest;
+}) {
+  try {
+    // 1) pastikan bucket ada
+    await ensureReportBucket();
 
-  type Item = {
-    id: string | number;
-    photo?: string | null;
-    photoThumb?: string | null;
-    serialNumber?: string | null;
-    meter?: number | null;
-  };
+    // 2) upload file ke storage (opsional, berguna untuk arsip)
+    const ts = Date.now();
+    const safeTpl = path.basename(templateFilename).replace(/\.docx$/i, "");
+    const objectPath = `${encodeURIComponent(jobId)}/${ts}-${safeTpl}.docx`;
 
-  return (items as Item[]).map((it) => ({
-    category_id: String(it.id),
-    url: (it.photoThumb || it.photo || null) as string | null, // tampilkan thumb jika ada
-    serial_number: it.serialNumber ?? null,
-    cable_meter: it.meter ?? null,
-  }));
+    const up = await supabase.storage
+      .from(REPORT_BUCKET)
+      .upload(objectPath, fileBuffer, {
+        contentType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        upsert: true,
+      });
+
+    if (up.error) throw up.error;
+
+    const publicUrl = supabase.storage
+      .from(REPORT_BUCKET)
+      .getPublicUrl(objectPath).data.publicUrl;
+
+    // 3) ambil project_id dari job_id
+    const { data: proj, error: pErr } = await supabase
+      .from("projects")
+      .select("id, template_key")
+      .eq("job_id", jobId)
+      .maybeSingle();
+
+    if (pErr) throw pErr;
+
+    // 4) catat ke tabel generated_reports (jika tabel belum ada → abaikan gracefully)
+    const insertPayload: Record<string, any> = {
+      project_id: proj?.id,
+      job_id: jobId,
+      file_url: publicUrl,
+      template_key: proj?.template_key ?? templateFilename,
+    };
+
+    const ins = await supabase.from("generated_reports").insert(insertPayload);
+    if (ins.error) {
+      // kalau tabel nggak ada, jangan gagalkan download
+      const msg = String(ins.error.message || "");
+      const isMissing = /does not exist|relation .* generated_reports/i.test(
+        msg
+      );
+      if (!isMissing) throw ins.error;
+    }
+  } catch (e) {
+    // Jangan hentikan respons download; hanya log
+    console.warn("[docx] upload/log warning:", e);
+  }
 }
 
 /* ===================== Generator ===================== */
@@ -230,78 +323,93 @@ async function generateDocx(
 ) {
   if (!jobId) throw new Error("jobId wajib diisi");
 
-  // 1) Tentukan file template (dari param atau DB)
   const templateFilename = await resolveTemplateFilename(
     jobId,
     templateKeyParam
   );
-
-  // 2) Baca template sebagai STRING BINER
   const templateBinary = await readTemplateBinaryString(req, templateFilename);
+  if ((templateBinary as any)?.then)
+    throw new Error("Internal: templateBinary masih Promise.");
 
-  // Safety: pastikan bukan Promise (penyebab utama error PizZip)
-  if (templateBinary && typeof (templateBinary as any).then === "function") {
-    throw new Error(
-      "Internal: templateBinary masih Promise (harusnya sudah di-await)."
-    );
-  }
-
-  // 3) Ambil foto + PREFETCH semua URL → data URL (agar getImage sinkron)
-  const photoRows = await loadPhotos(req, jobId);
+  const rows = await loadPhotosMerged(req, jobId);
 
   const data: Record<string, any> = {};
-  for (const r of photoRows) {
+  const metersById = new Map<string, number>();
+
+  // set photo/sn/meter placeholders
+  for (const r of rows) {
     const id = String(r.category_id);
 
-    // photo → jadikan data:URL (prefetch)
+    // Prefetch image jadi dataURL agar sinkron
     let photoDataUrl = BLANK_IMAGE_DATAURL;
     if (r.url) {
-      if (r.url.startsWith("data:")) {
-        photoDataUrl = r.url;
-      } else {
+      if (r.url.startsWith("data:")) photoDataUrl = r.url;
+      else {
         try {
           photoDataUrl = await fetchToDataUrl(r.url);
-        } catch {
-          photoDataUrl = BLANK_IMAGE_DATAURL;
-        }
+        } catch {}
       }
     }
     data[`photo_${id}`] = photoDataUrl;
 
-    if (r.serial_number) data[`sn_${id}`] = r.serial_number;
-    if (typeof r.cable_meter === "number")
-      data[`meter_${id}`] = String(r.cable_meter);
+    if (r.serial_number) data[`sn_${id}`] = String(r.serial_number);
+
+    // Jangan pernah hasilkan "undefined" — kosongkan jika null
+    const m = r.cable_meter;
+    if (m !== null && m !== undefined && Number.isFinite(Number(m))) {
+      const mv = Number(m);
+      metersById.set(id, mv);
+      data[`meter_${id}`] = String(mv);
+    } else {
+      data[`meter_${id}`] = ""; // hindari "undefined"
+    }
   }
 
-  // 4) Buat zip dari STRING BINER (bukan Buffer/Promise)
-  const zip = new PizZip(templateBinary);
+  // hitung total terpakai = awal − akhir (per pasangan)
+  const pairs = [
+    { before: "28", after: "29", key: "cam1" },
+    { before: "30", after: "31", key: "cam2" },
+    { before: "32", after: "33", key: "cam3" },
+    { before: "34", after: "35", key: "cam4" },
+    { before: "36", after: "37", key: "nvr" },
+  ];
 
-  // 5) Render dokumen (v4: pakai modules & render(data))
+  for (const { before, after, key } of pairs) {
+    const a = metersById.get(before);
+    const b = metersById.get(after);
+    if (typeof a === "number" && typeof b === "number") {
+      const diff = a - b; // sesuai permintaan: awal − akhir
+      data[`meter_total_${key}`] = String(diff);
+      data[`meter_total_${before}_${after}`] = String(diff); // alias generik
+    } else {
+      data[`meter_total_${key}`] = "";
+      data[`meter_total_${before}_${after}`] = "";
+    }
+  }
+
+  const zip = new PizZip(templateBinary);
   const doc = new Docxtemplater(zip, {
     paragraphLoop: true,
     linebreaks: true,
     modules: [buildImageModule()],
   });
 
-  try {
-    doc.render(data);
-  } catch (e: any) {
-    // debugging nyaman
-    const errs = e?.properties?.errors as Array<any> | undefined;
-    if (errs?.length) {
-      console.error("[docx] render errors:");
-      for (const er of errs) {
-        console.error(`- ${er.properties?.id}: ${er.properties?.explanation}`);
-      }
-    } else {
-      console.error("[docx] render error:", e);
-    }
-    throw e;
-  }
+  doc.render(data);
 
-  // 6) Kirim hasil
-  const out = doc.getZip().generate({ type: "arraybuffer" });
-  return new NextResponse(out, {
+  // hasilkan buffer dokumen
+  const outAB = doc.getZip().generate({ type: "arraybuffer" });
+  const outBuf = Buffer.from(outAB as ArrayBuffer);
+
+  // Simpan ke storage + log ke generated_reports (tidak mengganggu download)
+  await uploadReportAndLog({
+    jobId,
+    templateFilename,
+    fileBuffer: outBuf,
+    req,
+  });
+
+  // kirim file ke klien
+  return new NextResponse(outBuf, {
     headers: {
       "Content-Type":
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -318,8 +426,7 @@ export async function POST(req: NextRequest) {
     const templateKey =
       (body?.templateKey && String(body.templateKey)) ||
       (body?.template_key && String(body.template_key)) ||
-      undefined; // opsional
-
+      undefined;
     return await generateDocx(req, jobId, templateKey);
   } catch (e: any) {
     return NextResponse.json(
@@ -332,12 +439,10 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   try {
     const jobId = String(req.nextUrl.searchParams.get("jobId") || "");
-    // override opsional via ?template_key= / ?templateKey=
     const templateKey =
       req.nextUrl.searchParams.get("template_key") ||
       req.nextUrl.searchParams.get("templateKey") ||
       undefined;
-
     return await generateDocx(req, jobId, templateKey);
   } catch (e: any) {
     return NextResponse.json(

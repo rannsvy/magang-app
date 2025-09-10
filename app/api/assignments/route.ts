@@ -13,6 +13,13 @@ type ShapedAssignment = {
   isSelected: boolean;
 };
 
+// ===== Helper waktu =====
+// Menghasilkan string ISO dengan offset +07:00 (WIB) untuk "momen sekarang".
+function nowWIBIso(): string {
+  const wibMs = Date.now() + 7 * 60 * 60 * 1000; // UTC -> WIB
+  return new Date(wibMs).toISOString().replace("Z", "+07:00");
+}
+
 // util: date - 1 hari (YYYY-MM-DD)
 function prevDate(iso: string) {
   const [y, m, d] = iso.split("-").map(Number);
@@ -25,7 +32,6 @@ function prevDate(iso: string) {
 }
 
 // GET /api/assignments?date=YYYY-MM-DD
-// GET /api/assignments?date=YYYY-MM-DD
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const date = searchParams.get("date");
@@ -36,19 +42,9 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  // util minus 1 hari
-  const prevDate = (iso: string) => {
-    const [y, m, d] = iso.split("-").map(Number);
-    const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
-    dt.setDate(dt.getDate() - 1);
-    const yy = dt.getFullYear();
-    const mm = String(dt.getMonth() + 1).padStart(2, "0");
-    const dd = String(dt.getDate()).padStart(2, "0");
-    return `${yy}-${mm}-${dd}`;
-  };
   const dMinus1 = prevDate(date);
 
-  // 1) Membership aktif (sumber initial + leader). Handle nested technicians (obj/array).
+  // 1) Membership aktif (sumber initial + leader)
   const { data: pa, error: paErr } = await supabaseServer
     .from("project_assignments")
     .select(
@@ -72,7 +68,7 @@ export async function GET(req: NextRequest) {
   );
   if (projectIds.length === 0) return NextResponse.json({ data: [] });
 
-  // 2) Proyek yang aktif pada 'date' & bukan pending
+  // 2) Proyek aktif pada 'date' & bukan pending
   const { data: projects, error: projErr } = await supabaseServer
     .from("projects")
     .select(
@@ -136,10 +132,7 @@ export async function GET(req: NextRequest) {
     prevByProject.set(r.project_id, arr);
   }
 
-  // 5) Final selectedSet:
-  //    - jika proyek sudah punya attendance di D -> pakai itu,
-  //    - jika belum & proyek aktif -> auto-continue dari D-1,
-  //    - proyek pending/closed/di luar rentang -> tidak di-autoselect.
+  // 5) Final selectedSet
   const selectedSet = new Set(selectedTodaySet);
   for (const pid of activeProjectSet) {
     const hasToday = (todayCountByProject.get(pid) ?? 0) > 0;
@@ -150,8 +143,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 6) Bentuk payload untuk UI — HANYA kembalikan sel yang ter-select (atau leader pada sel ter-select),
-  //    supaya tidak muncul abu-abu.
+  // 6) Payload untuk UI — hanya sel ter-select (atau leader pada sel ter-select)
   const shaped: ShapedAssignment[] = (pa ?? [])
     .filter((row: any) => activeProjectSet.has(row.project_id))
     .map((row: any) => {
@@ -168,11 +160,11 @@ export async function GET(req: NextRequest) {
         projectId: row.project_id as string,
         technicianCode: code,
         initial: initials,
-        isProjectLeader: isLeader && isSelected, // leader ditandai saat sel ter-select
+        isProjectLeader: isLeader && isSelected,
         isSelected,
       } as ShapedAssignment;
     })
-    .filter((x) => x.isSelected || x.isProjectLeader); // tidak kirim baris yang kosong
+    .filter((x) => x.isSelected || x.isProjectLeader);
 
   return NextResponse.json({ data: shaped });
 }
@@ -191,6 +183,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "date wajib diisi" }, { status: 400 });
   }
 
+  // ⏱ Realtime WIB untuk cap waktu
+  const nowWIB = nowWIBIso();
+
   // Kelompokkan per proyek dari items yang dipilih
   const byProject = new Map<string, { selected: Set<string> }>();
   for (const it of items) {
@@ -202,7 +197,7 @@ export async function POST(req: NextRequest) {
   }
   const projectsWithAssignments = Array.from(byProject.keys());
 
-  // scope proyek: pakai body.projectIds kalau ada, fallback ke projectsWithAssignments
+  // scope proyek: body.projectIds? else projectsWithAssignments
   const scopeProjectIds: string[] =
     Array.isArray(body?.projectIds) && body.projectIds.length
       ? body.projectIds
@@ -238,19 +233,14 @@ export async function POST(req: NextRequest) {
     (id) => !pendingSet.has(id) && !completedSet.has(id)
   );
 
-  // WIB awal hari untuk cap assigned_at/removed_at
-  const dayStartIso = new Date(`${date}T00:00:00.000+07:00`).toISOString();
-
   /* ------------------------------------------------------------------
    * 1) SOFT-DELETE membership yang tidak lagi dipilih per proyek
-   *    (untuk proyek dalam cakupan aktif). Jika selected kosong,
-   *    maka semua baris aktif proyek tsb akan disoft-delete.
    * ------------------------------------------------------------------ */
   for (const pid of activeScopeProjectIds) {
     const selected = Array.from(byProject.get(pid)?.selected ?? []);
     let q = supabaseServer
       .from("project_assignments")
-      .update({ removed_at: dayStartIso, is_leader: false })
+      .update({ removed_at: nowWIB, is_leader: false }) // ✅ realtime WIB
       .eq("project_id", pid)
       .is("removed_at", null);
 
@@ -269,8 +259,7 @@ export async function POST(req: NextRequest) {
   }
 
   /* ------------------------------------------------------------------
-   * 2) INSERT hanya pasangan (project, technician) yang BELUM aktif
-   *    setelah langkah soft-delete. Ini menghindari duplikat tanpa UPSERT.
+   * 2) INSERT pasangan (project, technician) yang BELUM aktif
    * ------------------------------------------------------------------ */
   // Ambil membership aktif terbaru
   let activePairs: Array<{ project_id: string; technician_id: string }> = [];
@@ -310,7 +299,7 @@ export async function POST(req: NextRequest) {
         toInsert.push({
           project_id: pid,
           technician_id: tid,
-          assigned_at: dayStartIso,
+          assigned_at: nowWIB, // ✅ realtime WIB
           is_leader: false, // akan di-set di langkah 3
           removed_at: null,
         });
@@ -330,7 +319,7 @@ export async function POST(req: NextRequest) {
   }
 
   /* ------------------------------------------------------------------
-   * 3) Sinkronisasi leader per proyek (maks 1 aktif — index/trigger enforce)
+   * 3) Sinkronisasi leader per proyek (maks 1 aktif)
    * ------------------------------------------------------------------ */
   const leadersByProject = new Map<string, string[]>();
   for (const it of items) {
@@ -370,10 +359,7 @@ export async function POST(req: NextRequest) {
   }
 
   /* ------------------------------------------------------------------
-   * 4) Attendance hari D:
-   *    - Hapus attendance HANYA untuk proyek yang ada di assignments
-   *    - Insert attendance baru dari pilihan UI
-   *    - Preserve attendance proyek aktif lain yang tidak tersentuh
+   * 4) Attendance hari D
    * ------------------------------------------------------------------ */
   if (projectsWithAssignments.length) {
     const { error: delErr } = await supabaseServer
@@ -441,8 +427,7 @@ export async function POST(req: NextRequest) {
   }
 
   /* ------------------------------------------------------------------
-   * 5) Update project_status berbasis attendance aktual HARI D.
-   *    (ongoing jika ada attendance; unassigned jika tidak — kecuali pending)
+   * 5) Update project_status berbasis attendance HARI D
    * ------------------------------------------------------------------ */
   const projectsWithAnyAttendanceToday = new Set(
     attRows.map((r) => r.project_id)

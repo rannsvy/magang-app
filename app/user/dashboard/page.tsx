@@ -1,3 +1,4 @@
+// app/user/dashboard/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -6,6 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { TechnicianHeader } from "@/components/technician-header";
 import { Pagination } from "@/components/pagination";
 import { Star } from "lucide-react";
+import { PWAInstallPrompt } from "@/components/pwa-install-prompt";
 import { createClient } from "@supabase/supabase-js";
 
 type Job = {
@@ -17,6 +19,10 @@ type Job = {
   progress?: number | null; // 0..100
   isPending?: boolean; // dari /api/job-photos/[jobId]
   assignedTechnicians: { name: string; isLeader: boolean }[];
+
+  // Tambahan agar filter Survey bisa jalan TANPA mengubah tampilan
+  type?: "survey" | "instalasi";
+  building_name?: string | null;
 };
 
 const supabase = createClient(
@@ -24,7 +30,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// debounce kecil biar gak refetch berkali-kali saat event bertubi-tubi
+// debounce kecil
 function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
   let t: any;
   return (...args: any[]) => {
@@ -32,121 +38,6 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
     t = setTimeout(() => fn(...args), ms);
   };
 }
-import { useState } from "react"
-import { useRouter } from "next/navigation"
-import { Card, CardContent } from "@/components/ui/card"
-import { TechnicianHeader } from "@/components/technician-header"
-import { Pagination } from "@/components/pagination"
-import { Star } from "lucide-react"
-import { PWAInstallPrompt } from "@/components/pwa-install-prompt"
-
-interface Job {
-  id: string
-  name: string
-  location: string
-  status: "not-started" | "in-progress" | "completed"
-  progress?: number
-  assignedTechnicians: { name: string; isLeader: boolean }[]
-  jobId: string
-}
-
-// Mock data for demonstration
-const mockJobs: Job[] = [
-  {
-    id: "1",
-    name: "Pemasangan CCTV RW 06",
-    location: "Jl. Merdeka No. 123",
-    status: "not-started",
-    assignedTechnicians: [
-      { name: "Edo", isLeader: true },
-      { name: "Ahmad", isLeader: false },
-      { name: "Fahmi", isLeader: false },
-    ],
-    jobId: "JOB-PEMASANGAN-CCTV-01",
-  },
-  {
-    id: "2",
-    name: "Maintenance Server Kantor",
-    location: "Gedung Perkantoran Lt. 5",
-    status: "in-progress",
-    progress: 30,
-    assignedTechnicians: [
-      { name: "Ahmad", isLeader: true },
-      { name: "Budi", isLeader: false },
-    ],
-    jobId: "JOB-MAINTENANCE-SERVER-01",
-  },
-  {
-    id: "3",
-    name: "Instalasi Jaringan WiFi",
-    location: "Komplek Perumahan Blok A",
-    status: "completed",
-    assignedTechnicians: [
-      { name: "Fahmi", isLeader: true },
-      { name: "Edo", isLeader: false },
-      { name: "Ahmad", isLeader: false },
-    ],
-    jobId: "JOB-INSTALASI-JARINGAN-WIFI-01",
-  },
-  {
-    id: "4",
-    name: "Perbaikan Router Mikrotik",
-    location: "Warnet Cyber Net",
-    status: "in-progress",
-    progress: 75,
-    assignedTechnicians: [
-      { name: "Ahmad", isLeader: true },
-      { name: "Candra", isLeader: false },
-    ],
-    jobId: "JOB-PERBAIKAN-ROUTER-MIKROTIK-01",
-  },
-  {
-    id: "5",
-    name: "Setup Access Point",
-    location: "Cafe Corner Street",
-    status: "not-started",
-    assignedTechnicians: [
-      { name: "Budi", isLeader: true },
-      { name: "Fahmi", isLeader: false },
-    ],
-    jobId: "JOB-SETUP-ACCESS-POINT-01",
-  },
-  {
-    id: "6",
-    name: "Konfigurasi Firewall",
-    location: "PT. Teknologi Maju",
-    status: "completed",
-    assignedTechnicians: [
-      { name: "Edo", isLeader: true },
-      { name: "Ahmad", isLeader: false },
-    ],
-    jobId: "JOB-KONFIGURASI-FIREWALL-01",
-  },
-  {
-    id: "7",
-    name: "Instalasi CCTV Toko",
-    location: "Toko Elektronik Jaya",
-    status: "not-started",
-    assignedTechnicians: [
-      { name: "Ahmad", isLeader: true },
-      { name: "Candra", isLeader: false },
-      { name: "Budi", isLeader: false },
-    ],
-    jobId: "JOB-INSTALASI-CCTV-TOKO-01",
-  },
-  {
-    id: "8",
-    name: "Maintenance UPS Server",
-    location: "Data Center Regional",
-    status: "in-progress",
-    progress: 50,
-    assignedTechnicians: [
-      { name: "Fahmi", isLeader: true },
-      { name: "Edo", isLeader: false },
-    ],
-    jobId: "JOB-MAINTENANCE-UPS-SERVER-01",
-  },
-]
 
 export default function TechnicianDashboard() {
   const router = useRouter();
@@ -159,6 +50,11 @@ export default function TechnicianDashboard() {
   const [currentPage, setCurrentPage] = useState(1);
   const jobsPerPage = 4;
 
+  // segmented filter di header (UI kamu)
+  const [filterType, setFilterType] = useState<"all" | "survey" | "instalasi">(
+    "all"
+  );
+
   const technicianKeyRef = useRef<string | null>(null);
   const baseChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
     null
@@ -169,6 +65,12 @@ export default function TechnicianDashboard() {
   const photosChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
     null
   );
+  const surveyRoomsChannelRef = useRef<ReturnType<
+    typeof supabase.channel
+  > | null>(null);
+
+  // Cegah dobel PATCH completed (integrasi DB code 2)
+  const completedPostedRef = useRef<Set<string>>(new Set());
 
   async function getJobProgress(
     jobId: string
@@ -188,7 +90,6 @@ export default function TechnicianDashboard() {
   }
 
   async function attachProgress(items: Job[]): Promise<Job[]> {
-    // kamu bisa batasi hanya current page biar lebih hemat request.
     const enriched = await Promise.all(
       items.map(async (j) => {
         const { percent, isPending } = await getJobProgress(j.job_id);
@@ -207,6 +108,20 @@ export default function TechnicianDashboard() {
       })
     );
     return enriched;
+  }
+
+  // Tandai project selesai -> PATCH ke /api/projects/status
+  async function markProjectCompleted(projectId: string) {
+    try {
+      await fetch("/api/projects/status", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, status: "completed" }),
+      });
+    } catch (e) {
+      completedPostedRef.current.delete(projectId);
+      console.error("markProjectCompleted failed:", e);
+    }
   }
 
   const loadJobs = async () => {
@@ -240,11 +155,23 @@ export default function TechnicianDashboard() {
       const withProgress = await attachProgress(json.items ?? []);
       setJobs(withProgress);
 
-      // (re)subscribe ke tabel untuk ID yang sedang ditugaskan
-      const projectIds = (json.items ?? []).map((j: Job) => j.id); // projects.id
-      const jobIds = (json.items ?? []).map((j: Job) => j.job_id); // projects.job_id
+      // Auto-complete bila progress >= 100 & bukan pending
+      const candidates = withProgress.filter(
+        (j) => (j.progress ?? 0) >= 100 && !j.isPending
+      );
+      for (const j of candidates) {
+        if (!completedPostedRef.current.has(j.id)) {
+          completedPostedRef.current.add(j.id);
+          markProjectCompleted(j.id);
+        }
+      }
+
+      // Re-subscribe realtime untuk data yang relevan
+      const projectIds = (json.items ?? []).map((j: Job) => j.id);
+      const jobIds = (json.items ?? []).map((j: Job) => j.job_id);
       resubscribeProjects(projectIds);
       resubscribePhotos(jobIds);
+      resubscribeSurveyRooms(projectIds); // supaya filter Survey ikut realtime
     } catch (e: any) {
       setErr(e.message || "Gagal memuat pekerjaan");
       setJobs([]);
@@ -253,13 +180,12 @@ export default function TechnicianDashboard() {
     }
   };
 
-  // panggil saat mount & saat query berubah
   useEffect(() => {
     loadJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // ====== Realtime global: assignment & project changes → refetch daftar
+  // Realtime global: perubahan assignment/projects → refetch
   useEffect(() => {
     const debouncedReload = debounce(loadJobs, 200);
 
@@ -275,12 +201,6 @@ export default function TechnicianDashboard() {
         { event: "*", schema: "public", table: "projects" },
         debouncedReload
       )
-      // opsional: kalau mau dengar semua upload apa pun (bisa noisy)
-      // .on(
-      //   "postgres_changes",
-      //   { event: "*", schema: "public", table: "job_photos" },
-      //   debouncedReload
-      // )
       .subscribe();
 
     baseChannelRef.current = ch;
@@ -293,7 +213,7 @@ export default function TechnicianDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // subscribe khusus projects yang aktif di list (lebih hemat)
+  // Subscribe khusus projects yang aktif di list
   function resubscribeProjects(projectIds: string[]) {
     if (projectsChannelRef.current) {
       supabase.removeChannel(projectsChannelRef.current);
@@ -323,7 +243,7 @@ export default function TechnicianDashboard() {
     projectsChannelRef.current = ch;
   }
 
-  // subscribe khusus job_photos untuk job_id yang tampil
+  // Subscribe khusus job_photos untuk job_id yang tampil
   function resubscribePhotos(jobIds: string[]) {
     if (photosChannelRef.current) {
       supabase.removeChannel(photosChannelRef.current);
@@ -331,7 +251,7 @@ export default function TechnicianDashboard() {
     }
     if (!jobIds.length) return;
 
-    // job_id bertipe text, jadi harus di-quote
+    // job_id bertipe text, jadi harus di-quote dan escape
     const q = jobIds.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
 
     const ch = supabase
@@ -351,14 +271,45 @@ export default function TechnicianDashboard() {
     photosChannelRef.current = ch;
   }
 
+  // Subscribe ke rooms survey → bila bertambah/berkurang, filter Survey ikut update realtime
+  function resubscribeSurveyRooms(projectIds: string[]) {
+    if (surveyRoomsChannelRef.current) {
+      supabase.removeChannel(surveyRoomsChannelRef.current);
+      surveyRoomsChannelRef.current = null;
+    }
+    if (!projectIds.length) return;
+    const inList = projectIds.map((x) => `"${x}"`).join(",");
+
+    const ch = supabase
+      .channel("tech-dashboard-surveyrooms")
+      .on(
+        "postgres_changes",
+        {
+          schema: "public",
+          table: "project_survey_rooms",
+          event: "*",
+          filter: `project_id=in.(${inList})`,
+        },
+        debounce(loadJobs, 150)
+      )
+      .subscribe();
+
+    surveyRoomsChannelRef.current = ch;
+  }
+
+  // ======== UI kamu: filter tipe pekerjaan ========
+  const filteredJobs = useMemo(() => {
+    if (filterType === "all") return jobs;
+    return jobs.filter((j) => (j.type ?? "instalasi") === filterType);
+  }, [jobs, filterType]);
+
   const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(jobs.length / jobsPerPage)),
-    [jobs.length]
+    () => Math.max(1, Math.ceil(filteredJobs.length / jobsPerPage)),
+    [filteredJobs.length]
   );
   const startIndex = (currentPage - 1) * jobsPerPage;
-  const currentJobs = jobs.slice(startIndex, startIndex + jobsPerPage);
+  const currentJobs = filteredJobs.slice(startIndex, startIndex + jobsPerPage);
 
-  // badge rules: Pending > Selesai(100%) > Persentase
   const getStatusDisplay = (job: Job) => {
     if (job.isPending) {
       return { text: "Pending", color: "bg-amber-100 text-amber-700" };
@@ -379,26 +330,53 @@ export default function TechnicianDashboard() {
     return "bg-gray-50 border-gray-200";
   };
 
-  const handleJobClick = (jobId: string) => {
-    router.push(`/user/upload_foto?job=${encodeURIComponent(jobId)}`);
+  // Klik card: rute survey vs instalasi (tetap gaya kamu)
+  const handleJobClick = (job: Job) => {
+    if (job.type === "survey") {
+      router.push(`/user/survey/floors?jobId=${encodeURIComponent(job.id)}`);
+    } else {
+      router.push(`/user/upload_foto?job=${encodeURIComponent(job.job_id)}`);
+    }
   };
 
   const handlePrevPage = () => setCurrentPage((p) => Math.max(1, p - 1));
   const handleNextPage = () =>
     setCurrentPage((p) => Math.min(totalPages, p + 1));
 
+  // Bersihkan channel realtime saat unmount
+  useEffect(() => {
+    return () => {
+      if (projectsChannelRef.current)
+        supabase.removeChannel(projectsChannelRef.current);
+      if (photosChannelRef.current)
+        supabase.removeChannel(photosChannelRef.current);
+      if (surveyRoomsChannelRef.current)
+        supabase.removeChannel(surveyRoomsChannelRef.current);
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-gray-50">
-      <TechnicianHeader title="Sistem Laporan Teknisi" />
+      {/* Header + segmented filter di kanan (UI kamu) */}
+      <TechnicianHeader
+        title="SiLapor"
+        showFilter
+        filterValue={filterType}
+        onFilterChange={(v) => {
+          setFilterType(v);
+          setCurrentPage(1);
+        }}
+      />
+
       <main className="p-4">
         <div className="max-w-md mx-auto">
           {loading ? (
             <div className="text-center text-sm text-gray-600">Memuat...</div>
           ) : err ? (
             <div className="text-center text-sm text-red-600">{err}</div>
-          ) : jobs.length === 0 ? (
+          ) : filteredJobs.length === 0 ? (
             <div className="text-center text-sm text-gray-600">
-              Tidak ada tugas untuk teknisi ini.
+              Tidak ada tugas untuk filter ini.
             </div>
           ) : (
             <>
@@ -411,7 +389,7 @@ export default function TechnicianDashboard() {
                     <Card
                       key={job.id}
                       className={`cursor-pointer transition-all hover:shadow-md ${bg}`}
-                      onClick={() => handleJobClick(job.job_id)}
+                      onClick={() => handleJobClick(job)}
                     >
                       <CardContent className="px-2 py-1">
                         <div className="flex justify-between items-start mb-1">
@@ -419,9 +397,17 @@ export default function TechnicianDashboard() {
                             <h3 className="font-bold text-sm text-gray-900 mb-0.5 leading-tight">
                               {job.name}
                             </h3>
+
+                            {job.type === "survey" && job.building_name ? (
+                              <p className="text-xs font-medium text-gray-700 leading-tight mb-0.5">
+                                Nama Gedung: {job.building_name}
+                              </p>
+                            ) : null}
+
                             <p className="text-xs text-gray-600 leading-tight mb-0.5">
                               {job.lokasi ?? "-"}
                             </p>
+
                             <div className="text-xs text-gray-600 mb-0.5">
                               <span className="font-medium">
                                 Ditugaskan bersama:
@@ -443,6 +429,7 @@ export default function TechnicianDashboard() {
                               </div>
                             </div>
                           </div>
+
                           <div className="flex flex-col items-end gap-0.5">
                             <div
                               className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
@@ -473,7 +460,8 @@ export default function TechnicianDashboard() {
         </div>
       </main>
 
-      <PWAInstallPrompt/>
+      {/* Prompt PWA (tetap ada) */}
+      <PWAInstallPrompt />
     </div>
   );
 }

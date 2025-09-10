@@ -1,16 +1,90 @@
-"use client"
+// app/admin/dashboard/page.tsx
+"use client";
 
-import { Card, CardContent } from "@/components/ui/card"
-import { AdminHeader } from "@/components/admin-header"
-import { FileText, CheckCircle, Clock, Users, CalendarCheck, History } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { useEffect, useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { AdminHeader } from "@/components/admin-header";
+import {
+  FileText,
+  CheckCircle,
+  Clock,
+  Users,
+  CalendarCheck,
+  History,
+} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { createClient } from "@supabase/supabase-js";
+
+type Stats = {
+  completedCount: number;
+  ongoingCount: number;
+  reportsCount: number;
+};
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 export default function AdminDashboard() {
-  const router = useRouter()
+  const router = useRouter();
+  const [stats, setStats] = useState<Stats>({
+    completedCount: 0,
+    ongoingCount: 0,
+    reportsCount: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
-  const handleNavigation = (path: string) => {
-    router.push(path)
+  const handleNavigation = (path: string) => router.push(path);
+
+  async function loadStats() {
+    try {
+      setLoading(true);
+      setErr(null);
+      const res = await fetch("/api/stats/dashboard", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "gagal ambil statistik");
+      setStats(json.data as Stats);
+    } catch (e: any) {
+      setErr(e?.message || "gagal ambil statistik");
+    } finally {
+      setLoading(false);
+    }
   }
+
+  useEffect(() => {
+    loadStats();
+  }, []);
+
+  // Realtime: perubahan di projects / generated_reports -> refresh angka
+  useEffect(() => {
+    let t: any;
+    const refresh = () => {
+      clearTimeout(t);
+      t = setTimeout(loadStats, 150);
+    };
+
+    const ch = supabase
+      .channel("admin-dashboard-stats")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "projects" },
+        refresh
+      )
+      // jika tabel generated_reports belum ada, channel tetap aman (tak ada event)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "generated_reports" },
+        refresh
+      )
+      .subscribe();
+
+    return () => {
+      clearTimeout(t);
+      supabase.removeChannel(ch);
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -27,10 +101,17 @@ export default function AdminDashboard() {
                     <CheckCircle className="h-12 w-12 text-green-600" />
                   </div>
                   <div className="ml-6">
-                    <p className="text-lg font-medium text-gray-600 mb-1">Pekerjaan Selesai</p>
-                    <p className="text-4xl font-bold text-gray-900">24</p>
+                    <p className="text-lg font-medium text-gray-600 mb-1">
+                      Pekerjaan Selesai
+                    </p>
+                    <p className="text-4xl font-bold text-gray-900">
+                      {loading ? "…" : stats.completedCount}
+                    </p>
                   </div>
                 </div>
+                {err && (
+                  <p className="text-xs text-red-600 mt-2">Error: {err}</p>
+                )}
               </CardContent>
             </Card>
 
@@ -41,8 +122,12 @@ export default function AdminDashboard() {
                     <Clock className="h-12 w-12 text-yellow-600" />
                   </div>
                   <div className="ml-6">
-                    <p className="text-lg font-medium text-gray-600 mb-2">Sedang Berlangsung</p>
-                    <p className="text-2xl font-bold text-gray-900">8</p>
+                    <p className="text-lg font-medium text-gray-600 mb-2">
+                      Sedang Berlangsung
+                    </p>
+                    <p className="text-4xl font-bold text-gray-900">
+                      {loading ? "…" : stats.ongoingCount}
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -54,9 +139,13 @@ export default function AdminDashboard() {
                   <div className="p-4 bg-blue-100 rounded-full">
                     <FileText className="h-12 w-12 text-blue-600" />
                   </div>
-                  <div className="ml-6  ">
-                    <p className="text-lg font-medium text-gray-600 mb-2">Laporan Dibuat</p>
-                    <p className="text-2xl font-bold text-gray-900">18</p>
+                  <div className="ml-6">
+                    <p className="text-lg font-medium text-gray-600 mb-2">
+                      Laporan Dibuat
+                    </p>
+                    <p className="text-4xl font-bold text-gray-900">
+                      {loading ? "…" : stats.reportsCount}
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -75,8 +164,12 @@ export default function AdminDashboard() {
                     <Users className="h-16 w-16 text-purple-600" />
                   </div>
                   <div>
-                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Kelola Teknisi</h3>
-                    <p className="text-[14px] text-gray-600">Lihat & kelola data teknisi</p>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">
+                      Kelola Teknisi
+                    </h3>
+                    <p className="text-[14px] text-gray-600">
+                      Lihat & kelola data teknisi
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -92,8 +185,12 @@ export default function AdminDashboard() {
                     <CalendarCheck className="h-16 w-16 text-orange-600" />
                   </div>
                   <div>
-                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Assign Penjadwalan</h3>
-                    <p className="text-[14px] text-gray-600">Penjadwalan Project dan Teknisi</p>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">
+                      Assign Penjadwalan
+                    </h3>
+                    <p className="text-[14px] text-gray-600">
+                      Penjadwalan Project dan Teknisi
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -109,8 +206,12 @@ export default function AdminDashboard() {
                     <FileText className="h-16 w-16 text-green-600" />
                   </div>
                   <div>
-                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Generate Laporan</h3>
-                    <p className="text-[14px] text-gray-600">Pilih pekerjaan dan generate laporan</p>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">
+                      Generate Laporan
+                    </h3>
+                    <p className="text-[14px] text-gray-600">
+                      Pilih pekerjaan dan generate laporan
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -126,8 +227,12 @@ export default function AdminDashboard() {
                     <History className="h-16 w-16 text-indigo-600" />
                   </div>
                   <div>
-                    <h3 className="text-3xl font-bold text-gray-900 mb-2">Riwayat Pekerjaan</h3>
-                    <p className="text-[14px] text-gray-600">Lihat riwayat semua pekerjaan</p>
+                    <h3 className="text-3xl font-bold text-gray-900 mb-2">
+                      Riwayat Pekerjaan
+                    </h3>
+                    <p className="text-[14px] text-gray-600">
+                      Lihat riwayat semua pekerjaan
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -136,5 +241,5 @@ export default function AdminDashboard() {
         </div>
       </main>
     </div>
-  )
+  );
 }
