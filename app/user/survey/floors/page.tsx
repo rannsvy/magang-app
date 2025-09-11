@@ -351,7 +351,7 @@ export default function SurveyFloors() {
           </div>
 
           <div className="flex flex-col gap-2 pt-2">
-            <div className="text-xs font-medium text-gray-500 mb-2">Lantai</div>
+            <div className="text-xs font-medium text-gray-500 mb-2"></div>
             {treeData.map((floor) => (
               <button
                 key={floor.floor_number}

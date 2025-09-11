@@ -50,7 +50,7 @@ export function TechnicianHeader({
               <ArrowLeft className="h-5 w-5" />
             </Button>
           )}
-          <h1 className="text-xl font-bold text-gray-900">{title}</h1>
+          <h1 className="text-[15px] font-bold text-gray-900">{title}</h1>
         </div>
 
         <div className="flex items-center gap-2">

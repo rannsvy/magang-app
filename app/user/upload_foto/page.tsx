@@ -518,7 +518,7 @@ export default function UploadFotoPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <TechnicianHeader title={`Upload Foto - Job #${jobId}`} />
+      <TechnicianHeader title={`Upload Foto - Job #${jobId}`} showBackButton backUrl="/user/dashboard" />
       <main className="p-2">
         <div className="max-w-4xl mx-auto">
           <div className="grid grid-cols-2 gap-1 mb-4">
