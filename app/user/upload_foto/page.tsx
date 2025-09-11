@@ -23,10 +23,9 @@ import { makeThumbnail, blobToDataUrl } from "@/lib/imageUtils";
 
 // ==== Realtime (SUPABASE) ====
 import { createClient } from "@supabase/supabase-js";
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL as string,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string
-);
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 /* ================= Types ================= */
 interface PhotoCategory {
@@ -137,7 +136,9 @@ async function refetchCategories(
   jobId: string,
   setCategories: React.Dispatch<React.SetStateAction<PhotoCategory[]>>
 ) {
-  const res = await fetch(`/api/job-photos/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+  const res = await fetch(`/api/job-photos/${encodeURIComponent(jobId)}`, {
+    cache: "no-store",
+  });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || "Gagal memuat kategori");
   const mapped: PhotoCategory[] = (json.items || []).map((it: any) => ({
@@ -188,9 +189,12 @@ export default function UploadFotoPage() {
   const [ocr, setOcr] = useState<Record<string, OcrInfo>>({});
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
   // crop states
   const [cropOpen, setCropOpen] = useState(false);
-  const [pendingCategoryId, setPendingCategoryId] = useState<string | null>(null);
+  const [pendingCategoryId, setPendingCategoryId] = useState<string | null>(
+    null
+  );
   const [srcToCrop, setSrcToCrop] = useState<string | null>(null);
   const [crop, setCrop] = useState<Crop | undefined>(undefined);
   const [completedCrop, setCompletedCrop] = useState<PixelCrop | null>(null);
@@ -351,7 +355,6 @@ export default function UploadFotoPage() {
     imgRef.current = img;
     setIsPortrait(img.naturalHeight >= img.naturalWidth);
 
-    // default crop (center)
     const iw = img.width;
     const ih = img.height;
     const base = Math.round(Math.min(iw, ih) * 0.85);
@@ -496,21 +499,18 @@ export default function UploadFotoPage() {
     );
 
     try {
-      // kirim sebagai multipart (agar bisa diproses SW queue)
-      const fd = new FormData();
-      const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`;
-      fd.append("photo", new File([fullBlob], fileName, { type: "image/jpeg" }));
-      fd.append("thumb", new File([thumbBlob], `thumb-${fileName}`, { type: "image/jpeg" }));
-      fd.append("jobId", jobId);
-      fd.append("categoryId", pendingCategoryId);
-      if (typeof meterVal === "number") fd.append("meter", String(meterVal));
-      if (cat?.serialNumber) fd.append("serialNumber", cat.serialNumber); // kalau sudah ada (manual/ocr)
-
-      const result = await safeUpload({
-        endpoint: UPLOAD_ENDPOINT,
-        formData: fd,
-        meta: { jobId, categoryId: pendingCategoryId, token },
+      const res = await fetch("/api/job-photos/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          categoryId: pendingCategoryId,
+          dataUrl: fullDataUrl,
+          thumbDataUrl,
+        }),
       });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Gagal upload");
 
       setCategories((prev) =>
         prev.map((c) =>
@@ -616,7 +616,9 @@ export default function UploadFotoPage() {
                     </CardContent>
                   </Card>
 
-                  <p className="text-xs font-medium text-center text-gray-700 px-1">{category.name}</p>
+                  <p className="text-xs font-medium text-center text-gray-700 px-1">
+                    {category.name}
+                  </p>
 
                   {/* Panjang kabel (manual) — hanya untuk kategori cable */}
                   {(category.photoThumb || category.photo) &&
@@ -687,7 +689,6 @@ export default function UploadFotoPage() {
                                 </Button>
                               </div>
                             </div>
-                          </div>
 
                             {oc && oc.status !== "idle" && (
                               <p className="text-[10px] text-center">
@@ -729,7 +730,9 @@ export default function UploadFotoPage() {
               currentPage={currentPage}
               totalPages={totalPages}
               onPrevPage={() => currentPage > 1 && setCurrentPage((p) => p - 1)}
-              onNextPage={() => currentPage < totalPages && setCurrentPage((p) => p + 1)}
+              onNextPage={() =>
+                currentPage < totalPages && setCurrentPage((p) => p + 1)
+              }
             />
           </div>
         </div>
@@ -738,7 +741,11 @@ export default function UploadFotoPage() {
       {/* Modal Crop + input meter (manual untuk kategori kabel) */}
       {cropOpen && srcToCrop && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className={`bg-white rounded-xl p-4 w-[92vw] ${isPortrait ? "max-w-[480px]" : "max-w-[720px]"}`}>
+          <div
+            className={`bg-white rounded-xl p-4 w-[92vw] ${
+              isPortrait ? "max-w-[480px]" : "max-w-[720px]"
+            }`}
+          >
             <h3 className="text-sm font-semibold mb-3">Crop Foto</h3>
 
             <div className="relative max-h-[70vh] max-w-[92vw] bg-black/5 rounded overflow-hidden flex items-center justify-center">
@@ -780,7 +787,15 @@ export default function UploadFotoPage() {
                   value={aspect ?? "free"}
                   onChange={(e) => {
                     const v = e.target.value;
-                    setAspect(v === "free" ? undefined : v === "1:1" ? 1 : v === "4:3" ? 4 / 3 : 16 / 9);
+                    setAspect(
+                      v === "free"
+                        ? undefined
+                        : v === "1:1"
+                        ? 1
+                        : v === "4:3"
+                        ? 4 / 3
+                        : 16 / 9
+                    );
                   }}
                   className="text-xs border rounded px-2 py-1"
                 >
@@ -812,10 +827,17 @@ export default function UploadFotoPage() {
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={handleCancelCrop} className="px-3 py-1.5 text-sm rounded border">
+              <button
+                onClick={handleCancelCrop}
+                className="px-3 py-1.5 text-sm rounded border"
+              >
                 Batal
               </button>
-              <button onClick={handleConfirmCrop} className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white" disabled={!completedCrop}>
+              <button
+                onClick={handleConfirmCrop}
+                className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white"
+                disabled={!completedCrop}
+              >
                 Simpan Crop
               </button>
             </div>
