@@ -1,23 +1,35 @@
-// Tanggal efektif WIB dengan cutoff 00:05
-export function effectiveWIBDate(date = new Date()): string {
-  const tz = "Asia/Jakarta";
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
-  }).formatToParts(date);
+// /app/lib/wib.ts
+export function effectiveWIBDate(d: Date = new Date()): string {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(d); 
+}
 
-  const num = (t: string) => Number(parts.find((p) => p.type === t)?.value);
-  let y = num("year"); let m = num("month"); let d = num("day");
-  const hh = num("hour"); const mm = num("minute");
+export function isoToWIBDate(iso: string): string {
+  const dt = new Date(iso);
+  return effectiveWIBDate(dt);
+}
+export function nowWIBIso(): string {
+  const wibMs = Date.now() + 7 * 60 * 60 * 1000;
+  return new Date(wibMs).toISOString().replace("Z", "+07:00");
+}
 
-  // sebelum 00:05 WIB → masih dihitung hari sebelumnya
-  if (hh === 0 && mm < 5) {
-    const dt = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
-    dt.setUTCDate(dt.getUTCDate() - 1);
-    y = dt.getUTCFullYear(); m = dt.getUTCMonth() + 1; d = dt.getUTCDate();
-  }
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${y}-${pad(m)}-${pad(d)}`;
+export function visibleUntilCompletedAt(
+  completedAtIso: string | null | undefined,
+  queryDateWib: string,
+  todayWib: string = effectiveWIBDate(),
+  nowUtcMs: number = Date.now()
+): boolean {
+  if (!completedAtIso) return true;
+
+  const completedDateWib = isoToWIBDate(completedAtIso);
+  if (queryDateWib < completedDateWib) return true;
+  if (queryDateWib > completedDateWib) return false;
+
+  if (queryDateWib !== todayWib) return true; 
+  return nowUtcMs < Date.parse(completedAtIso); 
 }

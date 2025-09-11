@@ -8,58 +8,70 @@ export const dynamic = "force-dynamic";
 
 export async function GET(
   _req: Request,
-  ctx: { params: Promise<{ jobId: string }> } // Next.js App Router: params harus di-await
+  ctx: { params: Promise<{ jobId: string }> }
 ) {
   const { jobId: raw } = await ctx.params;
   const jobId = decodeURIComponent(raw ?? "");
-  if (!jobId)
+  if (!jobId) {
     return NextResponse.json({ error: "jobId required" }, { status: 400 });
+  }
 
   const supabase = supabaseServer();
 
-  // === Ambil status project dari tabel projects ===
+  // === Status project ===
   const pj = await supabase
     .from("projects")
     .select("status, pending_since, pending_reason")
     .eq("job_id", jobId)
     .maybeSingle();
 
-  // pending jika: status='pending' ATAU ada pending_since/pending_reason
   const isPending =
     (pj.data?.status as string) === "pending" ||
     pj.data?.pending_since !== null ||
     pj.data?.pending_reason !== null;
 
-  // === Ambil meta foto per kategori untuk jobId ===
+  // === Ambil meta foto per kategori ===
   const { data, error } = await supabase
     .from("job_photos")
     .select("category_id, url, thumb_url, serial_number, cable_meter")
     .eq("job_id", jobId);
 
-  if (error)
+  if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   const byCat = new Map<string, any>();
   for (const row of data ?? []) byCat.set(String(row.category_id), row);
 
+  // urut berdasarkan template
   const template = PHOTO_TEMPLATE.slice().sort(
     (a: any, b: any) => (a.sort ?? 0) - (b.sort ?? 0)
   );
 
   const items = template.map((tpl: any) => {
     const r = byCat.get(tpl.id);
+
+    // Hanya kategori cable yang boleh punya meter
+    let meter: number | null = null;
+    if (tpl.type === "photo+cable" && r?.cable_meter != null) {
+      const n = Number(r.cable_meter);
+      meter = Number.isFinite(n) ? n : null;
+    }
+
     return {
       id: tpl.id,
       name: tpl.name,
+      type: tpl.type, // opsional kalau mau dipakai UI
       requiresSerialNumber: tpl.type === "photo+sn",
+      requiresCable: tpl.type === "photo+cable", // ← FLAG BARU
       photoThumb: r?.thumb_url ?? null,
       photo: r?.url ?? null,
       serialNumber: r?.serial_number ?? null,
-      meter: typeof r?.cable_meter === "number" ? r.cable_meter : null,
+      meter, // number|null — hanya terisi untuk type photo+cable
     };
   });
 
-  // === Hitung progres ===
+  // === Progres (tetap: butuh foto; kalau type photo+sn juga butuh SN)
   const total = template.length;
   const complete = items.filter((it: any) => {
     const hasImg = !!(it.photoThumb || it.photo);

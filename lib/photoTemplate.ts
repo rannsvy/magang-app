@@ -48,7 +48,7 @@ export const PHOTO_TEMPLATE: PhotoTemplateItem[] = [
   { id: "39", name: "Kabel NYM Terpasang", type: "photo", sort: 39 },
   { id: "40", name: "Fisik Duradus Masko", type: "photo", sort: 40 },
   { id: "41", name: "Duradus Masko Terpasang", type: "photo", sort: 41 },
-  { id: "42", name: "Fisik Box Panel Outdoor", type: "photo+sn", sort: 42 },
+  { id: "42", name: "Fisik Box Panel Outdoor", type: "photo", sort: 42 },
   { id: "43", name: "Box Panel Terpasang", type: "photo", sort: 43 },
   { id: "44", name: "Fisik Steker Arde Uticon", type: "photo", sort: 44 },
   { id: "45", name: "Steker Terpasang", type: "photo", sort: 45 },

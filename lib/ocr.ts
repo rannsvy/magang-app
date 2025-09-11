@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import Tesseract from "tesseract.js"
+import Tesseract from "tesseract.js";
 
 export type OCRPhase = "idle" | "barcode" | "ocr" | "done" | "error"
 export interface OcrInfo { status: OCRPhase; progress: number; error?: string }
@@ -124,7 +124,7 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
 
 async function scaleUpDataUrl(dataUrl: string, factor = 2.5): Promise<string> {
   return new Promise((resolve) => {
-    const img = new Image()
+    const img = new Image();
     img.onload = () => {
       const c = document.createElement("canvas")
       c.width = Math.round(img.naturalWidth * factor)
@@ -142,7 +142,7 @@ async function scaleUpDataUrl(dataUrl: string, factor = 2.5): Promise<string> {
 
 async function rotateDataUrl(dataUrl: string, deg: number): Promise<string> {
   return new Promise((resolve) => {
-    const img = new Image()
+    const img = new Image();
     img.onload = () => {
       const rad = (deg * Math.PI) / 180
       const w = img.naturalWidth
