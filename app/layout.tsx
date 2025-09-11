@@ -5,7 +5,7 @@ import { GeistMono } from "geist/font/mono"
 import "./globals.css"
 
 export const metadata: Metadata = {
-  title: "Sistem Laporan Otomatis Teknisi",
+  title: "Reaport",
   description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   generator: "v0.dev",
   manifest: "/manifest.json",
@@ -20,12 +20,12 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Sistem Laporan Teknisi",
-    title: "Sistem Laporan Otomatis Teknisi",
+    title: "Reaport",
     description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   },
   twitter: {
     card: "summary",
-    title: "Sistem Laporan Otomatis Teknisi",
+    title: "Reaport",
     description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   },
 }
@@ -49,8 +49,8 @@ export default function RootLayout({
   return (
     <html lang="id">
       <head>
-        <link rel="icon" href="/icon-192x192.png" />
-        <link rel="apple-touch-icon" href="/icon-192x192.png" />
+        <link rel="icon" href="/logo-reaport.png" />
+        <link rel="apple-touch-icon" href="/logo-reaport.png" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />

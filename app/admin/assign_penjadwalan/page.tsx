@@ -40,7 +40,7 @@ const sbAdmin = createClient(
 );
 
 /* ================== Types ================== */
-type ProjectStatus = "unassigned" | "ongoing" | "pending";
+type ProjectStatus = "unassigned" | "ongoing" | "pending" | "completed";
 type ProgressStatus = "ongoing" | "completed" | "overdue";
 type UITechnician = { id: string; name: string; initial: string };
 
@@ -1096,6 +1096,11 @@ export default function AssignScheduling() {
     let label = "Belum Diassign";
 
     switch (projectStatus) {
+      case "completed":
+        bgColor = "bg-emerald-100";
+        textColor = "text-emerald-700";
+        label = "Selesai";
+        break;
       case "ongoing":
         bgColor = "bg-green-100";
         textColor = "text-green-700";
@@ -2188,7 +2193,7 @@ export default function AssignScheduling() {
                         htmlFor="tanggalMulaiProject"
                         className="flex items-center gap-1 min-w-[120px]"
                       >
-                        Tanggal Mulai Project
+                        Tanggal Mulai Instalasi
                         <span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2310,7 +2315,7 @@ export default function AssignScheduling() {
                         htmlFor="tanggalDeadlineProject"
                         className="flex items-center gap-1 min-w-[120px] md:mt-2"
                       >
-                        Tanggal Deadline Project
+                        Tanggal Deadline Instalasi
                         <span className="text-red-500">*</span>
                       </Label>
                       <div className="flex-1">

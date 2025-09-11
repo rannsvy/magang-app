@@ -31,6 +31,15 @@ function prevDate(iso: string) {
   return `${yy}-${mm}-${dd}`;
 }
 
+// konversi timestamp -> tanggal WIB (YYYY-MM-DD)
+function toWIBDate(isoTs?: string | null) {
+  if (!isoTs) return null;
+  const t = new Date(isoTs);
+  if (Number.isNaN(t.getTime())) return null;
+  const wibMs = t.getTime() + 7 * 60 * 60 * 1000;
+  return new Date(wibMs).toISOString().slice(0, 10);
+}
+
 // GET /api/assignments?date=YYYY-MM-DD
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -44,7 +53,69 @@ export async function GET(req: NextRequest) {
 
   const dMinus1 = prevDate(date);
 
-  // 1) Membership aktif (sumber initial + leader)
+  /* ------------------------------------------------------------------
+   * 0) Ambil attendance H dan D-1 lebih dahulu (tanpa filter project)
+   *    -> jadi kandidat kuat teknisi yg harus tampil walau membership
+   *       sudah soft-delete
+   * ------------------------------------------------------------------ */
+  const [
+    { data: attToday, error: attErr },
+    { data: attPrev, error: attPrevErr },
+  ] = await Promise.all([
+    supabaseServer
+      .from("attendance")
+      .select("project_id, technician_id, project_leader")
+      .eq("work_date", date),
+    supabaseServer
+      .from("attendance")
+      .select("project_id, technician_id, project_leader")
+      .eq("work_date", dMinus1),
+  ]);
+
+  if (attErr) {
+    console.error("[GET /api/assignments] attendance today error:", attErr);
+    return NextResponse.json({ error: attErr.message }, { status: 500 });
+  }
+  if (attPrevErr) {
+    console.error("[GET /api/assignments] attendance prev error:", attPrevErr);
+    return NextResponse.json({ error: attPrevErr.message }, { status: 500 });
+  }
+
+  // peta jumlah attendance hari ini per project + set pasangan terpilih (H)
+  const todayCountByProject = new Map<string, number>();
+  const selectedTodaySet = new Set<string>();
+  const leaderTodaySet = new Set<string>();
+  for (const r of attToday ?? []) {
+    const key = `${r.project_id}::${r.technician_id}`;
+    selectedTodaySet.add(key);
+    todayCountByProject.set(
+      r.project_id,
+      (todayCountByProject.get(r.project_id) ?? 0) + 1
+    );
+    if (r.project_leader) leaderTodaySet.add(key);
+  }
+
+  // indeks attendance D-1 per project + leader D-1
+  const prevByProject = new Map<
+    string,
+    Array<{
+      project_id: string;
+      technician_id: string;
+      project_leader?: boolean;
+    }>
+  >();
+  const leaderPrevSet = new Set<string>();
+  for (const r of attPrev ?? []) {
+    const arr = prevByProject.get(r.project_id) ?? [];
+    arr.push(r);
+    prevByProject.set(r.project_id, arr);
+    if (r.project_leader)
+      leaderPrevSet.add(`${r.project_id}::${r.technician_id}`);
+  }
+
+  /* ------------------------------------------------------------------
+   * 1) Membership aktif (sumber initial + code jika tersedia)
+   * ------------------------------------------------------------------ */
   const { data: pa, error: paErr } = await supabaseServer
     .from("project_assignments")
     .select(
@@ -63,20 +134,29 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: paErr.message }, { status: 500 });
   }
 
-  const projectIds = Array.from(
-    new Set((pa ?? []).map((r: any) => r.project_id))
-  );
-  if (projectIds.length === 0) return NextResponse.json({ data: [] });
+  // kandidat projectId dari membership & attendance
+  const candidateProjectIds = new Set<string>();
+  for (const r of pa ?? []) candidateProjectIds.add(r.project_id);
+  for (const r of attToday ?? []) candidateProjectIds.add(r.project_id);
+  for (const r of attPrev ?? []) candidateProjectIds.add(r.project_id);
 
-  // 2) Proyek aktif pada 'date' & bukan pending
+  if (candidateProjectIds.size === 0) {
+    return NextResponse.json({ data: [] });
+  }
+
+  /* ------------------------------------------------------------------
+   * 2) Ambil proyek kandidat dan filter aktif utk tanggal 'date'
+   *    - BUKAN pending
+   *    - tanggal_mulai <= date
+   *    - completed: tampil H (WIB), hilang H+1
+   * ------------------------------------------------------------------ */
   const { data: projects, error: projErr } = await supabaseServer
     .from("projects")
     .select(
-      "id, project_status, pending_reason, closed_at, tanggal_mulai, tanggal_deadline"
+      "id, project_status, pending_reason, tanggal_mulai, tanggal_deadline, closed_at, completed_at"
     )
-    .in("id", projectIds)
-    .lte("tanggal_mulai", date)
-    .is("closed_at", null);
+    .in("id", Array.from(candidateProjectIds))
+    .lte("tanggal_mulai", date); // jangan filter closed_at di query
 
   if (projErr) {
     console.error("[GET /api/assignments] projects error:", projErr);
@@ -85,90 +165,124 @@ export async function GET(req: NextRequest) {
 
   const activeProjectSet = new Set(
     (projects ?? [])
-      .filter((p: any) => p.project_status !== "pending" && !p.pending_reason)
+      .filter((p: any) => {
+        // skip pending
+        if (p.project_status === "pending" || p.pending_reason) return false;
+        // visibility completed: hanya H
+        const completedWIB =
+          toWIBDate(p.completed_at) ?? toWIBDate(p.closed_at);
+        if (!completedWIB) return true; // belum selesai -> tampil
+        return date <= completedWIB; // selesai -> tampil hanya pada H, hilang H+1
+      })
       .map((p: any) => p.id)
   );
 
-  // 3) Attendance hari ini (D)
-  const { data: attToday, error: attErr } = await supabaseServer
-    .from("attendance")
-    .select("project_id, technician_id")
-    .eq("work_date", date)
-    .in("project_id", Array.from(activeProjectSet));
-
-  if (attErr) {
-    console.error("[GET /api/assignments] attendance today error:", attErr);
-    return NextResponse.json({ error: attErr.message }, { status: 500 });
-  }
-  const todayCountByProject = new Map<string, number>();
-  const selectedTodaySet = new Set(
-    (attToday ?? []).map((r: any) => {
-      todayCountByProject.set(
-        r.project_id,
-        (todayCountByProject.get(r.project_id) ?? 0) + 1
-      );
-      return `${r.project_id}::${r.technician_id}`;
-    })
-  );
-
-  // 4) Attendance kemarin (D-1) untuk auto-continue
-  const { data: attPrev, error: attPrevErr } = await supabaseServer
-    .from("attendance")
-    .select("project_id, technician_id")
-    .eq("work_date", dMinus1)
-    .in("project_id", Array.from(activeProjectSet));
-
-  if (attPrevErr) {
-    console.error("[GET /api/assignments] attendance prev error:", attPrevErr);
-    return NextResponse.json({ error: attPrevErr.message }, { status: 500 });
-  }
-  const prevByProject = new Map<
-    string,
-    Array<{ project_id: string; technician_id: string }>
-  >();
-  for (const r of attPrev ?? []) {
-    const arr = prevByProject.get(r.project_id) ?? [];
-    arr.push(r);
-    prevByProject.set(r.project_id, arr);
+  if (activeProjectSet.size === 0) {
+    return NextResponse.json({ data: [] });
   }
 
-  // 5) Final selectedSet
-  const selectedSet = new Set(selectedTodaySet);
+  /* ------------------------------------------------------------------
+   * 3) Bentuk selectedSet:
+   *    - jika proyek punya attendance H -> pakai H
+   *    - jika tidak -> auto-continue D-1 (1 hari saja)
+   * ------------------------------------------------------------------ */
+  const selectedSet = new Set<string>(selectedTodaySet);
+  const leaderMap = new Map<string, boolean>(); // key -> isLeader
+  for (const k of selectedTodaySet) {
+    leaderMap.set(k, leaderTodaySet.has(k));
+  }
+
   for (const pid of activeProjectSet) {
     const hasToday = (todayCountByProject.get(pid) ?? 0) > 0;
     if (!hasToday) {
       const prevRows = prevByProject.get(pid) ?? [];
-      for (const r of prevRows)
-        selectedSet.add(`${r.project_id}::${r.technician_id}`);
+      for (const r of prevRows) {
+        const key = `${r.project_id}::${r.technician_id}`;
+        selectedSet.add(key);
+        // gunakan leader D-1 hanya kalau H kosong
+        leaderMap.set(key, !!r.project_leader);
+      }
     }
   }
 
-  // 6) Payload untuk UI — hanya sel ter-select (atau leader pada sel ter-select)
-  const shaped: ShapedAssignment[] = (pa ?? [])
-    .filter((row: any) => activeProjectSet.has(row.project_id))
-    .map((row: any) => {
-      const tRaw = row.technicians;
-      const t = Array.isArray(tRaw) ? tRaw[0] ?? null : tRaw;
-      const code: string =
-        (t?.code as string | null) ?? (row.technician_id as string);
-      const initials: string = String(t?.initials ?? code ?? "?").toUpperCase();
-      const key = `${row.project_id}::${row.technician_id}`;
-      const isSelected = selectedSet.has(key);
-      const isLeader = Boolean(row.is_leader);
+  if (selectedSet.size === 0) {
+    return NextResponse.json({ data: [] });
+  }
 
-      return {
-        projectId: row.project_id as string,
-        technicianCode: code,
-        initial: initials,
-        isProjectLeader: isLeader && isSelected,
-        isSelected,
-      } as ShapedAssignment;
-    })
-    .filter((x) => x.isSelected || x.isProjectLeader);
+  /* ------------------------------------------------------------------
+   * 4) Siapkan informasi teknisi (code/initials) dari:
+   *    a) membership aktif (join technicians)
+   *    b) jika masih kurang -> fetch langsung dari table technicians
+   * ------------------------------------------------------------------ */
+  type TechInfo = { code: string; initials: string };
+  const techInfoById = new Map<string, TechInfo>();
+
+  for (const row of pa ?? []) {
+    const tRaw: any = row.technicians;
+    const t = Array.isArray(tRaw) ? tRaw[0] ?? null : tRaw;
+    const code: string =
+      (t?.code as string | null) ?? (row.technician_id as string);
+    const initials: string = String(t?.initials ?? code ?? "?").toUpperCase();
+    techInfoById.set(row.technician_id, { code, initials });
+  }
+
+  // cari technician_id yg belum punya info
+  const missingTechIds = new Set<string>();
+  for (const key of selectedSet) {
+    const [, techId] = key.split("::");
+    if (!techInfoById.has(techId)) missingTechIds.add(techId);
+  }
+
+  if (missingTechIds.size) {
+    const { data: techRows, error: techErr } = await supabaseServer
+      .from("technicians")
+      .select("id, code, initials")
+      .in("id", Array.from(missingTechIds));
+    if (techErr) {
+      console.error("[GET /api/assignments] technicians fetch error:", techErr);
+      // lanjut tanpa menghentikan—fallback akan pakai id sebagai code/initial
+    } else {
+      for (const t of techRows ?? []) {
+        const code: string = (t.code as string | null) ?? (t.id as string);
+        const initials: string = String(
+          t.initials ?? code ?? "?"
+        ).toUpperCase();
+        techInfoById.set(t.id, { code, initials });
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * 5) Bentuk payload untuk UI: hanya pasangan yg terpilih
+   * ------------------------------------------------------------------ */
+  const shaped: ShapedAssignment[] = [];
+  for (const key of selectedSet) {
+    const [pid, tid] = key.split("::");
+    if (!activeProjectSet.has(pid)) continue;
+
+    const info = techInfoById.get(tid) ?? {
+      code: tid,
+      initials: String(tid?.[0] ?? "?").toUpperCase(),
+    };
+
+    const isLeader = !!leaderMap.get(key);
+
+    shaped.push({
+      projectId: pid,
+      technicianCode: info.code,
+      initial: info.initials,
+      isProjectLeader: isLeader, // tampilkan badge leader bila ada
+      isSelected: true,
+    });
+  }
 
   return NextResponse.json({ data: shaped });
 }
 
+/* ======================================================================
+ * POST tetapkan assignment & attendance (TIDAK diubah di sini)
+ * — Anda bisa tetap pakai versi Anda sebelumnya.
+ * ====================================================================== */
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const date: string | undefined = body?.date;
@@ -384,11 +498,11 @@ export async function POST(req: NextRequest) {
       .is("removed_at", null);
     leaderRows = lr ?? [];
   }
-  const leaderMap = new Map<string, Set<string>>();
+  const leaderMapByProject = new Map<string, Set<string>>();
   for (const r of leaderRows) {
-    const set = leaderMap.get(r.project_id) ?? new Set<string>();
+    const set = leaderMapByProject.get(r.project_id) ?? new Set<string>();
     set.add(r.technician_id);
-    leaderMap.set(r.project_id, set);
+    leaderMapByProject.set(r.project_id, set);
   }
 
   // Build rows hanya untuk proyek yang disentuh + dedup key
@@ -402,7 +516,7 @@ export async function POST(req: NextRequest) {
 
   for (const pid of projectsWithAssignments) {
     const selected = byProject.get(pid)?.selected ?? new Set<string>();
-    const leaderSet = leaderMap.get(pid) ?? new Set<string>();
+    const leaderSet = leaderMapByProject.get(pid) ?? new Set<string>();
     for (const tid of selected) {
       const k = `${pid}::${tid}::${date}`;
       if (attKey.has(k)) continue; // dedup

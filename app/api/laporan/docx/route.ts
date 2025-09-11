@@ -8,6 +8,7 @@ import ImageModule, {
   ImageModuleOptions,
 } from "docxtemplater-image-module-free";
 import { createClient } from "@supabase/supabase-js";
+import { COMPONENT_TEMPLATE, COMPONENT_ROWS } from "@/lib/componentTemplate";
 
 export const runtime = "nodejs";
 
@@ -384,6 +385,17 @@ async function generateDocx(
     } else {
       data[`meter_total_${key}`] = "";
       data[`meter_total_${before}_${after}`] = "";
+    }
+  }
+
+  {
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    for (let row = 1; row <= COMPONENT_ROWS; row++) {
+      const keyNama = `komp${pad2(row)}_nama`;
+      const keySat = `komp${pad2(row)}_satuan`;
+      const item = COMPONENT_TEMPLATE.find((x) => x.id === String(row)) || null;
+      data[keyNama] = item?.name ?? ""; // nama komponen baris ke-row
+      data[keySat] = item?.unit ?? ""; // satuan baris ke-row
     }
   }
 

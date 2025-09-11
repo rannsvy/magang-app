@@ -521,9 +521,7 @@ export default function GenerateLaporanPage() {
       const jobName = selectedJob?.name || selectedJob?.id || "";
       const location = selectedJob?.lokasi || "";
       const completedDate =
-        fmtDate(selectedJob?.closed_at) ||
-        fmtDate(selectedJob?.tanggal_mulai) ||
-        "—";
+        fmtDate(selectedJob?.tanggal_mulai);
       const salesName = selectedJob?.sales_name ?? null;
       const presalesName = selectedJob?.presales_name ?? null;
 

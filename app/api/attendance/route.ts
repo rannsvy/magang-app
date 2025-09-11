@@ -2,19 +2,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 
-// GET /api/attendance?date=YYYY-MM-DD&projectId=<uuid-opsional>
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const date = searchParams.get("date");
   const projectId = searchParams.get("projectId");
+  const from = searchParams.get("from");
+  const to = searchParams.get("to");
 
-  if (!date) {
-    return NextResponse.json({ error: "Query ?date=YYYY-MM-DD wajib ada" }, { status: 400 });
+  let q = supabaseServer
+    .from("attendance")
+    .select("project_id, technician_id, work_date, project_leader");
+
+  // Filter tanggal
+  if (date) {
+    q = q.eq("work_date", date);
+  } else if (from || to) {
+    if (from) q = q.gte("work_date", from);
+    if (to) q = q.lte("work_date", to);
+    // tanpa date & tanpa from/to → ambil seluruh riwayat
   }
 
-  let q = supabaseServer.from("attendance").select("project_id, technician_id, work_date");
-  q = q.eq("work_date", date);
+  // Filter proyek (opsional)
   if (projectId) q = q.eq("project_id", projectId);
+
+  // Urutkan agar "history" enak dibaca
+  q = q.order("work_date", { ascending: true });
 
   const { data, error } = await q;
   if (error) {
