@@ -1,15 +1,14 @@
 "use client"
 
 import type React from "react"
-
-import { useMemo, useState } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { getDailyQuote } from "@/lib/quotes"
+import { getDailyQuote } from "@/lib/quotes"   // ⬅️ cukup ini
 import { PWAInstallPrompt } from "@/components/pwa-install-prompt"
 
 export default function LoginPage() {
@@ -19,23 +18,18 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
 
-  const  quote = useMemo (() => getDailyQuote(), [])
+  // quote harian (tanpa role)
+  const quote = useMemo(() => getDailyQuote(), [])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
     setError("")
 
-    // Simulate login process
     setTimeout(() => {
-      // Mock authentication logic
       if (email && password) {
-        // Simulate role-based routing
-        if (email.includes("admin")) {
-          router.push("/admin/dashboard")
-        } else {
-          router.push("/user/dashboard")
-        }
+        if (email.includes("admin")) router.push("/admin/dashboard")
+        else router.push("/user/dashboard")
       } else {
         setError("Email atau password salah")
       }
@@ -43,20 +37,23 @@ export default function LoginPage() {
     }, 1000)
   }
 
-  const handleForgotPassword = () => {
-    router.push("/auth/forgot_password")
-  }
+  const handleForgotPassword = () => router.push("/auth/forgot_password")
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl font-bold text-gray-900">Sistem Laporan Otomatis Teknisi</CardTitle>
+          <CardTitle className="text-2xl font-bold text-gray-900">
+            Sistem Laporan Otomatis Teknisi
+          </CardTitle>
           <CardDescription>Masuk ke akun Anda untuk melanjutkan</CardDescription>
+
+          {/* Quote harian */}
           <div className="mt-4 rounded-md border bg-white px-4 py-3 text-sm italic text-gray-700">
             “{quote}”
           </div>
         </CardHeader>
+
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-2">
@@ -108,7 +105,7 @@ export default function LoginPage() {
         </CardContent>
       </Card>
 
-      <PWAInstallPrompt />
+      <PWAInstallPrompt/>
     </div>
   )
 }

@@ -1,17 +1,22 @@
-"use client"
+"use client";
 
-import { useRouter } from "next/navigation"
-import { Button } from "@/components/ui/button"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { ArrowLeft, Menu, LogOut, UserCircle, AlertCircle } from "lucide-react"
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ArrowLeft, Menu, LogOut, UserCircle, AlertCircle } from "lucide-react";
 
 interface TechnicianHeaderProps {
-  title: string
-  showBackButton?: boolean
-  backUrl?: string
-  showFilter?: boolean
-  filterValue?: "all" | "survey" | "instalasi"
-  onFilterChange?: (value: "all" | "survey" | "instalasi") => void
+  title: string;
+  showBackButton?: boolean;
+  backUrl?: string;
+  showFilter?: boolean;
+  filterValue?: "all" | "survey" | "instalasi";
+  onFilterChange?: (value: "all" | "survey" | "instalasi") => void;
 }
 
 export function TechnicianHeader({
@@ -22,31 +27,35 @@ export function TechnicianHeader({
   filterValue = "all",
   onFilterChange,
 }: TechnicianHeaderProps) {
-  const router = useRouter()
+  const router = useRouter();
 
   const handleLogout = () => {
-    // Simulate logout
-    router.push("/auth/login")
-  }
+    router.push("/auth/login");
+  };
 
   const handleBack = () => {
-    router.push(backUrl)
-  }
+    router.push(backUrl);
+  };
 
   const handleProfileClick = () => {
-    router.push("/user/profile")
-  }
+    router.push("/user/profile");
+  };
 
   const handleComplaintClick = () => {
-    router.push("/user/complain")
-  }
+    router.push("/user/complain");
+  };
 
   return (
     <header className="bg-white shadow-sm border-b">
       <div className="px-4 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           {showBackButton && (
-            <Button variant="ghost" size="sm" onClick={handleBack} className="p-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleBack}
+              className="p-2"
+            >
               <ArrowLeft className="h-5 w-5" />
             </Button>
           )}
@@ -107,5 +116,5 @@ export function TechnicianHeader({
         </div>
       </div>
     </header>
-  )
+  );
 }

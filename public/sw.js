@@ -1,140 +1,160 @@
-/* public/sw.js */
-const VERSION = "magang-app-v1.0.5";
-const STATIC_CACHE = VERSION + "-static";
-const DYNAMIC_CACHE = VERSION + "-dynamic";
+// sw.js
+const CACHE_NAME = "technician-report-v2";
+const STATIC_CACHE = "static-v2";
+const DYNAMIC_CACHE = "dynamic-v2";
 
-const IS_DEV = self.location.hostname === "localhost" || self.location.hostname === "127.0.0.1";
-
-/* Tambahkan rute penting kamu di sini */
-const APP_SHELL = [
+const urlsToCache = [
   "/",
+  "/auth/login",
   "/user/dashboard",
-  "/user/upload_foto",
-  "/auth/login",      // tambahkan kalau ada middleware login
+  "/admin/dashboard",
   "/offline",
-  "/favicon.ico",
   "/manifest.json",
   "/icon-192x192.png",
   "/icon-512x512.png",
 ];
 
-/* Utils */
-async function precache(cache, urls) {
-  await Promise.all(
-    urls.map(async (u) => {
-      try { await cache.add(new Request(u, { cache: "reload" })); } catch (_) {}
-    })
+self.addEventListener("install", (event) => {
+  console.log("[SW] Installing service worker...");
+  event.waitUntil(
+    caches
+      .open(STATIC_CACHE)
+      .then((cache) => {
+        console.log("[SW] Caching static assets");
+        return cache.addAll(urlsToCache);
+      })
+      .then(() => self.skipWaiting())
+      .catch((error) => {
+        console.error("[SW] Failed to cache static assets:", error);
+      })
   );
-}
+});
 
-async function putDual(cache, req, res) {
-  try { await cache.put(req, res.clone()); } catch (_) {}
+self.addEventListener("activate", (event) => {
+  console.log("[SW] Activating service worker...");
+  event.waitUntil(
+    caches
+      .keys()
+      .then((cacheNames) =>
+        Promise.all(
+          cacheNames.map((cacheName) => {
+            if (cacheName !== STATIC_CACHE && cacheName !== DYNAMIC_CACHE) {
+              console.log("[SW] Deleting old cache:", cacheName);
+              return caches.delete(cacheName);
+            }
+          })
+        )
+      )
+      .then(() => self.clients.claim())
+  );
+});
+
+/** Helper aman untuk cache.put() — hanya untuk GET & status 200 */
+async function safeCachePut(cacheName, request, response) {
   try {
-    const url = new URL(req.url);
-    const pathReq = new Request(url.pathname, { headers: req.headers, mode: "same-origin" });
-    await cache.put(pathReq, res.clone());
-  } catch (_) {}
-}
-
-async function matchHtml(urlOrReq) {
-  // cari dengan mengabaikan query string
-  let hit = await caches.match(urlOrReq, { ignoreSearch: true });
-  if (hit) return hit;
-  const url = typeof urlOrReq === "string" ? new URL(urlOrReq, self.location.origin) : new URL(urlOrReq.url);
-  const candidates = [url.href, url.pathname + url.hash, url.pathname, url.pathname.replace(/\/$/, ""), url.pathname.endsWith("/") ? url.pathname : url.pathname + "/"];
-  for (const c of candidates) {
-    hit = await caches.match(c, { ignoreSearch: true });
-    if (hit) return hit;
+    if (request.method !== "GET") return; // <- penting!
+    if (!response || response.status !== 200) return;
+    const cache = await caches.open(cacheName);
+    // pakai clone supaya response tetap bisa dikembalikan ke browser
+    await cache.put(request, response.clone());
+  } catch (err) {
+    // Jangan bikin app crash kalau ada yang tidak bisa dicache (opaque, dll)
+    console.warn("[SW] cache.put skipped:", err);
   }
-  return null;
 }
 
-/* Install */
-self.addEventListener("install", (e) => {
-  e.waitUntil((async () => {
-    const cache = await caches.open(STATIC_CACHE);
-    await precache(cache, APP_SHELL);
-  })());
-  self.skipWaiting();
-});
+self.addEventListener("fetch", (event) => {
+  const { request } = event;
+  const url = new URL(request.url);
 
-/* Activate */
-self.addEventListener("activate", (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.map((k) => (k.startsWith("magang-app-") && k !== STATIC_CACHE && k !== DYNAMIC_CACHE ? caches.delete(k) : Promise.resolve())))
-    )
-  );
-  self.clients.claim();
-});
-
-/* Fetch */
-self.addEventListener("fetch", (e) => {
-  const req = e.request;
-  if (req.method !== "GET") return;
-
-  const url = new URL(req.url);
-  const isSameOrigin = url.origin === self.location.origin;
-  const accept = req.headers.get("accept") || "";
-  const isHTML = req.mode === "navigate" || accept.includes("text/html");
-
-  // Dev: jangan intercept asset Next js
-  if (IS_DEV && url.pathname.startsWith("/_next/")) return;
-
-  // 1) HTML navigations → network-first, simpan dual-key; offline → cari cache (ignoreSearch)
-  if (isHTML) {
-    e.respondWith((async () => {
-      try {
-        const res = await fetch(req);
-        caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, res.clone()));
-        return res;
-      } catch {
-        return (
-          (await matchHtml(req)) ||
-          (await caches.match("/", { ignoreSearch: true })) ||
-          (await caches.match("/offline", { ignoreSearch: true })) ||
-          new Response("<h1>Offline</h1>", { headers: { "Content-Type": "text/html" } })
-        );
-      }
-    })());
+  // === PENTING: Jangan cache selain GET ===
+  if (request.method !== "GET") {
+    // Untuk POST/PUT/PATCH/DELETE, langsung network-only
+    event.respondWith(fetch(request));
     return;
   }
 
-  // 2) Static assets (PROD) → stale-while-revalidate
-  const isStatic = isSameOrigin && (url.pathname.startsWith("/_next/") || /\.(?:js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|webp|ico)$/i.test(url.pathname));
-  if (isStatic && !IS_DEV) {
-    e.respondWith((async () => {
-      const cached = await caches.match(req, { ignoreSearch: true });
-      const fetching = fetch(req).then((res) => { caches.open(DYNAMIC_CACHE).then((c) => c.put(req, res.clone())); return res; }).catch(() => null);
-      return cached || (await fetching) || (await matchHtml("/offline"));
-    })());
-    return;
-  }
-
-  // 3) API GET → network-first + fallback cache
+  // === API GET: network-first (fallback ke cache) ===
   if (url.pathname.startsWith("/api/")) {
-    e.respondWith((async () => {
-      try {
-        const res = await fetch(req);
-        if (res.ok) caches.open(DYNAMIC_CACHE).then((c) => c.put(req, res.clone()));
-        return res;
-      } catch {
-        return (await caches.match(req, { ignoreSearch: true })) || new Response(JSON.stringify({ offline: true }), { headers: { "Content-Type": "application/json" } });
-      }
-    })());
+    event.respondWith(
+      (async () => {
+        try {
+          const networkResponse = await fetch(request);
+          await safeCachePut(DYNAMIC_CACHE, request, networkResponse);
+          return networkResponse.clone();
+        } catch (err) {
+          const cached = await caches.match(request);
+          if (cached) return cached;
+          // kalau tidak ada cache, propagasikan error agar terlihat di devtools
+          throw err;
+        }
+      })()
+    );
     return;
   }
 
-  // 4) Default → cache-first + update
-  e.respondWith((async () => {
-    const cached = await caches.match(req, { ignoreSearch: true });
-    if (cached) return cached;
-    try {
-      const res = await fetch(req);
-      caches.open(DYNAMIC_CACHE).then((c) => c.put(req, res.clone()));
-      return res;
-    } catch {
-      return (await matchHtml(req)) || (await caches.match("/offline", { ignoreSearch: true })) || new Response("", { status: 504 });
-    }
-  })());
+  // === Navigations: network-first (fallback ke offline) ===
+  if (request.mode === "navigate") {
+    event.respondWith(
+      (async () => {
+        try {
+          const networkResponse = await fetch(request);
+          await safeCachePut(DYNAMIC_CACHE, request, networkResponse);
+          return networkResponse.clone();
+        } catch {
+          const cached = await caches.match(request);
+          if (cached) return cached;
+          return caches.match("/offline");
+        }
+      })()
+    );
+    return;
+  }
+
+  // === Asset lain (GET): cache-first (fallback ke network, lalu cache) ===
+  event.respondWith(
+    (async () => {
+      const cached = await caches.match(request);
+      if (cached) return cached;
+
+      try {
+        const networkResponse = await fetch(request);
+        await safeCachePut(DYNAMIC_CACHE, request, networkResponse);
+        return networkResponse.clone();
+      } catch (err) {
+        // kalau asset dokumen gagal dan ada offline page
+        if (request.destination === "document") {
+          const offline = await caches.match("/offline");
+          if (offline) return offline;
+        }
+        throw err;
+      }
+    })()
+  );
+});
+
+// (Opsional) Background Sync — proses antrean di sini bila kamu pakai indexedDB/queue sendiri.
+// Jangan register sync di dalam handler ini (anti-pattern).
+self.addEventListener("sync", (event) => {
+  if (event.tag === "background-sync") {
+    console.log("[SW] Background sync triggered");
+    // event.waitUntil(processQueuedRequests());
+  }
+});
+
+self.addEventListener("push", (event) => {
+  if (event.data) {
+    const data = event.data.json();
+    const options = {
+      body: data.body,
+      icon: "/icon-192x192.png",
+      badge: "/icon-192x192.png",
+      vibrate: [100, 50, 100],
+      data: {
+        dateOfArrival: Date.now(),
+        primaryKey: data.primaryKey,
+      },
+    };
+    event.waitUntil(self.registration.showNotification(data.title, options));
+  }
 });

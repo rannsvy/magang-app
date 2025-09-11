@@ -1,234 +1,356 @@
-"use client"
+"use client";
 
-import type React from "react"
-
-import { useState, useRef, useEffect } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
-import { Card, CardContent } from "@/components/ui/card"
-import { TechnicianHeader } from "@/components/technician-header"
-import { ChevronRight, ChevronDown, Folder, FileText } from "lucide-react"
+import type React from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Card, CardContent } from "@/components/ui/card";
+import { TechnicianHeader } from "@/components/technician-header";
+import { ChevronRight, ChevronDown, Folder, FileText } from "lucide-react";
+import { createClient } from "@supabase/supabase-js";
 
 interface Room {
-  id: string
-  name: string
-  hasChildren: boolean
-  uploaded: number
-  required: number
-  status: "pending" | "partial" | "complete"
-  children?: Room[]
+  id: string;
+  name: string;
+  hasChildren: boolean;
+  uploaded: number;
+  required: number;
+  status: "pending" | "partial" | "complete";
+  children?: Room[];
 }
 
 interface Floor {
-  id: string
-  floor_number: number
-  name: string
-  rooms: Room[]
-  expanded: boolean
+  id: string;
+  floor_number: number;
+  name: string;
+  rooms: Room[];
+  expanded: boolean;
 }
 
-const mockTreeData: Floor[] = [
-  {
-    id: "floor-1",
-    floor_number: 1,
-    name: "Lantai 1",
-    expanded: true,
-    rooms: [
-      {
-        id: "room-1-1",
-        name: "Lobby",
-        hasChildren: false,
-        uploaded: 3,
-        required: 6,
-        status: "partial",
-      },
-      {
-        id: "room-1-2",
-        name: "Ruang Meeting",
-        hasChildren: true,
-        uploaded: 8,
-        required: 12,
-        status: "partial",
-        children: [
-          {
-            id: "subroom-1-2-1",
-            name: "Meeting Room A",
-            hasChildren: false,
-            uploaded: 4,
-            required: 6,
-            status: "partial",
-          },
-          {
-            id: "subroom-1-2-2",
-            name: "Meeting Room B",
-            hasChildren: false,
-            uploaded: 4,
-            required: 6,
-            status: "complete",
-          },
-        ],
-      },
-      {
-        id: "room-1-3",
-        name: "Pantry",
-        hasChildren: false,
-        uploaded: 2,
-        required: 2,
-        status: "complete",
-      },
-    ],
-  },
-  {
-    id: "floor-2",
-    floor_number: 2,
-    name: "Lantai 2",
-    expanded: true,
-    rooms: [
-      {
-        id: "room-2-1",
-        name: "Office Area",
-        hasChildren: true,
-        uploaded: 5,
-        required: 15,
-        status: "partial",
-        children: [
-          {
-            id: "subroom-2-1-1",
-            name: "Workstation 1",
-            hasChildren: false,
-            uploaded: 2,
-            required: 5,
-            status: "partial",
-          },
-          {
-            id: "subroom-2-1-2",
-            name: "Workstation 2",
-            hasChildren: false,
-            uploaded: 3,
-            required: 5,
-            status: "partial",
-          },
-          {
-            id: "subroom-2-1-3",
-            name: "Manager Room",
-            hasChildren: false,
-            uploaded: 0,
-            required: 5,
-            status: "pending",
-          },
-        ],
-      },
-      {
-        id: "room-2-2",
-        name: "Storage",
-        hasChildren: false,
-        uploaded: 0,
-        required: 3,
-        status: "pending",
-      },
-    ],
-  },
-  {
-    id: "floor-3",
-    floor_number: 3,
-    name: "Lantai 3",
-    expanded: true,
-    rooms: [
-      {
-        id: "room-3-1",
-        name: "Server Room",
-        hasChildren: false,
-        uploaded: 6,
-        required: 6,
-        status: "complete",
-      },
-      {
-        id: "room-3-2",
-        name: "IT Office",
-        hasChildren: false,
-        uploaded: 1,
-        required: 4,
-        status: "partial",
-      },
-    ],
-  },
-]
+type ApiPayload = {
+  project: { id: string; job_id: string; name: string; lokasi: string | null };
+  // floors bisa dalam 2 bentuk:
+  // 1) Sudah siap pakai: { id, floor_number, name, expanded, rooms:[{id,name,uploaded,required,status}] }
+  // 2) Minimal: { floor, rooms:[{ id, room_name, uploaded?, required?, status? }] }
+  floors: any[];
+};
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+// ambil param pertama yang valid
+const getParam = (sp: URLSearchParams, names: string[]): string | null => {
+  for (const n of names) {
+    const raw = sp.get(n);
+    if (
+      raw !== null &&
+      raw.trim() !== "" &&
+      raw.toLowerCase() !== "null" &&
+      raw.toLowerCase() !== "undefined"
+    ) {
+      return raw;
+    }
+  }
+  return null;
+};
+
+// debounce kecil
+function debounce<T extends (...args: any[]) => void>(fn: T, ms = 200) {
+  let t: any;
+  return (...args: any[]) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+/** Pastikan floors dari API selalu menjadi Floor[] yang valid & unik id-nya */
+function normalizeFloors(rawFloors: any[]): Floor[] {
+  const arr = Array.isArray(rawFloors) ? rawFloors : [];
+
+  const floors: Floor[] = arr.map((f: any, fIdx: number) => {
+    // dukung keduanya: floor_number (server) atau floor (minimal)
+    const floorNum = Number(
+      f?.floor_number ?? f?.floor ?? Number.isFinite(fIdx) ? fIdx + 1 : 1
+    );
+
+    // pakai id dari server bila ada; kalau tidak buat yang unik dengan index
+    const computedId =
+      typeof f?.id === "string" && f.id.trim()
+        ? String(f.id)
+        : `floor-${Number.isFinite(floorNum) ? floorNum : "x"}-${fIdx}`;
+
+    const name = String(f?.name ?? `Lantai ${floorNum}`);
+    const expanded = f?.expanded === false ? false : true;
+
+    const roomsRaw: any[] = Array.isArray(f?.rooms) ? f.rooms : [];
+    const rooms: Room[] = roomsRaw.map((r: any, rIdx: number) => {
+      const rid =
+        typeof r?.id === "string" && r.id.trim()
+          ? String(r.id)
+          : `${computedId}-room-${rIdx}`;
+
+      const rname = String(r?.name ?? r?.room_name ?? `Room ${rIdx + 1}`);
+      const uploaded = Number.isFinite(Number(r?.uploaded))
+        ? Number(r.uploaded)
+        : 0;
+      const required = Number.isFinite(Number(r?.required))
+        ? Number(r.required)
+        : 0;
+
+      let status: Room["status"];
+      if (
+        r?.status === "pending" ||
+        r?.status === "partial" ||
+        r?.status === "complete"
+      ) {
+        status = r.status;
+      } else if (required > 0) {
+        status =
+          uploaded >= required
+            ? "complete"
+            : uploaded > 0
+            ? "partial"
+            : "pending";
+      } else {
+        status = uploaded > 0 ? "partial" : "pending";
+      }
+
+      return {
+        id: rid,
+        name: rname,
+        uploaded,
+        required,
+        status,
+        hasChildren: !!r?.hasChildren,
+      };
+    });
+
+    return {
+      id: computedId,
+      floor_number: Number.isFinite(floorNum) ? floorNum : fIdx + 1,
+      name,
+      expanded,
+      rooms,
+    };
+  });
+
+  // urutkan berdasarkan nomor lantai
+  floors.sort((a, b) => a.floor_number - b.floor_number);
+  return floors;
+}
 
 export default function SurveyFloors() {
-  const [treeData, setTreeData] = useState<Floor[]>(mockTreeData)
-  const [expandedRooms, setExpandedRooms] = useState<Set<string>>(new Set(["room-1-2", "room-2-1"]))
-  const [activeFloor, setActiveFloor] = useState<number>(1)
-  const floorRefs = useRef<{ [key: number]: HTMLDivElement | null }>({})
-  const router = useRouter()
-  const searchParams = useSearchParams()
-  const jobId = searchParams.get("jobId")
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
+  // Terima projectId dari "projectId" / "jobId" / "pid" (semua = projects.id)
+  const projectId = useMemo(
+    () => getParam(searchParams, ["projectId", "jobId", "pid"]),
+    [searchParams]
+  );
+
+  const [treeData, setTreeData] = useState<Floor[]>([]);
+  const [activeFloor, setActiveFloor] = useState<number>(1);
+  const [expandedRooms, setExpandedRooms] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [projectMeta, setProjectMeta] = useState<{
+    id: string;
+    job_id: string;
+    name: string;
+    lokasi: string | null;
+  } | null>(null);
+
+  const floorRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
+  const roomsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
+    null
+  );
+
+  // ===== helper tampilan (dipertahankan) =====
   const getStatusStyling = (status: string) => {
     switch (status) {
       case "pending":
-        return { bg: "bg-gray-100", text: "text-gray-600", dot: "bg-gray-400" }
+        return { bg: "bg-gray-100", text: "text-gray-600", dot: "bg-gray-400" };
       case "partial":
-        return { bg: "bg-yellow-100", text: "text-yellow-700", dot: "bg-yellow-500" }
+        return {
+          bg: "bg-yellow-100",
+          text: "text-yellow-700",
+          dot: "bg-yellow-500",
+        };
       case "complete":
-        return { bg: "bg-green-100", text: "text-green-700", dot: "bg-green-500" }
+        return {
+          bg: "bg-green-100",
+          text: "text-green-700",
+          dot: "bg-green-500",
+        };
       default:
-        return { bg: "bg-gray-100", text: "text-gray-600", dot: "bg-gray-400" }
+        return { bg: "bg-gray-100", text: "text-gray-600", dot: "bg-gray-400" };
     }
-  }
+  };
 
   const toggleFloor = (floorId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    setTreeData((prev) => prev.map((floor) => (floor.id === floorId ? { ...floor, expanded: !floor.expanded } : floor)))
-  }
+    e.stopPropagation();
+    setTreeData((prev) =>
+      prev.map((floor) =>
+        floor.id === floorId ? { ...floor, expanded: !floor.expanded } : floor
+      )
+    );
+  };
 
   const toggleRoom = (roomId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
+    e.stopPropagation();
     setExpandedRooms((prev) => {
-      const newSet = new Set(prev)
-      if (newSet.has(roomId)) {
-        newSet.delete(roomId)
-      } else {
-        newSet.add(roomId)
-      }
-      return newSet
-    })
-  }
+      const next = new Set(prev);
+      next.has(roomId) ? next.delete(roomId) : next.add(roomId);
+      return next;
+    });
+  };
 
   const navigateToUpload = (
     entityType: "room" | "subroom",
     entityId: string,
     entityName: string,
-    floorName: string,
+    floorName: string
   ) => {
-    const breadcrumb = `Survey > ${floorName} > ${entityName}`
-    router.push(
-      `/user/survey/upload?entityType=${entityType}&id=${entityId}&roomName=${encodeURIComponent(entityName)}&breadcrumb=${encodeURIComponent(breadcrumb)}`,
-    )
-  }
+    const breadcrumb = `Survey > ${floorName} > ${entityName}`;
+    const q = new URLSearchParams({
+      entityType,
+      id: entityId,
+      roomName: entityName,
+      breadcrumb,
+      // PENTING: sertakan projectId supaya Back di halaman upload kembali ke floors yang benar
+      projectId: projectMeta?.id ?? "",
+    });
+    if (projectMeta?.job_id) q.set("job", projectMeta.job_id); // opsional
+    router.push(`/user/survey/upload?${q.toString()}`);
+  };
 
-  const renderTreeItem = (item: Room, level: number, floorName: string, isSubroom = false) => {
-    const styling = getStatusStyling(item.status)
-    const isExpanded = expandedRooms.has(item.id)
-    // Floor header menggunakan px-4 (16px) + button + mr-2 = 16px + 24px + 8px = 48px dari kiri ke ikon
-    // Room level 0 harus memiliki padding yang sama agar ikon sejajar
-    const paddingLeft = level === 0 ? 48 : 48 + level * 24
+  // ====== data loader dari API kamu (/api/survey/floors) ======
+  const load = async () => {
+    if (!projectId) {
+      setErr("Parameter projectId (projects.id) tidak ditemukan.");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setErr(null);
+
+      const res = await fetch(
+        `/api/survey/floors?projectId=${encodeURIComponent(projectId)}`,
+        { cache: "no-store" }
+      );
+      const json: ApiPayload & { error?: string } = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Gagal memuat data survey");
+
+      setProjectMeta(json.project);
+
+      // <- INI FIX PENTING: gunakan normalizer agar tidak ada "floor-undefined"
+      const normalized = normalizeFloors(json.floors);
+      setTreeData(normalized);
+
+      if (normalized.length) setActiveFloor(normalized[0].floor_number);
+    } catch (e: any) {
+      setErr(e?.message || "Gagal memuat data survey");
+      setTreeData([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // initial load
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // realtime: reload saat project_survey_rooms berubah
+  useEffect(() => {
+    if (!projectId) return;
+
+    if (roomsChannelRef.current) {
+      supabase.removeChannel(roomsChannelRef.current);
+      roomsChannelRef.current = null;
+    }
+
+    const debounced = debounce(load, 150);
+
+    const ch = supabase
+      .channel("survey-tree-rooms")
+      .on(
+        "postgres_changes",
+        {
+          schema: "public",
+          table: "project_survey_rooms",
+          event: "*",
+          filter: `project_id=eq.${projectId}`,
+        },
+        () => debounced()
+      )
+      .subscribe();
+
+    roomsChannelRef.current = ch;
+
+    return () => {
+      if (roomsChannelRef.current)
+        supabase.removeChannel(roomsChannelRef.current);
+      roomsChannelRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // observer: update tombol lantai aktif saat scroll (tampilan kamu dipertahankan)
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const floorNumber = Number.parseInt(
+              entry.target.getAttribute("data-floor") || "1"
+            );
+            setActiveFloor(floorNumber);
+          }
+        });
+      },
+      { threshold: 0.5, rootMargin: "-20% 0px -20% 0px" }
+    );
+
+    Object.values(floorRefs.current).forEach((ref) => {
+      if (ref) observer.observe(ref);
+    });
+
+    return () => observer.disconnect();
+  }, [treeData]); // daftar lantai bisa berubah → re-observe
+
+  const renderTreeItem = (
+    item: Room,
+    level: number,
+    floorName: string,
+    isSubroom = false
+  ) => {
+    const styling = getStatusStyling(item.status);
+    const isExpanded = expandedRooms.has(item.id);
+    // Menjaga alignment ikon seperti versi kamu:
+    const paddingLeft = level === 0 ? 48 : 48 + level * 24;
 
     const handleItemClick = () => {
       if (item.hasChildren) {
-        // For folders, toggle expand/collapse
         setExpandedRooms((prev) => {
-          const newSet = new Set(prev)
-          if (newSet.has(item.id)) {
-            newSet.delete(item.id)
-          } else {
-            newSet.add(item.id)
-          }
-          return newSet
-        })
+          const next = new Set(prev);
+          next.has(item.id) ? next.delete(item.id) : next.add(item.id);
+          return next;
+        });
       } else {
-        // For files, navigate to upload
-        navigateToUpload(isSubroom ? "subroom" : "room", item.id, item.name, floorName)
+        navigateToUpload(
+          isSubroom ? "subroom" : "room",
+          item.id,
+          item.name,
+          floorName
+        );
       }
-    }
+    };
 
     return (
       <div key={item.id}>
@@ -240,12 +362,16 @@ export default function SurveyFloors() {
           {item.hasChildren && (
             <button
               onClick={(e) => {
-                e.stopPropagation()
-                toggleRoom(item.id, e)
+                e.stopPropagation();
+                toggleRoom(item.id, e);
               }}
               className="p-1 hover:bg-gray-200 rounded mr-2 -ml-6"
             >
-              {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              {isExpanded ? (
+                <ChevronDown size={16} />
+              ) : (
+                <ChevronRight size={16} />
+              )}
             </button>
           )}
 
@@ -258,116 +384,143 @@ export default function SurveyFloors() {
           </div>
 
           <div className="flex-1 min-w-0 flex items-center">
-            <div className="font-medium text-sm text-gray-900 truncate">{item.name}</div>
-            <div className={`px-2 py-1 rounded-full text-xs font-medium ml-2 ${styling.bg} ${styling.text}`}>
+            <div className="font-medium text-sm text-gray-900 truncate">
+              {item.name}
+            </div>
+            <div
+              className={`px-2 py-1 rounded-full text-xs font-medium ml-2 ${styling.bg} ${styling.text}`}
+            >
               {item.uploaded}/{item.required}
             </div>
           </div>
         </div>
 
         {item.hasChildren && isExpanded && item.children && (
-          <div>{item.children.map((child) => renderTreeItem(child, level + 1, floorName, true))}</div>
+          <div>
+            {item.children.map((child) =>
+              renderTreeItem(child, 1 + level, floorName, true)
+            )}
+          </div>
         )}
       </div>
-    )
-  }
+    );
+  };
 
   const scrollToFloor = (floorNumber: number) => {
-    const floorElement = floorRefs.current[floorNumber]
+    const floorElement = floorRefs.current[floorNumber];
     if (floorElement) {
       floorElement.scrollIntoView({
         behavior: "smooth",
         block: "start",
         inline: "nearest",
-      })
-      setActiveFloor(floorNumber)
+      });
+      setActiveFloor(floorNumber);
     }
-  }
+  };
 
-  useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const floorNumber = Number.parseInt(entry.target.getAttribute("data-floor") || "1")
-            setActiveFloor(floorNumber)
-          }
-        })
-      },
-      { threshold: 0.5, rootMargin: "-20% 0px -20% 0px" },
-    )
-
-    Object.values(floorRefs.current).forEach((ref) => {
-      if (ref) observer.observe(ref)
-    })
-
-    return () => observer.disconnect()
-  }, [])
+  const hasFloors = useMemo(() => treeData.length > 0, [treeData]);
 
   return (
     <div className="min-h-screen bg-gray-50 font-sans">
-      <TechnicianHeader title="Survey - Tree View" showBackButton={true} backUrl="/user/dashboard" />
+      <TechnicianHeader
+        title="Survey - Tree View"
+        showBackButton
+        backUrl="/user/dashboard" // opsional: keluar ke dashboard
+      />
 
       <main className="p-4">
         <div className="max-w-4xl mx-auto flex gap-4">
           <div className="flex-1 max-w-md">
             <Card className="overflow-hidden">
               <CardContent className="p-0">
-                {treeData.map((floor) => (
-                  <div
-                    key={floor.id}
-                    className="border-b border-gray-100 last:border-b-0"
-                    ref={(el) => {
-                      floorRefs.current[floor.floor_number] = el
-                    }}
-                    data-floor={floor.floor_number}
-                  >
-                    <div className="flex items-center py-3 px-4 bg-gray-50 hover:bg-gray-100 cursor-pointer min-h-[44px]">
-                      <button onClick={(e) => toggleFloor(floor.id, e)} className="p-1 hover:bg-gray-200 rounded mr-2">
-                        {floor.expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                      </button>
-
-                      <Folder size={18} className="text-blue-600 mr-3" />
-
-                      <div className="flex-1">
-                        <h3 className="font-bold text-sm text-gray-900">{floor.name}</h3>
-                        <div className="text-xs text-gray-500">{floor.rooms.length} ruangan</div>
-                      </div>
-                    </div>
-
-                    {floor.expanded && (
-                      <div className="bg-white">
-                        {floor.rooms.length === 0 ? (
-                          <div className="py-4 px-8 text-sm text-gray-500 text-center">Tidak ada ruangan</div>
-                        ) : (
-                          floor.rooms.map((room) => renderTreeItem(room, 0, floor.name))
-                        )}
-                      </div>
-                    )}
+                {loading ? (
+                  <div className="py-6 px-6 text-center text-sm text-gray-600">
+                    Memuat...
                   </div>
-                ))}
+                ) : err ? (
+                  <div className="py-6 px-6 text-center text-sm text-red-600">
+                    {err}
+                  </div>
+                ) : !hasFloors ? (
+                  <div className="py-6 px-6 text-center text-sm text-gray-600">
+                    Belum ada data ruangan survey.
+                  </div>
+                ) : (
+                  treeData.map((floor) => (
+                    <div
+                      key={floor.id} // <- sekarang dijamin unik & bukan "floor-undefined"
+                      className="border-b border-gray-100 last:border-b-0"
+                      ref={(el) => {
+                        floorRefs.current[floor.floor_number] = el;
+                      }}
+                      data-floor={floor.floor_number}
+                    >
+                      <div className="flex items-center py-3 px-4 bg-gray-50 hover:bg-gray-100 cursor-pointer min-h-[44px]">
+                        <button
+                          onClick={(e) => toggleFloor(floor.id, e)}
+                          className="p-1 hover:bg-gray-200 rounded mr-2"
+                        >
+                          {floor.expanded ? (
+                            <ChevronDown size={18} />
+                          ) : (
+                            <ChevronRight size={18} />
+                          )}
+                        </button>
+
+                        <Folder size={18} className="text-blue-600 mr-3" />
+
+                        <div className="flex-1">
+                          <h3 className="font-bold text-sm text-gray-900">
+                            {floor.name}
+                          </h3>
+                          <div className="text-xs text-gray-500">
+                            {floor.rooms.length} ruangan
+                          </div>
+                        </div>
+                      </div>
+
+                      {floor.expanded && (
+                        <div className="bg-white">
+                          {floor.rooms.length === 0 ? (
+                            <div className="py-4 px-8 text-sm text-gray-500 text-center">
+                              Tidak ada ruangan
+                            </div>
+                          ) : (
+                            floor.rooms.map((room) =>
+                              renderTreeItem(room, 0, floor.name)
+                            )
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
               </CardContent>
             </Card>
           </div>
 
           <div className="flex flex-col gap-2 pt-2">
-            <div className="text-xs font-medium text-gray-500 mb-2"></div>
-            {treeData.map((floor) => (
-              <button
-                key={floor.floor_number}
-                onClick={() => scrollToFloor(floor.floor_number)}
-                className={`w-10 h-10 rounded-lg border-2 text-sm font-medium transition-all duration-200 ${
-                  activeFloor === floor.floor_number
-                    ? "bg-blue-600 text-white border-blue-600 shadow-md"
-                    : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
-                }`}
-              >
-                {floor.floor_number}
-              </button>
-            ))}
+            <div className="text-xs font-medium text-gray-500 mb-2">Lantai</div>
+            {hasFloors ? (
+              treeData.map((floor) => (
+                <button
+                  key={`btn-${floor.id}`}
+                  onClick={() => scrollToFloor(floor.floor_number)}
+                  className={`w-10 h-10 rounded-lg border-2 text-sm font-medium transition-all duration-200 ${
+                    activeFloor === floor.floor_number
+                      ? "bg-blue-600 text-white border-blue-600 shadow-md"
+                      : "bg-white text-gray-600 border-gray-200 hover:border-blue-300 hover:text-blue-600"
+                  }`}
+                >
+                  {floor.floor_number}
+                </button>
+              ))
+            ) : (
+              <div className="text-xs text-gray-400">-</div>
+            )}
           </div>
         </div>
       </main>
     </div>
-  )
+  );
 }

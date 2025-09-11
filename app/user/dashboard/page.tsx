@@ -1,3 +1,4 @@
+// app/user/dashboard/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -19,7 +20,7 @@ type Job = {
   isPending?: boolean;      // dari /api/job-photos/[jobId]
   assignedTechnicians: { name: string; isLeader: boolean }[];
 
-  // kompat fitur kode 1
+  // Tambahan agar filter Survey bisa jalan TANPA mengubah tampilan
   type?: "survey" | "instalasi";
   building_name?: string | null;
 };
@@ -49,14 +50,27 @@ export default function TechnicianDashboard() {
   const [currentPage, setCurrentPage] = useState(1);
   const jobsPerPage = 4;
 
-  // segmented filter di header
-  const [filterType, setFilterType] =
-    useState<"all" | "survey" | "instalasi">("all");
+  // segmented filter di header (UI kamu)
+  const [filterType, setFilterType] = useState<"all" | "survey" | "instalasi">(
+    "all"
+  );
 
   const technicianKeyRef = useRef<string | null>(null);
-  const baseChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const projectsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const photosChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const baseChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
+    null
+  );
+  const projectsChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
+    null
+  );
+  const photosChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
+    null
+  );
+  const surveyRoomsChannelRef = useRef<ReturnType<
+    typeof supabase.channel
+  > | null>(null);
+
+  // Cegah dobel PATCH completed (integrasi DB code 2)
+  const completedPostedRef = useRef<Set<string>>(new Set());
 
   async function getJobProgress(
     jobId: string
@@ -96,6 +110,20 @@ export default function TechnicianDashboard() {
     return enriched;
   }
 
+  // Tandai project selesai -> PATCH ke /api/projects/status
+  async function markProjectCompleted(projectId: string) {
+    try {
+      await fetch("/api/projects/status", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, status: "completed" }),
+      });
+    } catch (e) {
+      completedPostedRef.current.delete(projectId);
+      console.error("markProjectCompleted failed:", e);
+    }
+  }
+
   const loadJobs = async () => {
     try {
       setLoading(true);
@@ -125,10 +153,23 @@ export default function TechnicianDashboard() {
       const withProgress = await attachProgress(json.items ?? []);
       setJobs(withProgress);
 
+      // Auto-complete bila progress >= 100 & bukan pending
+      const candidates = withProgress.filter(
+        (j) => (j.progress ?? 0) >= 100 && !j.isPending
+      );
+      for (const j of candidates) {
+        if (!completedPostedRef.current.has(j.id)) {
+          completedPostedRef.current.add(j.id);
+          markProjectCompleted(j.id);
+        }
+      }
+
+      // Re-subscribe realtime untuk data yang relevan
       const projectIds = (json.items ?? []).map((j: Job) => j.id);
       const jobIds = (json.items ?? []).map((j: Job) => j.job_id);
       resubscribeProjects(projectIds);
       resubscribePhotos(jobIds);
+      resubscribeSurveyRooms(projectIds); // supaya filter Survey ikut realtime
     } catch (e: any) {
       setErr(e.message || "Gagal memuat pekerjaan");
       setJobs([]);
@@ -142,6 +183,7 @@ export default function TechnicianDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
+  // Realtime global: perubahan assignment/projects → refetch
   useEffect(() => {
     const debouncedReload = debounce(loadJobs, 200);
 
@@ -168,6 +210,7 @@ export default function TechnicianDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Subscribe khusus projects yang aktif di list
   function resubscribeProjects(projectIds: string[]) {
     if (projectsChannelRef.current) {
       supabase.removeChannel(projectsChannelRef.current);
@@ -197,6 +240,7 @@ export default function TechnicianDashboard() {
     projectsChannelRef.current = ch;
   }
 
+  // Subscribe khusus job_photos untuk job_id yang tampil
   function resubscribePhotos(jobIds: string[]) {
     if (photosChannelRef.current) {
       supabase.removeChannel(photosChannelRef.current);
@@ -204,6 +248,7 @@ export default function TechnicianDashboard() {
     }
     if (!jobIds.length) return;
 
+    // job_id bertipe text, jadi harus di-quote dan escape
     const q = jobIds.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
 
     const ch = supabase
@@ -223,6 +268,33 @@ export default function TechnicianDashboard() {
     photosChannelRef.current = ch;
   }
 
+  // Subscribe ke rooms survey → bila bertambah/berkurang, filter Survey ikut update realtime
+  function resubscribeSurveyRooms(projectIds: string[]) {
+    if (surveyRoomsChannelRef.current) {
+      supabase.removeChannel(surveyRoomsChannelRef.current);
+      surveyRoomsChannelRef.current = null;
+    }
+    if (!projectIds.length) return;
+    const inList = projectIds.map((x) => `"${x}"`).join(",");
+
+    const ch = supabase
+      .channel("tech-dashboard-surveyrooms")
+      .on(
+        "postgres_changes",
+        {
+          schema: "public",
+          table: "project_survey_rooms",
+          event: "*",
+          filter: `project_id=in.(${inList})`,
+        },
+        debounce(loadJobs, 150)
+      )
+      .subscribe();
+
+    surveyRoomsChannelRef.current = ch;
+  }
+
+  // ======== UI kamu: filter tipe pekerjaan ========
   const filteredJobs = useMemo(() => {
     if (filterType === "all") return jobs;
     return jobs.filter((j) => (j.type ?? "instalasi") === filterType);
@@ -255,6 +327,7 @@ export default function TechnicianDashboard() {
     return "bg-gray-50 border-gray-200";
   };
 
+  // Klik card: rute survey vs instalasi (tetap gaya kamu)
   const handleJobClick = (job: Job) => {
     if (job.type === "survey") {
       router.push(`/user/survey/floors?jobId=${encodeURIComponent(job.id)}`);
@@ -266,9 +339,21 @@ export default function TechnicianDashboard() {
   const handlePrevPage = () => setCurrentPage((p) => Math.max(1, p - 1));
   const handleNextPage = () => setCurrentPage((p) => Math.min(totalPages, p + 1));
 
+  // Bersihkan channel realtime saat unmount
+  useEffect(() => {
+    return () => {
+      if (projectsChannelRef.current)
+        supabase.removeChannel(projectsChannelRef.current);
+      if (photosChannelRef.current)
+        supabase.removeChannel(photosChannelRef.current);
+      if (surveyRoomsChannelRef.current)
+        supabase.removeChannel(surveyRoomsChannelRef.current);
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header + segmented filter di kanan */}
+      {/* Header + segmented filter di kanan (UI kamu) */}
       <TechnicianHeader
         title="SiLapor"
         showFilter
@@ -277,8 +362,6 @@ export default function TechnicianDashboard() {
           setFilterType(v);
           setCurrentPage(1);
         }}
-        // Kalau mau hilangkan burger:
-        // showMenuButton={false}
       />
 
       <main className="p-4">
@@ -370,6 +453,7 @@ export default function TechnicianDashboard() {
         </div>
       </main>
 
+      {/* Prompt PWA (tetap ada) */}
       <PWAInstallPrompt />
     </div>
   );

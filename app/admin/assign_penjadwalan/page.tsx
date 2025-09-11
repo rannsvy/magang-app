@@ -31,17 +31,24 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { apiFetch } from "@/lib/apiFetch";
+import { createClient } from "@supabase/supabase-js";
+
+/* ================== Supabase client for realtime ================== */
+const sbAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 /* ================== Types ================== */
 type ProjectStatus = "unassigned" | "ongoing" | "pending";
 type ProgressStatus = "ongoing" | "completed" | "overdue";
-
 type UITechnician = { id: string; name: string; initial: string };
 
 type DbProjectWithStats = {
   id: string;
   job_id: string;
   name: string;
+  lokasi: string | null;
   status: ProgressStatus;
   project_status: ProjectStatus;
   pending_reason: string | null;
@@ -61,29 +68,29 @@ type DbProjectWithStats = {
 };
 
 type UIProject = {
-  id: string; // UUID
+  id: string;
   name: string;
   manPower: number;
   jamDatang: string;
   jamPulang: string;
   jobId: string;
   duration: number;
-  daysElapsed: number; // view -> auto harian
+  daysElapsed: number;
   status: ProgressStatus;
   projectStatus: ProjectStatus;
   pendingReason: string;
   sigmaHari: number;
   sigmaTeknisi: number;
-  sigmaManDays: string; // target
-  actualManDays: number; // akumulasi berjalan
+  sigmaManDays: string;
+  actualManDays: number;
   sales?: string;
 };
 
 type ProjectCategory = "instalasi" | "survey" | null;
 
 interface CellAssignment {
-  projectId: string; // UUID project
-  technicianId: string; // code teknisi (1..30) atau UUID
+  projectId: string;
+  technicianId: string;
   isSelected: boolean;
   initial?: string;
   isProjectLeader?: boolean;
@@ -91,7 +98,7 @@ interface CellAssignment {
 
 interface NewProjectForm {
   namaProject: string;
-  lokasi: string; // tambahan dari desain baru
+  lokasi: string;
   namaSales: string;
   namaPresales: string;
   tanggalSpkUser: string;
@@ -101,19 +108,19 @@ interface NewProjectForm {
   sigmaManDays: string;
   sigmaHari: string;
   sigmaTeknisi: string;
-  tipeTemplate: string; // tambahan dari desain baru
+  tipeTemplate: string;
   durasi?: string;
   insentif?: string;
   paketCount?: number;
-  paketDetails?: Array <{rw: string; rt: string}>;
+  paketDetails?: Array<{ rw: string; rt: string }>;
 }
 
 interface NewSurveyProjectForm {
   namaProject: string;
   namaGedung: string;
   lokasi: string;
-  lantai: string;              // jumlah lantai (string biar konsisten dgn input)
-  ruanganPerLantai: string;    // jumlah ruangan / lantai (string)
+  lantai: string;
+  ruanganPerLantai: string;
   roomDetails: Array<{ floor: number; rooms: string[] }>;
   tanggalMulaiProject: string;
   tanggalDeadlineProject: string;
@@ -124,7 +131,7 @@ interface NewSurveyProjectForm {
 }
 
 interface EditProjectForm {
-  projectId: string; // UUID
+  projectId: string;
   status: ProjectStatus;
   reason: string;
   isReadOnlyProject?: boolean;
@@ -140,7 +147,6 @@ const formatDateDDMMYYYY = (iso: string) => fmtID(iso);
 
 const msToNextMidnight = () => {
   const now = new Date();
-  // guard +2s untuk pastikan tanggal DB ikut berganti
   const next = new Date(
     now.getFullYear(),
     now.getMonth(),
@@ -152,7 +158,6 @@ const msToNextMidnight = () => {
   return next.getTime() - now.getTime();
 };
 
-// Ambil isi dari berbagai bentuk respons: {data}, {projects}, {technicians}, array langsung, dll
 function unwrap<T = any>(payload: any): T {
   if (!payload) return [] as unknown as T;
   if (Array.isArray(payload)) return payload as T;
@@ -188,7 +193,6 @@ const addDaysToIso = (iso: string, delta: number) => {
 export default function AssignScheduling() {
   const router = useRouter();
 
-  // server-driving date (YYYY-MM-DD)
   const [currentDate, setCurrentDate] = useState<string>(() =>
     new Date().toISOString().slice(0, 10)
   );
@@ -202,24 +206,24 @@ export default function AssignScheduling() {
 
   const [projectCategory, setProjectCategory] = useState<ProjectCategory>(null);
 
-  const [newSurveyProjectForm, setNewSurveyProjectForm] = useState<NewSurveyProjectForm>({
-    namaProject: "",
-    namaGedung: "",
-    lokasi: "",
-    lantai: "",
-    ruanganPerLantai: "",
-    roomDetails: [],
-    tanggalMulaiProject: "",
-    tanggalDeadlineProject: "",
-    totalHari: "",
-    totalTeknisi: "",
-    totalManDays: "",
-    tipeTemplate: "",
-  });
+  const [newSurveyProjectForm, setNewSurveyProjectForm] =
+    useState<NewSurveyProjectForm>({
+      namaProject: "",
+      namaGedung: "",
+      lokasi: "",
+      lantai: "",
+      ruanganPerLantai: "",
+      roomDetails: [],
+      tanggalMulaiProject: "",
+      tanggalDeadlineProject: "",
+      totalHari: "",
+      totalTeknisi: "",
+      totalManDays: "",
+      tipeTemplate: "",
+    });
 
   const [currentFloorPage, setCurrentFloorPage] = useState(1);
 
-  // UI states
   const [assignments, setAssignments] = useState<CellAssignment[]>([]);
   const [selectAll, setSelectAll] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -239,10 +243,10 @@ export default function AssignScheduling() {
     sigmaHari: "",
     sigmaTeknisi: "",
     tipeTemplate: "",
-    durasi : "120",
+    durasi: "120",
     insentif: "2000",
-    paketCount : 0,
-    paketDetails : [],
+    paketCount: 0,
+    paketDetails: [],
   });
   const [showSubFields, setShowSubFields] = useState(false);
   const [showEditProject, setShowEditProject] = useState(false);
@@ -253,11 +257,9 @@ export default function AssignScheduling() {
     isReadOnlyProject: false,
   });
 
-  // Validasi (desain baru)
   const [dateValidationError, setDateValidationError] = useState<string>("");
   const [tipeTemplateError, setTipeTemplateError] = useState<string>("");
 
-  // Shortcut “Generate Laporan” (desain baru)
   const [showProjectShortcut, setShowProjectShortcut] = useState(false);
   const [shortcutPosition, setShortcutPosition] = useState({ x: 0, y: 0 });
   const [selectedProjectForShortcut, setSelectedProjectForShortcut] =
@@ -271,8 +273,7 @@ export default function AssignScheduling() {
       await Promise.all([loadTechnicians(), loadProjects()]);
       await loadAssignments(currentDate);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDate]); // Tambahkan currentDate sebagai dependency
+  }, [currentDate]);
 
   /* ---------- Scheduler: auto advance di tengah malam ---------- */
   useEffect(() => {
@@ -285,7 +286,7 @@ export default function AssignScheduling() {
           try {
             await apiFetch("/api/cron/advance-day", {
               method: "POST",
-              body: JSON.stringify({ date: currentDate }), // YYYY-MM-DD
+              body: JSON.stringify({ date: currentDate }),
             });
             localStorage.setItem(key, "1");
           } catch (e) {
@@ -294,20 +295,17 @@ export default function AssignScheduling() {
         }
         const newIso = new Date().toISOString().slice(0, 10);
         setCurrentDate(newIso);
-        // loadProjects akan otomatis dipanggil karena currentDate berubah
         await loadAssignments(newIso);
-        schedule(); // jadwalkan malam berikutnya
+        schedule();
       }, msToNextMidnight());
     };
 
     schedule();
 
-    // Sync kalau user kembali ke tab setelah hari berganti
     const onFocus = async () => {
       const todayIso = new Date().toISOString().slice(0, 10);
       if (todayIso !== currentDate) {
         setCurrentDate(todayIso);
-        // loadProjects akan otomatis dipanggil karena currentDate berubah
         await loadAssignments(todayIso);
       }
     };
@@ -321,14 +319,37 @@ export default function AssignScheduling() {
     };
   }, [currentDate]);
 
-  /* ---------- API loaders (robust + fallback) ---------- */
+  /* ---------- Realtime subscribe projects ---------- */
+  useEffect(() => {
+    let t: any;
+    const trigger = () => {
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        await loadProjects();
+        await loadAssignments(currentDate);
+      }, 150);
+    };
+
+    const ch = sbAdmin
+      .channel("assign-admin-projects")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "projects" },
+        trigger
+      )
+      .subscribe();
+
+    return () => {
+      clearTimeout(t);
+      sbAdmin.removeChannel(ch);
+    };
+  }, [currentDate]);
+
+  /* ---------- API loaders ---------- */
   async function loadTechnicians() {
     try {
-      // utama
       let res = await apiFetch<any>("/api/technicians", { cache: "no-store" });
       let rows = unwrap<any[]>(res);
-
-      // fallback kemungkinan lain (opsional)
       if (!rows?.length) {
         try {
           res = await apiFetch<any>("/api/technicians/all", {
@@ -339,7 +360,7 @@ export default function AssignScheduling() {
       }
 
       const ui: UITechnician[] = rows.map((t: any) => ({
-        id: String(t.code ?? t.id), // di UI pakai "code" kalau ada, fallback ke id
+        id: String(t.code ?? t.id),
         name: t.name ?? t.nama ?? "Teknisi",
         initial: String(
           t.initials ?? t.initial ?? t.name?.[0] ?? "?"
@@ -347,7 +368,6 @@ export default function AssignScheduling() {
       }));
       setTechs(ui);
 
-      // mapping code -> uuid (kalau server mengirim dua-duanya)
       const mapping: Record<string, string> = {};
       for (const t of rows) {
         const code = String(t.code ?? t.id);
@@ -364,13 +384,11 @@ export default function AssignScheduling() {
 
   async function loadProjects() {
     try {
-      // standar dengan parameter date untuk filter rentang waktu
       let res = await apiFetch<any>(`/api/projects?date=${currentDate}`, {
         cache: "no-store",
       });
       let rows = unwrap<any[]>(res);
 
-      // fallback ke grid
       if (!rows?.length) {
         res = await apiFetch<any>(`/api/grid?date=${currentDate}`, {
           cache: "no-store",
@@ -409,7 +427,6 @@ export default function AssignScheduling() {
         );
         const jamDatang = time5(p.jam_datang ?? p.datangDefault, "08:00");
         const jamPulang = time5(p.jam_pulang ?? p.pulangDefault, "17:00");
-
         const sales: string = p.sales ?? p.sales_name ?? p.nama_sales ?? "";
 
         return {
@@ -441,13 +458,11 @@ export default function AssignScheduling() {
 
   async function loadAssignments(isoDate: string) {
     try {
-      // Bentuk utama: { data: Array<{ projectId, technicianCode, initial, ... }> }
       let res = await apiFetch<any>(`/api/assignments?date=${isoDate}`, {
         cache: "no-store",
       });
       let rows = unwrap<any[]>(res);
 
-      // Fallback: derive dari /api/grid?date=... -> p.technicians
       if (!rows?.length) {
         res = await apiFetch<any>(`/api/grid?date=${isoDate}`, {
           cache: "no-store",
@@ -520,36 +535,14 @@ export default function AssignScheduling() {
   const handleCellClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
     if (!project) return;
-
-    // Block pending & completed
     if (project.projectStatus === "pending") return;
     if (project.status === "completed") return;
 
     const technician = techs.find((t) => t.id === technicianId);
     if (!technician) return;
 
-    // Cek apakah teknisi sudah di-assign ke project lain yang sedang ongoing
-    const technicianOtherAssignments = assignments.filter(
-      (a) =>
-        a.technicianId === technicianId &&
-        a.projectId !== projectId &&
-        (a.isSelected || a.isProjectLeader)
-    );
-
-    if (technicianOtherAssignments.length > 0) {
-      const otherProject = projectsData.find(
-        (p) =>
-          technicianOtherAssignments.some((a) => a.projectId === p.id) &&
-          p.status === "ongoing" &&
-          p.projectStatus === "ongoing"
-      );
-      if (otherProject) {
-        alert(
-          `Teknisi ${technician.name} sedang bekerja di project ${otherProject.name} dan tidak dapat dipindahkan sampai project tersebut selesai.`
-        );
-        return;
-      }
-    }
+    // ⬇️⬇️ PERUBAHAN: Tidak lagi membatasi teknisi agar hanya di 1 project.
+    // (blok pemeriksaan & alert diphapus agar multi-assign diperbolehkan)
 
     setAssignments((prev) => {
       const existingIndex = prev.findIndex(
@@ -558,15 +551,8 @@ export default function AssignScheduling() {
       if (existingIndex >= 0) {
         const existing = prev[existingIndex];
         if (existing.isSelected) {
-          // Jika project leader, tidak bisa dihapus dengan single click
-          if (existing.isProjectLeader) {
-            return prev; // Tidak ada perubahan
-          }
-
-          // Hapus assignment dari array
+          if (existing.isProjectLeader) return prev; // leader tidak bisa dihapus single-click
           const updated = prev.filter((_, index) => index !== existingIndex);
-
-          // Jika tidak ada assignment lain, set unassigned
           const remainingProjectAssignments = updated.filter(
             (a) =>
               a.projectId === projectId && (a.isSelected || a.isProjectLeader)
@@ -580,7 +566,6 @@ export default function AssignScheduling() {
           }
           return updated;
         } else {
-          // toggle ke selected, pertahankan leader
           const updated = [...prev];
           updated[existingIndex] = {
             ...existing,
@@ -588,7 +573,6 @@ export default function AssignScheduling() {
             initial: technician.initial,
             isProjectLeader: existing.isProjectLeader || false,
           };
-
           const projectAssignments = updated.filter(
             (a) =>
               a.projectId === projectId && (a.isSelected || a.isProjectLeader)
@@ -605,7 +589,6 @@ export default function AssignScheduling() {
           return updated;
         }
       } else {
-        // Buat assignment baru
         const existingAssignments = prev.filter(
           (a) =>
             a.projectId === projectId && (a.isSelected || a.isProjectLeader)
@@ -636,8 +619,6 @@ export default function AssignScheduling() {
   const handleCellDoubleClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
     if (!project) return;
-
-    // Block pending & completed
     if (project.projectStatus === "pending") return;
     if (project.status === "completed") return;
 
@@ -651,8 +632,6 @@ export default function AssignScheduling() {
       if (existingIndex >= 0) {
         const updated = [...prev];
         const current = updated[existingIndex];
-
-        // Toggle leader
         const newLeaderStatus = !current.isProjectLeader;
 
         updated[existingIndex] = {
@@ -662,7 +641,6 @@ export default function AssignScheduling() {
           initial: technician.initial,
         };
 
-        // Pastikan hanya 1 leader
         if (newLeaderStatus) {
           for (let i = 0; i < updated.length; i++) {
             if (i !== existingIndex && updated[i].projectId === projectId) {
@@ -672,7 +650,6 @@ export default function AssignScheduling() {
         }
         return updated;
       } else {
-        // buat langsung sebagai leader
         const updated = [...prev];
         for (let i = 0; i < updated.length; i++) {
           if (updated[i].projectId === projectId) {
@@ -698,7 +675,6 @@ export default function AssignScheduling() {
     if (checked) {
       const allAssignments: CellAssignment[] = [];
       projectsData.forEach((project) => {
-        // lewati baris yang tidak bisa diubah (pending/completed)
         const locked =
           project.projectStatus === "pending" || project.status === "completed";
         techs.forEach((technician) => {
@@ -717,16 +693,14 @@ export default function AssignScheduling() {
       });
       setAssignments(allAssignments);
     } else {
-      // hanya simpan leader
       setAssignments((prev) => prev.filter((a) => a.isProjectLeader));
     }
   };
 
-  /* ---------- Navigasi tanggal (desain baru) ---------- */
+  /* ---------- Navigasi tanggal ---------- */
   const handleDateNavigation = async (direction: "prev" | "next") => {
     const newIso = addDaysToIso(currentDate, direction === "prev" ? -1 : 1);
     setCurrentDate(newIso);
-    // loadProjects akan otomatis dipanggil karena currentDate berubah
     await loadAssignments(newIso);
   };
 
@@ -768,7 +742,6 @@ export default function AssignScheduling() {
   };
 
   const handleCreateProject = async () => {
-    // Validasi ekstra dari desain baru
     if (
       !newProjectForm.namaProject ||
       !newProjectForm.tanggalMulaiProject ||
@@ -809,6 +782,18 @@ export default function AssignScheduling() {
         sigmaHari: Number(newProjectForm.sigmaHari),
         sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
         templateKey: newProjectForm.tipeTemplate,
+        durasiMinutes: newProjectForm.durasi
+          ? Number(newProjectForm.durasi)
+          : undefined,
+        insentif: newProjectForm.insentif
+          ? Number(newProjectForm.insentif)
+          : undefined,
+        paketDetails:
+          (newProjectForm.paketDetails ?? []).map((p, idx) => ({
+            seq: idx + 1,
+            rw: p.rw || null,
+            rt: p.rt || null,
+          })) ?? [],
       };
 
       const res = await apiFetch<{ data: DbProjectWithStats }>(
@@ -818,7 +803,6 @@ export default function AssignScheduling() {
           body: JSON.stringify(payload),
         }
       );
-
       const p = (res as any).data ?? res;
       const uiProject: UIProject = {
         id: p.id,
@@ -855,6 +839,10 @@ export default function AssignScheduling() {
         sigmaHari: "",
         sigmaTeknisi: "",
         tipeTemplate: "",
+        durasi: "120",
+        insentif: "2000",
+        paketCount: 0,
+        paketDetails: [],
       });
       setShowSubFields(false);
       setDateValidationError("");
@@ -862,6 +850,103 @@ export default function AssignScheduling() {
     } catch (err: any) {
       console.error(err);
       alert(err?.message || "Gagal membuat project");
+    } finally {
+      setIsSavingProject(false);
+    }
+  };
+
+  // Survey
+  const handleCreateSurveyProject = async () => {
+    if (
+      !newSurveyProjectForm.namaProject ||
+      !newSurveyProjectForm.namaGedung ||
+      !newSurveyProjectForm.lokasi ||
+      !newSurveyProjectForm.tanggalMulaiProject ||
+      !newSurveyProjectForm.tanggalDeadlineProject ||
+      !newSurveyProjectForm.totalHari ||
+      !newSurveyProjectForm.totalTeknisi ||
+      !newSurveyProjectForm.totalManDays ||
+      !newSurveyProjectForm.tipeTemplate
+    ) {
+      return;
+    }
+    if (
+      !validateDates(
+        newSurveyProjectForm.tanggalMulaiProject,
+        newSurveyProjectForm.tanggalDeadlineProject
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setIsSavingProject(true);
+
+      const payload = {
+        namaProject: newSurveyProjectForm.namaProject,
+        namaGedung: newSurveyProjectForm.namaGedung,
+        lokasi: newSurveyProjectForm.lokasi,
+        tanggalMulaiProject: newSurveyProjectForm.tanggalMulaiProject,
+        tanggalDeadlineProject: newSurveyProjectForm.tanggalDeadlineProject,
+        totalHari: Number(newSurveyProjectForm.totalHari),
+        totalTeknisi: Number(newSurveyProjectForm.totalTeknisi),
+        totalManDays: Number(newSurveyProjectForm.totalManDays),
+        tipeTemplate: newSurveyProjectForm.tipeTemplate,
+        roomDetails: newSurveyProjectForm.roomDetails ?? [],
+      };
+
+      const res = await apiFetch<{ data: DbProjectWithStats }>(
+        "/api/projects/survey",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }
+      );
+
+      const p = (res as any).data ?? res;
+
+      const uiProject: UIProject = {
+        id: p.id,
+        name: p.name,
+        manPower: p.sigma_teknisi ?? 0,
+        jamDatang: p.jam_datang ? String(p.jam_datang).slice(0, 5) : "08:00",
+        jamPulang: p.jam_pulang ? String(p.jam_pulang).slice(0, 5) : "17:00",
+        jobId: p.job_id,
+        duration: p.sigma_hari ?? 0,
+        daysElapsed: p.days_elapsed ?? 0,
+        status: p.status,
+        projectStatus: p.project_status,
+        pendingReason: p.pending_reason ?? "",
+        sigmaHari: p.sigma_hari ?? 0,
+        sigmaTeknisi: p.sigma_teknisi ?? 0,
+        sigmaManDays: String(p.sigma_man_days ?? 0),
+        actualManDays: p.actual_man_days ?? 0,
+        sales: p.sales ?? p.sales_name ?? p.nama_sales ?? "",
+      };
+
+      setProjectsData((prev) => [uiProject, ...prev]);
+      setShowCreateProject(false);
+      setShowProjectSuccess(true);
+
+      setNewSurveyProjectForm({
+        namaProject: "",
+        namaGedung: "",
+        lokasi: "",
+        lantai: "",
+        ruanganPerLantai: "",
+        roomDetails: [],
+        tanggalMulaiProject: "",
+        tanggalDeadlineProject: "",
+        totalHari: "",
+        totalTeknisi: "",
+        totalManDays: "",
+        tipeTemplate: "",
+      });
+      setDateValidationError("");
+      setTipeTemplateError("");
+    } catch (err: any) {
+      console.error(err);
+      alert(err?.message || "Gagal membuat project survey");
     } finally {
       setIsSavingProject(false);
     }
@@ -909,11 +994,10 @@ export default function AssignScheduling() {
   const getTotalAssignments = () =>
     assignments.filter((a) => a.isSelected || a.isProjectLeader).length;
 
-  // Sebelumnya hanya menganggap selected/leader. Ganti jadi:
   const getIdleTechnicians = () => {
     const assignedTechnicianIds = new Set(
       assignments.map((a) => a.technicianId)
-    ); // semua membership aktif
+    );
     return techs.filter((tech) => !assignedTechnicianIds.has(tech.id));
   };
 
@@ -925,24 +1009,18 @@ export default function AssignScheduling() {
     if (techAssignments.length === 0) {
       return { status: "idle", color: "bg-gray-300 text-gray-700" };
     }
-
-    // Hadir hari ini (selected) atau leader -> working
     const isWorkingToday = techAssignments.some(
       (a) => a.isSelected || a.isProjectLeader
     );
     if (isWorkingToday) {
       return { status: "working", color: "bg-blue-200 text-blue-900" };
     }
-
-    // Member proyek aktif tapi tidak hadir -> assigned (tetap menempel)
     return { status: "assigned", color: "bg-green-200 text-green-900" };
   };
 
   const getProgressStatus = (project: UIProject) => {
     const sigmaHari = Number(project.sigmaHari || 0);
     const currentDays = Number(project.daysElapsed || 0);
-
-    // anggap pending jika projectStatus = 'pending' atau ada pendingReason
     const isPending =
       project.projectStatus === "pending" || !!project.pendingReason;
 
@@ -977,7 +1055,6 @@ export default function AssignScheduling() {
     }
   };
 
-  // Man Days berbasis AKUMULASI (actualManDays)
   const getManDaysDisplay = (project: UIProject) => {
     const current = Number(project.actualManDays || 0);
     const target = Number.parseInt(project.sigmaManDays) || 0;
@@ -1001,7 +1078,7 @@ export default function AssignScheduling() {
   };
 
   const getSigmaDisplay = (project: UIProject) => {
-    const assignedTechnicians = getProjectAssignmentCount(project.id); // HARI INI
+    const assignedTechnicians = getProjectAssignmentCount(project.id);
     const sigmaTeknisi = project.sigmaTeknisi ?? 0;
     const isOver = assignedTechnicians > sigmaTeknisi;
     return {
@@ -1014,7 +1091,6 @@ export default function AssignScheduling() {
 
   const getProjectStatusDisplay = (project: UIProject) => {
     const { projectStatus, pendingReason } = project;
-
     let bgColor = "bg-gray-100";
     let textColor = "text-gray-700";
     let label = "Belum Diassign";
@@ -1031,10 +1107,10 @@ export default function AssignScheduling() {
         label = "Pending";
         break;
       case "unassigned":
+      default:
         bgColor = "bg-gray-100";
         textColor = "text-gray-700";
         label = "Belum Diassign";
-        break;
     }
     return { bgColor, textColor, label, reason: pendingReason };
   };
@@ -1052,7 +1128,7 @@ export default function AssignScheduling() {
     setShowEditProject(true);
   };
 
-  /* ---------- Shortcut “Generate Laporan” (desain baru) ---------- */
+  /* ---------- Shortcut “Generate Laporan” ---------- */
   const downloadDocx = (jobId: string) => {
     const url = `/api/laporan/docx?jobId=${encodeURIComponent(jobId)}`;
     window.open(url, "_blank");
@@ -1116,7 +1192,7 @@ export default function AssignScheduling() {
     };
   }, [showProjectShortcut]);
 
-  /* ---------- Validasi tanggal (desain baru) ---------- */
+  /* ---------- Validasi tanggal ---------- */
   const validateDates = (startDate: string, deadlineDate: string) => {
     if (startDate && deadlineDate) {
       const start = new Date(startDate);
@@ -1132,62 +1208,62 @@ export default function AssignScheduling() {
     return true;
   };
 
-    // ===== Helper Survey: generate rooms per floor =====
+  // Survey: generate rooms per floor
   const generateRoomDetails = (floors: number, roomsPerFloor: number) => {
-    const details: Array<{ floor: number; rooms: string[] }> = []
+    const details: Array<{ floor: number; rooms: string[] }> = [];
     for (let floor = 1; floor <= floors; floor++) {
-      const rooms: string[] = []
+      const rooms: string[] = [];
       for (let room = 1; room <= roomsPerFloor; room++) {
-        rooms.push(`Ruangan #${room}`)
+        rooms.push(`Ruangan #${room}`);
       }
-      details.push({ floor, rooms })
+      details.push({ floor, rooms });
     }
-    setCurrentFloorPage(1) // reset ke lantai 1 setiap regenerate
-    return details
-  }
+    setCurrentFloorPage(1);
+    return details;
+  };
 
-  // Auto-generate roomDetails saat lantai/ruanganPerLantai berubah
   useEffect(() => {
-    const f = parseInt(newSurveyProjectForm.lantai || "0", 10)
-    const r = parseInt(newSurveyProjectForm.ruanganPerLantai || "0", 10)
+    const f = parseInt(newSurveyProjectForm.lantai || "0", 10);
+    const r = parseInt(newSurveyProjectForm.ruanganPerLantai || "0", 10);
     if (f > 0 && r > 0) {
-      const newDetails = generateRoomDetails(f, r)
-      setNewSurveyProjectForm(prev => ({ ...prev, roomDetails: newDetails }))
+      const newDetails = generateRoomDetails(f, r);
+      setNewSurveyProjectForm((prev) => ({ ...prev, roomDetails: newDetails }));
     } else if (newSurveyProjectForm.roomDetails.length) {
-      // kosongkan jika input tidak valid
-      setNewSurveyProjectForm(prev => ({ ...prev, roomDetails: [] }))
+      setNewSurveyProjectForm((prev) => ({ ...prev, roomDetails: [] }));
     }
-  }, [newSurveyProjectForm.lantai, newSurveyProjectForm.ruanganPerLantai])
+  }, [newSurveyProjectForm.lantai, newSurveyProjectForm.ruanganPerLantai]);
 
-  const goToPreviousFloor = () => setCurrentFloorPage(p => Math.max(1, p - 1))
+  const goToPreviousFloor = () =>
+    setCurrentFloorPage((p) => Math.max(1, p - 1));
   const goToNextFloor = () =>
-  setCurrentFloorPage(p => Math.min(newSurveyProjectForm.roomDetails.length || 1, p + 1))
+    setCurrentFloorPage((p) =>
+      Math.min(newSurveyProjectForm.roomDetails.length || 1, p + 1)
+    );
 
-  // ----- Konstanta tampilan paket per kolom -----
-    const PER_COL = 5;
+  const PER_COL = 5;
+  const details = newProjectForm.paketDetails ?? [];
 
-    // Selalu punya nilai array:
-    const details = newProjectForm.paketDetails ?? [];
+  const paketGroups = (() => {
+    const groups: {
+      start: number;
+      items: Array<{ rw: string; rt: string }>;
+    }[] = [];
+    for (let start = 0; start < details.length; start += PER_COL) {
+      groups.push({
+        start,
+        items: details.slice(start, start + PER_COL),
+      });
+    }
+    return groups;
+  })();
 
-    // (boleh IIFE seperti ini)
-    const paketGroups = (() => {
-      const groups: { start: number; items: Array<{ rw: string; rt: string }> }[] = [];
-      for (let start = 0; start < details.length; start += PER_COL) {
-        groups.push({
-          start,
-          items: details.slice(start, start + PER_COL),
-        });
-      }
-      return groups;
-    })();
-
-  // Setter jumlah paket dengan clamp 0..30 + sinkronisasi array detail
   const setPaketCount = (count: number) => {
     const n = Math.max(0, Math.min(30, Math.floor(count || 0)));
-    setNewProjectForm(prev => {
+    setNewProjectForm((prev) => {
       const nextDetails = [...(prev.paketDetails ?? [])];
       if (n > nextDetails.length) {
-        for (let i = nextDetails.length; i < n; i++) nextDetails.push({ rw: "", rt: "" });
+        for (let i = nextDetails.length; i < n; i++)
+          nextDetails.push({ rw: "", rt: "" });
       } else {
         nextDetails.length = n;
       }
@@ -1195,9 +1271,12 @@ export default function AssignScheduling() {
     });
   };
 
-  // Update 1 field RW/RT pada indeks tertentu
-  const updatePaketDetail = (idx: number, field: "rw" | "rt", value: string) => {
-    setNewProjectForm(prev => {
+  const updatePaketDetail = (
+    idx: number,
+    field: "rw" | "rt",
+    value: string
+  ) => {
+    setNewProjectForm((prev) => {
       const next = [...(prev.paketDetails ?? [])];
       if (!next[idx]) next[idx] = { rw: "", rt: "" };
       next[idx] = { ...next[idx], [field]: value };
@@ -1205,10 +1284,13 @@ export default function AssignScheduling() {
     });
   };
 
-  // Input terikat untuk jumlah paket (string agar user bisa hapus semua digit)
   const [paketCountInput, setPaketCountInput] = useState<string>("0");
   useEffect(() => {
-    setPaketCountInput((newProjectForm.paketCount ?? 0) > 0 ? String(newProjectForm.paketCount) : "0");
+    setPaketCountInput(
+      (newProjectForm.paketCount ?? 0) > 0
+        ? String(newProjectForm.paketCount)
+        : "0"
+    );
   }, [newProjectForm.paketCount]);
 
   const handlePaketInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1226,7 +1308,6 @@ export default function AssignScheduling() {
   };
 
   type TemplateOption = { value: string; label: string };
-
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
   useEffect(() => {
     (async () => {
@@ -1293,7 +1374,7 @@ export default function AssignScheduling() {
                 Buat Project
               </Button>
 
-              {/* Navigasi tanggal ala desain baru */}
+              {/* Navigasi tanggal */}
               <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
                 <Button
                   variant="ghost"
@@ -1397,13 +1478,17 @@ export default function AssignScheduling() {
                     const manDaysStatus = getManDaysStatus(project);
                     const projectStatusDisplay =
                       getProjectStatusDisplay(project);
-
                     const isLockedRow =
                       project.projectStatus === "pending" ||
                       project.status === "completed";
 
+                    // ⬇️⬇️ KEY KOMPOSIT – mencegah duplikasi key
+                    const rowKey = `${project.id ?? "noid"}-${
+                      project.jobId ?? "nojob"
+                    }-${projectIndex}`;
+
                     return (
-                      <tr key={project.id} className={rowBgColor}>
+                      <tr key={rowKey} className={rowBgColor}>
                         <td
                           className={`px-1 py-1 border-r border-gray-200 font-medium ${rowBgColor}`}
                         >
@@ -1480,24 +1565,19 @@ export default function AssignScheduling() {
                           let textColor = "text-gray-900";
                           let displayInitial = "";
 
-                          // Project leader selalu ditampilkan (merah), walau tidak selected
                           if (isProjectLeader) {
                             cellBgColor = "bg-red-500";
                             textColor = "text-white";
                             displayInitial =
                               assignment?.initial || technician.initial;
                           } else if (isSelected) {
-                            // Hanya highlight biru jika hadir (selected)
                             cellBgColor = "bg-blue-200";
                             textColor = "text-blue-900";
                             displayInitial =
                               assignment?.initial || technician.initial;
                           }
-                          // NOTE: jika ada membership tapi isSelected=false -> biarkan seperti sel kosong (rowBgColor)
 
-                          const disabledCell =
-                            project.projectStatus === "pending" ||
-                            project.status === "completed";
+                          const disabledCell = isLockedRow;
 
                           return (
                             <td
@@ -1570,7 +1650,6 @@ export default function AssignScheduling() {
                     );
                   })}
 
-                  {/* Hanya tampilkan baris teknisi idle jika ada teknisi yang idle */}
                   {getIdleTechnicians().length > 0 && (
                     <tr className="bg-blue-50 border-t-2 border-blue-200">
                       <td className="px-1 py-1 border-r border-gray-200 font-medium bg-blue-50">
@@ -1703,8 +1782,13 @@ export default function AssignScheduling() {
                   <SelectValue placeholder="Pilih project yang akan diedit" />
                 </SelectTrigger>
                 <SelectContent>
-                  {projectsData.map((project) => (
-                    <SelectItem key={project.id} value={project.id}>
+                  {projectsData.map((project, projectIndex) => (
+                    <SelectItem
+                      key={`${project.id ?? "noid"}-${
+                        project.jobId ?? "nojob"
+                      }-${projectIndex}`}
+                      value={project.id}
+                    >
                       {project.name}
                     </SelectItem>
                   ))}
@@ -1813,8 +1897,7 @@ export default function AssignScheduling() {
         </DialogContent>
       </Dialog>
 
-       {/* Create Project (desain baru, payload tetap API lama) */}
-       {/* Create Project (dengan switch Instalasi / Survey) */}
+      {/* Create Project */}
       <Dialog open={showCreateProject} onOpenChange={setShowCreateProject}>
         <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -1822,10 +1905,11 @@ export default function AssignScheduling() {
               <div className="flex flex-col gap-4">
                 <DialogTitle>Buat Project Baru</DialogTitle>
 
-                {/* Toggle kategori */}
                 <div className="flex gap-2">
                   <Button
-                    variant={projectCategory === "instalasi" ? "default" : "outline"}
+                    variant={
+                      projectCategory === "instalasi" ? "default" : "outline"
+                    }
                     onClick={() => setProjectCategory("instalasi")}
                     className="font-sans"
                     size="sm"
@@ -1833,7 +1917,9 @@ export default function AssignScheduling() {
                     Instalasi
                   </Button>
                   <Button
-                    variant={projectCategory === "survey" ? "default" : "outline"}
+                    variant={
+                      projectCategory === "survey" ? "default" : "outline"
+                    }
                     onClick={() => setProjectCategory("survey")}
                     className="font-sans"
                     size="sm"
@@ -1843,29 +1929,36 @@ export default function AssignScheduling() {
                 </div>
               </div>
 
-              {/* Tombol submit:
-                  - aktif untuk instalasi (pakai API existing)
-                  - untuk survey hanya menampilkan alert (belum di-wire ke API) */}
               <div className="flex flex-col items-end gap-2 mr-6">
                 <Button
                   onClick={() => {
                     if (projectCategory === "survey") {
-                      alert("Form Survey belum terhubung ke API. Hanya UI ditambahkan.");
+                      handleCreateSurveyProject();
                       return;
                     }
-                    handleCreateProject(); // flow instalasi yang sudah ada
+                    handleCreateProject();
                   }}
                   disabled={
                     isSavingProject ||
-                    projectCategory !== "instalasi" ||
-                    !newProjectForm.namaProject ||
-                    !newProjectForm.tanggalMulaiProject ||
-                    !newProjectForm.tanggalDeadlineProject ||
-                    !newProjectForm.sigmaManDays ||
-                    !newProjectForm.sigmaHari ||
-                    !newProjectForm.sigmaTeknisi ||
-                    !newProjectForm.tipeTemplate ||
-                    !!dateValidationError
+                    (projectCategory === "instalasi"
+                      ? !newProjectForm.namaProject ||
+                        !newProjectForm.tanggalMulaiProject ||
+                        !newProjectForm.tanggalDeadlineProject ||
+                        !newProjectForm.sigmaManDays ||
+                        !newProjectForm.sigmaHari ||
+                        !newProjectForm.sigmaTeknisi ||
+                        !newProjectForm.tipeTemplate ||
+                        !!dateValidationError
+                      : !newSurveyProjectForm.namaProject ||
+                        !newSurveyProjectForm.namaGedung ||
+                        !newSurveyProjectForm.lokasi ||
+                        !newSurveyProjectForm.tanggalMulaiProject ||
+                        !newSurveyProjectForm.tanggalDeadlineProject ||
+                        !newSurveyProjectForm.totalManDays ||
+                        !newSurveyProjectForm.totalHari ||
+                        !newSurveyProjectForm.totalTeknisi ||
+                        !newSurveyProjectForm.tipeTemplate ||
+                        !!dateValidationError)
                   }
                   className="bg-green-600 hover:bg-green-700"
                   size="sm"
@@ -1877,10 +1970,9 @@ export default function AssignScheduling() {
           </DialogHeader>
 
           <div className="grid gap-4 py-2">
-            {/* ====================== FORM INSTALASI (tetap) ====================== */}
+            {/* ===== INSTALASI ===== */}
             {projectCategory === "instalasi" && (
               <>
-                {/* — Nama Project */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label
                     htmlFor="namaProject"
@@ -1907,7 +1999,6 @@ export default function AssignScheduling() {
                   </div>
                 </div>
 
-                {/* — Lokasi */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label
                     htmlFor="lokasi"
@@ -1936,9 +2027,11 @@ export default function AssignScheduling() {
                   </div>
                 </div>
 
-                {/* — Paket + Detail Paket (RW/RT) */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="paket" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                  <Label
+                    htmlFor="paket"
+                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
+                  >
                     Paket <span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
@@ -1957,23 +2050,34 @@ export default function AssignScheduling() {
 
                 <div className="border rounded-lg p-3">
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-semibold">Detail Paket (RW / RT)</span>
-                    <span className="text-xs text-gray-500">{newProjectForm.paketCount} paket</span>
+                    <span className="text-sm font-semibold">
+                      Detail Paket (RW / RT)
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      {newProjectForm.paketCount} paket
+                    </span>
                   </div>
 
                   {newProjectForm.paketCount === 0 ? (
-                    <p className="text-xs text-gray-500">Atur jumlah paket untuk menampilkan sub-field RW/RT.</p>
+                    <p className="text-xs text-gray-500">
+                      Atur jumlah paket untuk menampilkan sub-field RW/RT.
+                    </p>
                   ) : (
                     <div
                       className="grid gap-4"
-                      style={{ gridTemplateColumns: `repeat(${paketGroups.length}, minmax(0, 1fr))` }}
+                      style={{
+                        gridTemplateColumns: `repeat(${paketGroups.length}, minmax(0, 1fr))`,
+                      }}
                     >
                       {paketGroups.map((group, colIdx) => (
                         <div key={colIdx} className="space-y-3">
                           {group.items.map((p, idxInCol) => {
                             const absoluteIndex = group.start + idxInCol;
                             return (
-                              <div key={absoluteIndex} className="grid grid-cols-3 gap-2 items-center">
+                              <div
+                                key={absoluteIndex}
+                                className="grid grid-cols-3 gap-2 items-center"
+                              >
                                 <div className="text-xs font-medium text-gray-700">
                                   Paket #{absoluteIndex + 1}
                                 </div>
@@ -1981,14 +2085,26 @@ export default function AssignScheduling() {
                                   type="text"
                                   placeholder="RW"
                                   value={p.rw}
-                                  onChange={(e) => updatePaketDetail(absoluteIndex, "rw", e.target.value)}
+                                  onChange={(e) =>
+                                    updatePaketDetail(
+                                      absoluteIndex,
+                                      "rw",
+                                      e.target.value
+                                    )
+                                  }
                                   className="h-9 rounded-md border border-input bg-background px-2 text-sm"
                                 />
                                 <input
                                   type="text"
                                   placeholder="RT"
                                   value={p.rt}
-                                  onChange={(e) => updatePaketDetail(absoluteIndex, "rt", e.target.value)}
+                                  onChange={(e) =>
+                                    updatePaketDetail(
+                                      absoluteIndex,
+                                      "rt",
+                                      e.target.value
+                                    )
+                                  }
                                   className="h-9 rounded-md border border-input bg-background px-2 text-sm"
                                 />
                               </div>
@@ -2000,9 +2116,11 @@ export default function AssignScheduling() {
                   )}
                 </div>
 
-                {/* — Sales & Presales */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="namaSales" className="min-w-[140px] md:min-w-[140px]">
+                  <Label
+                    htmlFor="namaSales"
+                    className="min-w-[140px] md:min-w-[140px]"
+                  >
                     Nama Sales <span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
@@ -2010,7 +2128,12 @@ export default function AssignScheduling() {
                       id="namaSales"
                       type="text"
                       value={newProjectForm.namaSales}
-                      onChange={(e) => setNewProjectForm((prev) => ({ ...prev, namaSales: e.target.value }))}
+                      onChange={(e) =>
+                        setNewProjectForm((prev) => ({
+                          ...prev,
+                          namaSales: e.target.value,
+                        }))
+                      }
                       placeholder="Masukkan nama sales"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
@@ -2018,7 +2141,10 @@ export default function AssignScheduling() {
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="namaPresales" className="min-w-[140px] md:min-w-[140px]">
+                  <Label
+                    htmlFor="namaPresales"
+                    className="min-w-[140px] md:min-w-[140px]"
+                  >
                     Nama Presales
                   </Label>
                   <div className="flex-1">
@@ -2026,16 +2152,19 @@ export default function AssignScheduling() {
                       id="namaPresales"
                       type="text"
                       value={newProjectForm.namaPresales}
-                      onChange={(e) => setNewProjectForm((prev) => ({ ...prev, namaPresales: e.target.value }))}
+                      onChange={(e) =>
+                        setNewProjectForm((prev) => ({
+                          ...prev,
+                          namaPresales: e.target.value,
+                        }))
+                      }
                       placeholder="Masukkan nama presales"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     />
                   </div>
                 </div>
 
-                {/* — Grid kiri/kanan */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Kiri */}
                   <div className="space-y-4">
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
                       <Label htmlFor="tanggalSpkUser" className="min-w-[120px]">
@@ -2045,22 +2174,37 @@ export default function AssignScheduling() {
                         id="tanggalSpkUser"
                         type="date"
                         value={newProjectForm.tanggalSpkUser}
-                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, tanggalSpkUser: e.target.value }))}
+                        onChange={(e) =>
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            tanggalSpkUser: e.target.value,
+                          }))
+                        }
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       />
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="tanggalMulaiProject" className="flex items-center gap-1 min-w-[120px]">
-                        Tanggal Mulai Project<span className="text-red-500">*</span>
+                      <Label
+                        htmlFor="tanggalMulaiProject"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
+                        Tanggal Mulai Project
+                        <span className="text-red-500">*</span>
                       </Label>
                       <input
                         id="tanggalMulaiProject"
                         type="date"
                         value={newProjectForm.tanggalMulaiProject}
                         onChange={(e) => {
-                          setNewProjectForm((prev) => ({ ...prev, tanggalMulaiProject: e.target.value }));
-                          validateDates(e.target.value, newProjectForm.tanggalDeadlineProject);
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            tanggalMulaiProject: e.target.value,
+                          }));
+                          validateDates(
+                            e.target.value,
+                            newProjectForm.tanggalDeadlineProject
+                          );
                         }}
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2068,7 +2212,10 @@ export default function AssignScheduling() {
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="sigmaManDays" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="sigmaManDays"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Man Days<span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2076,7 +2223,12 @@ export default function AssignScheduling() {
                         type="number"
                         min="0"
                         value={newProjectForm.sigmaManDays}
-                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaManDays: e.target.value }))}
+                        onChange={(e) =>
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            sigmaManDays: e.target.value,
+                          }))
+                        }
                         placeholder="Target Man Days"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2084,7 +2236,10 @@ export default function AssignScheduling() {
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="sigmaTeknisi" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="sigmaTeknisi"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Total Teknisi<span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2092,16 +2247,23 @@ export default function AssignScheduling() {
                         type="number"
                         min="0"
                         value={newProjectForm.sigmaTeknisi}
-                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaTeknisi: e.target.value }))}
+                        onChange={(e) =>
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            sigmaTeknisi: e.target.value,
+                          }))
+                        }
                         placeholder="Jumlah Teknisi"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
                       />
                     </div>
 
-                    {/* Durasi (menit) */}
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="durasi" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="durasi"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Durasi <span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2109,7 +2271,12 @@ export default function AssignScheduling() {
                         type="number"
                         min="1"
                         value={newProjectForm.durasi}
-                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, durasi: e.target.value }))}
+                        onChange={(e) =>
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            durasi: e.target.value,
+                          }))
+                        }
                         placeholder="Durasi pengumpulan foto (menit)"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2117,24 +2284,35 @@ export default function AssignScheduling() {
                     </div>
                   </div>
 
-                  {/* Kanan */}
                   <div className="space-y-4">
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="tanggalTerimaPo" className="min-w-[120px]">
+                      <Label
+                        htmlFor="tanggalTerimaPo"
+                        className="min-w-[120px]"
+                      >
                         Tanggal Terima PO
                       </Label>
                       <input
                         id="tanggalTerimaPo"
                         type="date"
                         value={newProjectForm.tanggalTerimaPo}
-                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, tanggalTerimaPo: e.target.value }))}
+                        onChange={(e) =>
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            tanggalTerimaPo: e.target.value,
+                          }))
+                        }
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       />
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label htmlFor="tanggalDeadlineProject" className="flex items-center gap-1 min-w-[120px] md:mt-2">
-                        Tanggal Deadline Project<span className="text-red-500">*</span>
+                      <Label
+                        htmlFor="tanggalDeadlineProject"
+                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
+                      >
+                        Tanggal Deadline Project
+                        <span className="text-red-500">*</span>
                       </Label>
                       <div className="flex-1">
                         <input
@@ -2142,22 +2320,35 @@ export default function AssignScheduling() {
                           type="date"
                           value={newProjectForm.tanggalDeadlineProject}
                           onChange={(e) => {
-                            setNewProjectForm((prev) => ({ ...prev, tanggalDeadlineProject: e.target.value }));
-                            validateDates(newProjectForm.tanggalMulaiProject, e.target.value);
+                            setNewProjectForm((prev) => ({
+                              ...prev,
+                              tanggalDeadlineProject: e.target.value,
+                            }));
+                            validateDates(
+                              newProjectForm.tanggalMulaiProject,
+                              e.target.value
+                            );
                           }}
                           className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            dateValidationError ? "border-red-500" : "border-input"
+                            dateValidationError
+                              ? "border-red-500"
+                              : "border-input"
                           }`}
                           required
                         />
                         {dateValidationError && (
-                          <p className="text-xs text-red-500 mt-1">{dateValidationError}</p>
+                          <p className="text-xs text-red-500 mt-1">
+                            {dateValidationError}
+                          </p>
                         )}
                       </div>
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="sigmaHari" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="sigmaHari"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Total Hari<span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2165,7 +2356,12 @@ export default function AssignScheduling() {
                         type="number"
                         min="0"
                         value={newProjectForm.sigmaHari}
-                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, sigmaHari: e.target.value }))}
+                        onChange={(e) =>
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            sigmaHari: e.target.value,
+                          }))
+                        }
                         placeholder="Durasi Project (Hari)"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2173,7 +2369,10 @@ export default function AssignScheduling() {
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label htmlFor="tipeTemplate" className="flex items-center gap-1 min-w-[120px] md:mt-2">
+                      <Label
+                        htmlFor="tipeTemplate"
+                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
+                      >
                         Tipe Template<span className="text-red-500">*</span>
                       </Label>
                       <div className="flex-1">
@@ -2181,27 +2380,41 @@ export default function AssignScheduling() {
                           id="tipeTemplate"
                           value={newProjectForm.tipeTemplate}
                           onChange={(e) => {
-                            setNewProjectForm((prev) => ({ ...prev, tipeTemplate: e.target.value }));
+                            setNewProjectForm((prev) => ({
+                              ...prev,
+                              tipeTemplate: e.target.value,
+                            }));
                             if (e.target.value) setTipeTemplateError("");
                           }}
                           className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            tipeTemplateError ? "border-red-500" : "border-input"
+                            tipeTemplateError
+                              ? "border-red-500"
+                              : "border-input"
                           }`}
                           required
                         >
-                          <option value="" disabled>Pilih Tipe Template</option>
+                          <option value="" disabled>
+                            Pilih Tipe Template
+                          </option>
                           {templateOptions.map((opt) => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
                           ))}
                         </select>
                         {tipeTemplateError && (
-                          <p className="text-xs text-red-500 mt-1">{tipeTemplateError}</p>
+                          <p className="text-xs text-red-500 mt-1">
+                            {tipeTemplateError}
+                          </p>
                         )}
                       </div>
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="insentif" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="insentif"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Insentif <span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2209,7 +2422,12 @@ export default function AssignScheduling() {
                         type="number"
                         min="1"
                         value={newProjectForm.insentif}
-                        onChange={(e) => setNewProjectForm((prev) => ({ ...prev, insentif: e.target.value }))}
+                        onChange={(e) =>
+                          setNewProjectForm((prev) => ({
+                            ...prev,
+                            insentif: e.target.value,
+                          }))
+                        }
                         placeholder="Insentif Per Project"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2220,12 +2438,14 @@ export default function AssignScheduling() {
               </>
             )}
 
-            {/* ====================== FORM SURVEY (tambahan no.2) ====================== */}
+            {/* ===== SURVEY ===== */}
             {projectCategory === "survey" && (
               <>
-                {/* Basic Info */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="surveyNamaProject" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                  <Label
+                    htmlFor="surveyNamaProject"
+                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
+                  >
                     Nama Project<span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
@@ -2233,7 +2453,12 @@ export default function AssignScheduling() {
                       id="surveyNamaProject"
                       type="text"
                       value={newSurveyProjectForm.namaProject}
-                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, namaProject: e.target.value }))}
+                      onChange={(e) =>
+                        setNewSurveyProjectForm((prev) => ({
+                          ...prev,
+                          namaProject: e.target.value,
+                        }))
+                      }
                       placeholder="Format: Survey_NamaGedung_Lokasi"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
@@ -2242,7 +2467,10 @@ export default function AssignScheduling() {
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="namaGedung" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                  <Label
+                    htmlFor="namaGedung"
+                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
+                  >
                     Nama Gedung<span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
@@ -2250,7 +2478,12 @@ export default function AssignScheduling() {
                       id="namaGedung"
                       type="text"
                       value={newSurveyProjectForm.namaGedung}
-                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, namaGedung: e.target.value }))}
+                      onChange={(e) =>
+                        setNewSurveyProjectForm((prev) => ({
+                          ...prev,
+                          namaGedung: e.target.value,
+                        }))
+                      }
                       placeholder="Contoh: Gedung Grahadi"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
@@ -2259,7 +2492,10 @@ export default function AssignScheduling() {
                 </div>
 
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="surveyLokasi" className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]">
+                  <Label
+                    htmlFor="surveyLokasi"
+                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
+                  >
                     Lokasi<span className="text-red-500">*</span>
                   </Label>
                   <div className="flex-1">
@@ -2267,22 +2503,30 @@ export default function AssignScheduling() {
                       id="surveyLokasi"
                       type="text"
                       value={newSurveyProjectForm.lokasi}
-                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, lokasi: e.target.value }))}
+                      onChange={(e) =>
+                        setNewSurveyProjectForm((prev) => ({
+                          ...prev,
+                          lokasi: e.target.value,
+                        }))
+                      }
                       placeholder="Contoh: Jl. Tunjungan Surabaya"
                       maxLength={140}
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Maksimal 140 karakter ({newSurveyProjectForm.lokasi.length}/140)
+                      Maksimal 140 karakter (
+                      {newSurveyProjectForm.lokasi.length}/140)
                     </p>
                   </div>
                 </div>
 
-                {/* Floor & Room */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="flex flex-col md:flex-row md:items-center gap-2">
-                    <Label htmlFor="lantai" className="flex items-center gap-1 min-w-[120px]">
+                    <Label
+                      htmlFor="lantai"
+                      className="flex items-center gap-1 min-w-[120px]"
+                    >
                       Lantai<span className="text-red-500">*</span>
                     </Label>
                     <input
@@ -2290,7 +2534,12 @@ export default function AssignScheduling() {
                       type="number"
                       min="1"
                       value={newSurveyProjectForm.lantai}
-                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, lantai: e.target.value }))}
+                      onChange={(e) =>
+                        setNewSurveyProjectForm((prev) => ({
+                          ...prev,
+                          lantai: e.target.value,
+                        }))
+                      }
                       placeholder="Jumlah lantai"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
@@ -2298,7 +2547,10 @@ export default function AssignScheduling() {
                   </div>
 
                   <div className="flex flex-col md:flex-row md:items-center gap-2">
-                    <Label htmlFor="ruanganPerLantai" className="flex items-center gap-1 min-w-[120px]">
+                    <Label
+                      htmlFor="ruanganPerLantai"
+                      className="flex items-center gap-1 min-w-[120px]"
+                    >
                       Ruangan per Lantai<span className="text-red-500">*</span>
                     </Label>
                     <input
@@ -2306,7 +2558,12 @@ export default function AssignScheduling() {
                       type="number"
                       min="1"
                       value={newSurveyProjectForm.ruanganPerLantai}
-                      onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, ruanganPerLantai: e.target.value }))}
+                      onChange={(e) =>
+                        setNewSurveyProjectForm((prev) => ({
+                          ...prev,
+                          ruanganPerLantai: e.target.value,
+                        }))
+                      }
                       placeholder="Ruangan per lantai"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                       required
@@ -2314,12 +2571,13 @@ export default function AssignScheduling() {
                   </div>
                 </div>
 
-                {/* Dynamic Room Details */}
                 {newSurveyProjectForm.roomDetails.length > 0 && (
                   <div className="border rounded-lg p-4 bg-gray-50">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
-                        <h3 className="text-lg font-medium">Detail Ruangan (per Lantai)</h3>
+                        <h3 className="text-lg font-medium">
+                          Detail Ruangan (per Lantai)
+                        </h3>
                         {newSurveyProjectForm.roomDetails.length > 1 && (
                           <div className="flex items-center gap-1 ml-4">
                             <button
@@ -2332,13 +2590,17 @@ export default function AssignScheduling() {
                             </button>
 
                             <span className="text-xs font-medium text-gray-600 px-1">
-                              {currentFloorPage}/{newSurveyProjectForm.roomDetails.length}
+                              {currentFloorPage}/
+                              {newSurveyProjectForm.roomDetails.length}
                             </span>
 
                             <button
                               type="button"
                               onClick={goToNextFloor}
-                              disabled={currentFloorPage === newSurveyProjectForm.roomDetails.length}
+                              disabled={
+                                currentFloorPage ===
+                                newSurveyProjectForm.roomDetails.length
+                              }
                               className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               <ChevronRight className="h-3 w-3" />
@@ -2355,10 +2617,15 @@ export default function AssignScheduling() {
                           const actualFloorIndex = currentFloorPage - 1;
                           return (
                             <div key={floor.floor} className="space-y-3">
-                              <h5 className="font-medium text-gray-800 border-b pb-1">Lantai #{floor.floor}</h5>
+                              <h5 className="font-medium text-gray-800 border-b pb-1">
+                                Lantai #{floor.floor}
+                              </h5>
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                 {floor.rooms.map((room, roomIndex) => (
-                                  <div key={roomIndex} className="flex flex-col gap-1">
+                                  <div
+                                    key={roomIndex}
+                                    className="flex flex-col gap-1"
+                                  >
                                     <Label
                                       htmlFor={`room-${actualFloorIndex}-${roomIndex}`}
                                       className="text-xs text-gray-600"
@@ -2370,16 +2637,21 @@ export default function AssignScheduling() {
                                       type="text"
                                       value={room}
                                       onChange={(e) => {
-                                        // helper update yang sudah kamu buat:
-                                        // updateRoomDetail(actualFloorIndex, roomIndex, e.target.value)
                                         const val = e.target.value;
-                                        setNewSurveyProjectForm(prev => {
+                                        setNewSurveyProjectForm((prev) => {
                                           const updated = [...prev.roomDetails];
-                                          updated[actualFloorIndex].rooms[roomIndex] = val;
-                                          return { ...prev, roomDetails: updated };
+                                          updated[actualFloorIndex].rooms[
+                                            roomIndex
+                                          ] = val;
+                                          return {
+                                            ...prev,
+                                            roomDetails: updated,
+                                          };
                                         });
                                       }}
-                                      placeholder={`Nama ruangan ${roomIndex + 1}`}
+                                      placeholder={`Nama ruangan ${
+                                        roomIndex + 1
+                                      }`}
                                       className="flex h-8 w-full rounded-md border border-input bg-white px-2 py-1 text-xs"
                                     />
                                   </div>
@@ -2392,21 +2664,29 @@ export default function AssignScheduling() {
                   </div>
                 )}
 
-                {/* Timeline & Resource */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Left */}
                   <div className="space-y-4">
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="surveyTanggalMulai" className="flex items-center gap-1 min-w-[120px]">
-                        Tanggal Mulai Project<span className="text-red-500">*</span>
+                      <Label
+                        htmlFor="surveyTanggalMulai"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
+                        Tanggal Mulai Project
+                        <span className="text-red-500">*</span>
                       </Label>
                       <input
                         id="surveyTanggalMulai"
                         type="date"
                         value={newSurveyProjectForm.tanggalMulaiProject}
                         onChange={(e) => {
-                          setNewSurveyProjectForm(prev => ({ ...prev, tanggalMulaiProject: e.target.value }));
-                          validateDates(e.target.value, newSurveyProjectForm.tanggalDeadlineProject);
+                          setNewSurveyProjectForm((prev) => ({
+                            ...prev,
+                            tanggalMulaiProject: e.target.value,
+                          }));
+                          validateDates(
+                            e.target.value,
+                            newSurveyProjectForm.tanggalDeadlineProject
+                          );
                         }}
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2414,7 +2694,10 @@ export default function AssignScheduling() {
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="totalHari" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="totalHari"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Total Hari<span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2422,7 +2705,12 @@ export default function AssignScheduling() {
                         type="number"
                         min="0"
                         value={newSurveyProjectForm.totalHari}
-                        onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, totalHari: e.target.value }))}
+                        onChange={(e) =>
+                          setNewSurveyProjectForm((prev) => ({
+                            ...prev,
+                            totalHari: e.target.value,
+                          }))
+                        }
                         placeholder="Durasi project (hari)"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2430,7 +2718,10 @@ export default function AssignScheduling() {
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="totalManDays" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="totalManDays"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Total Man Days<span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2438,7 +2729,12 @@ export default function AssignScheduling() {
                         type="number"
                         min="0"
                         value={newSurveyProjectForm.totalManDays}
-                        onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, totalManDays: e.target.value }))}
+                        onChange={(e) =>
+                          setNewSurveyProjectForm((prev) => ({
+                            ...prev,
+                            totalManDays: e.target.value,
+                          }))
+                        }
                         placeholder="Target man days"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2446,11 +2742,14 @@ export default function AssignScheduling() {
                     </div>
                   </div>
 
-                  {/* Right */}
                   <div className="space-y-4">
                     <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label htmlFor="surveyTanggalDeadline" className="flex items-center gap-1 min-w-[120px] md:mt-2">
-                        Tanggal Deadline Project<span className="text-red-500">*</span>
+                      <Label
+                        htmlFor="surveyTanggalDeadline"
+                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
+                      >
+                        Tanggal Deadline Project
+                        <span className="text-red-500">*</span>
                       </Label>
                       <div className="flex-1">
                         <input
@@ -2458,20 +2757,35 @@ export default function AssignScheduling() {
                           type="date"
                           value={newSurveyProjectForm.tanggalDeadlineProject}
                           onChange={(e) => {
-                            setNewSurveyProjectForm(prev => ({ ...prev, tanggalDeadlineProject: e.target.value }));
-                            validateDates(newSurveyProjectForm.tanggalMulaiProject, e.target.value);
+                            setNewSurveyProjectForm((prev) => ({
+                              ...prev,
+                              tanggalDeadlineProject: e.target.value,
+                            }));
+                            validateDates(
+                              newSurveyProjectForm.tanggalMulaiProject,
+                              e.target.value
+                            );
                           }}
                           className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            dateValidationError ? "border-red-500" : "border-input"
+                            dateValidationError
+                              ? "border-red-500"
+                              : "border-input"
                           }`}
                           required
                         />
-                        {dateValidationError && <p className="text-xs text-red-500 mt-1">{dateValidationError}</p>}
+                        {dateValidationError && (
+                          <p className="text-xs text-red-500 mt-1">
+                            {dateValidationError}
+                          </p>
+                        )}
                       </div>
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="totalTeknisi" className="flex items-center gap-1 min-w-[120px]">
+                      <Label
+                        htmlFor="totalTeknisi"
+                        className="flex items-center gap-1 min-w-[120px]"
+                      >
                         Total Teknisi<span className="text-red-500">*</span>
                       </Label>
                       <input
@@ -2479,7 +2793,12 @@ export default function AssignScheduling() {
                         type="number"
                         min="1"
                         value={newSurveyProjectForm.totalTeknisi}
-                        onChange={(e) => setNewSurveyProjectForm(prev => ({ ...prev, totalTeknisi: e.target.value }))}
+                        onChange={(e) =>
+                          setNewSurveyProjectForm((prev) => ({
+                            ...prev,
+                            totalTeknisi: e.target.value,
+                          }))
+                        }
                         placeholder="Jumlah teknisi"
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                         required
@@ -2487,7 +2806,10 @@ export default function AssignScheduling() {
                     </div>
 
                     <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label htmlFor="surveyTipeTemplate" className="flex items-center gap-1 min-w-[120px] md:mt-2">
+                      <Label
+                        htmlFor="surveyTipeTemplate"
+                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
+                      >
                         Tipe Template<span className="text-red-500">*</span>
                       </Label>
                       <div className="flex-1">
@@ -2495,20 +2817,33 @@ export default function AssignScheduling() {
                           id="surveyTipeTemplate"
                           value={newSurveyProjectForm.tipeTemplate}
                           onChange={(e) => {
-                            setNewSurveyProjectForm(prev => ({ ...prev, tipeTemplate: e.target.value }));
+                            setNewSurveyProjectForm((prev) => ({
+                              ...prev,
+                              tipeTemplate: e.target.value,
+                            }));
                             if (e.target.value) setTipeTemplateError("");
                           }}
                           className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            tipeTemplateError ? "border-red-500" : "border-input"
+                            tipeTemplateError
+                              ? "border-red-500"
+                              : "border-input"
                           }`}
                           required
                         >
-                          <option value="" disabled>Pilih Tipe Template</option>
+                          <option value="" disabled>
+                            Pilih Tipe Template
+                          </option>
                           {templateOptions.map((opt) => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
                           ))}
                         </select>
-                        {tipeTemplateError && <p className="text-xs text-red-500 mt-1">{tipeTemplateError}</p>}
+                        {tipeTemplateError && (
+                          <p className="text-xs text-red-500 mt-1">
+                            {tipeTemplateError}
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2517,7 +2852,6 @@ export default function AssignScheduling() {
             )}
           </div>
 
-          {/* Footer actions (tetap) */}
           <div className="flex justify-end gap-3">
             <Button
               variant="outline"
@@ -2545,18 +2879,34 @@ export default function AssignScheduling() {
               Batal
             </Button>
             <Button
-              onClick={handleCreateProject}
+              onClick={() => {
+                if (projectCategory === "survey") {
+                  handleCreateSurveyProject();
+                } else {
+                  handleCreateProject();
+                }
+              }}
               disabled={
                 isSavingProject ||
-                !newProjectForm.namaProject ||
-                !newProjectForm.tanggalMulaiProject ||
-                !newProjectForm.tanggalDeadlineProject ||
-                !newProjectForm.sigmaManDays ||
-                !newProjectForm.sigmaHari ||
-                !newProjectForm.sigmaTeknisi ||
-                !newProjectForm.tipeTemplate ||
-                !!dateValidationError ||
-                projectCategory !== "instalasi" // submit hanya untuk instalasi
+                (projectCategory === "instalasi"
+                  ? !newProjectForm.namaProject ||
+                    !newProjectForm.tanggalMulaiProject ||
+                    !newProjectForm.tanggalDeadlineProject ||
+                    !newProjectForm.sigmaManDays ||
+                    !newProjectForm.sigmaHari ||
+                    !newProjectForm.sigmaTeknisi ||
+                    !newProjectForm.tipeTemplate ||
+                    !!dateValidationError
+                  : !newSurveyProjectForm.namaProject ||
+                    !newSurveyProjectForm.namaGedung ||
+                    !newSurveyProjectForm.lokasi ||
+                    !newSurveyProjectForm.tanggalMulaiProject ||
+                    !newSurveyProjectForm.tanggalDeadlineProject ||
+                    !newSurveyProjectForm.totalManDays ||
+                    !newSurveyProjectForm.totalHari ||
+                    !newSurveyProjectForm.totalTeknisi ||
+                    !newSurveyProjectForm.tipeTemplate ||
+                    !!dateValidationError)
               }
               className="bg-green-600 hover:bg-green-700"
             >
