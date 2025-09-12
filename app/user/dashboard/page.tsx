@@ -19,6 +19,9 @@ type Job = {
   progress?: number | null; // 0..100
   isPending?: boolean;      // dari /api/job-photos/[jobId]
   assignedTechnicians: { name: string; isLeader: boolean }[];
+  supervisor_name?: string | null;
+  sales_name?: string | null;
+  vehicle_name?: string | null;
 
   // Tambahan agar filter Survey bisa jalan TANPA mengubah tampilan
   type?: "survey" | "instalasi";
@@ -431,6 +434,14 @@ export default function TechnicianDashboard() {
                             </div>
                             <div className="text-[10px] text-gray-500 font-mono leading-none">
                               {job.job_id}
+                            </div>
+                              {/* ⬇️ Tambahan: tempat SPV & Sales di bawah ID pekerjaan */}
+                            <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
+                              <div>SPV: <b>{job.supervisor_name ?? "Rika"}</b></div>
+                              <div>Sales: <b>{job.sales_name ?? "Mulyono"}</b></div>
+                            </div>
+                            <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
+                              <div>Kendaraan: <b>{job.vehicle_name ?? "Innova Reborn"}</b></div>
                             </div>
                           </div>
                         </div>

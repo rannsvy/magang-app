@@ -189,6 +189,16 @@ const addDaysToIso = (iso: string, delta: number) => {
   return `${y2}-${m2}-${d2}`;
 };
 
+// Warna badge counter berdasarkan jumlah assignment
+// letakkan di atas komponen
+const getTechCounterStyle = (n: number | string | null | undefined) => {
+  const v = Number(n ?? 0); // "2" -> 2, undefined/null -> 0
+  if (v <= 0) return "bg-gray-300 text-gray-700";      // 0 -> abu-abu
+  if (v === 1) return "bg-green-200 text-green-900";   // 1 -> hijau
+  if (v === 2) return "bg-yellow-200 text-yellow-900"; // 2 -> kuning
+  return "bg-red-500 text-white";                      // >= 3 -> merah
+};
+
 /* ================== Komponen ================== */
 export default function AssignScheduling() {
   const router = useRouter();
@@ -1432,33 +1442,42 @@ export default function AssignScheduling() {
                     <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">
                       Pulang
                     </th>
-                    {techs.map((technician) => (
-                      <th
-                        key={technician.id}
-                        className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-6 sticky top-0 bg-gray-100 h-32"
-                        title={technician.name}
-                      >
-                        <div className="flex flex-col items-center justify-end h-full">
-                          <div
-                            className="text-xs font-bold whitespace-nowrap mb-2"
-                            style={{
-                              writingMode: "vertical-lr",
-                              textOrientation: "mixed",
-                              transform: "rotate(180deg)",
-                              height: "70px",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
-                          >
-                            {technician.name}
+                    {techs.map((technician) => {
+                      const loadCount = getTechnicianTrackNumber(technician.id);
+                      return (
+                        <th
+                          key={technician.id}
+                          className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-6 sticky top-0 bg-gray-100 h-32"
+                          title={technician.name}
+                        > 
+                          <div className="flex flex-col items-center justify-end h-full">
+                            <div
+                              className="text-xs font-bold whitespace-nowrap mb-2"
+                              style={{
+                                writingMode: "vertical-lr",
+                                textOrientation: "mixed",
+                                transform: "rotate(180deg)",
+                                height: "70px",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                              }}
+                            >
+                              {technician.name}
+                            </div>
+
+                            {/* Counter dengan warna dinamis */}
+                            <div
+                              className={`text-xs font-bold rounded px-1 min-w-[18px] text-center ${getTechCounterStyle(loadCount)}`}
+                              title={`Total proyek teknisi ini: ${loadCount}`}
+                              aria-label={`Total proyek teknisi ini: ${loadCount}`}
+                            >
+                              {loadCount}
+                            </div>
                           </div>
-                          <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">
-                            {getTechnicianTrackNumber(technician.id)}
-                          </div>
-                        </div>
-                      </th>
-                    ))}
+                        </th>
+                      );
+                    })}
                     <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
                       Status
                     </th>
@@ -2852,67 +2871,6 @@ export default function AssignScheduling() {
             )}
           </div>
 
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowCreateProject(false);
-                setNewProjectForm({
-                  namaProject: "",
-                  lokasi: "",
-                  namaSales: "",
-                  namaPresales: "",
-                  tanggalSpkUser: "",
-                  tanggalTerimaPo: "",
-                  tanggalMulaiProject: "",
-                  tanggalDeadlineProject: "",
-                  sigmaManDays: "",
-                  sigmaHari: "",
-                  sigmaTeknisi: "",
-                  tipeTemplate: "",
-                });
-                setShowSubFields(false);
-                setDateValidationError("");
-                setTipeTemplateError("");
-              }}
-            >
-              Batal
-            </Button>
-            <Button
-              onClick={() => {
-                if (projectCategory === "survey") {
-                  handleCreateSurveyProject();
-                } else {
-                  handleCreateProject();
-                }
-              }}
-              disabled={
-                isSavingProject ||
-                (projectCategory === "instalasi"
-                  ? !newProjectForm.namaProject ||
-                    !newProjectForm.tanggalMulaiProject ||
-                    !newProjectForm.tanggalDeadlineProject ||
-                    !newProjectForm.sigmaManDays ||
-                    !newProjectForm.sigmaHari ||
-                    !newProjectForm.sigmaTeknisi ||
-                    !newProjectForm.tipeTemplate ||
-                    !!dateValidationError
-                  : !newSurveyProjectForm.namaProject ||
-                    !newSurveyProjectForm.namaGedung ||
-                    !newSurveyProjectForm.lokasi ||
-                    !newSurveyProjectForm.tanggalMulaiProject ||
-                    !newSurveyProjectForm.tanggalDeadlineProject ||
-                    !newSurveyProjectForm.totalManDays ||
-                    !newSurveyProjectForm.totalHari ||
-                    !newSurveyProjectForm.totalTeknisi ||
-                    !newSurveyProjectForm.tipeTemplate ||
-                    !!dateValidationError)
-              }
-              className="bg-green-600 hover:bg-green-700"
-            >
-              {isSavingProject ? "Menyimpan..." : "Buat Project"}
-            </Button>
-          </div>
         </DialogContent>
       </Dialog>
 
