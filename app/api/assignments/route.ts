@@ -346,6 +346,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: projErr.message }, { status: 500 });
   }
 
+  const bastSet = new Set(
+    (projRows ?? [])
+      .filter((p: any) => p?.project_status === "awaiting_bast")
+      .map((p: any) => p.id)
+  );
+
   const pendingSet = new Set(
     (projRows ?? [])
       .filter((p: any) => p?.project_status === "pending" || p?.pending_reason)
@@ -357,7 +363,7 @@ export async function POST(req: NextRequest) {
 
   // Hanya proyek aktif yang boleh dimodifikasi
   const activeScopeProjectIds = scopeProjectIds.filter(
-    (id) => !pendingSet.has(id) && !completedSet.has(id)
+    (id) => !pendingSet.has(id) && !completedSet.has(id) && !bastSet.has(id)
   );
 
   /* 1) SOFT-DELETE membership yang tidak lagi dipilih (per proyek aktif)

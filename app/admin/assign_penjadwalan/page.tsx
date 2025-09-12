@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { AdminHeader } from "@/components/admin-header";
 import { Checkbox } from "@/components/ui/checkbox";
+import { toPng, toJpeg } from "html-to-image";
 import {
   CheckCircle,
   Calendar,
@@ -40,7 +41,12 @@ const sbAdmin = createClient(
 );
 
 /* ================== Types ================== */
-type ProjectStatus = "unassigned" | "ongoing" | "pending" | "completed";
+type ProjectStatus =
+  | "unassigned"
+  | "ongoing"
+  | "pending"
+  | "awaiting_bast"
+  | "completed";
 type ProgressStatus = "ongoing" | "completed" | "overdue";
 type UITechnician = { id: string; name: string; initial: string };
 
@@ -138,6 +144,7 @@ interface EditProjectForm {
 }
 
 /* ================== Helpers ================== */
+
 const fmtID = (iso: string) => {
   if (!iso) return "-";
   const [y, m, d] = iso.split("-");
@@ -191,7 +198,11 @@ const addDaysToIso = (iso: string, delta: number) => {
 
 /* ================== Komponen ================== */
 export default function AssignScheduling() {
-  const router = useRouter();
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const EXPORT_BUCKET = "export-images"; // ganti bila bucket Anda beda
+  const DEFAULT_WA_PHONE = "+6281347812748"; // contoh: "62812xxxxxxx" (opsional, kosong = pilih kontak manual)
+  const DEFAULT_WA_MESSAGE = "Laporan penjadwalan teknisi";
 
   const [currentDate, setCurrentDate] = useState<string>(() =>
     new Date().toISOString().slice(0, 10)
@@ -697,6 +708,614 @@ export default function AssignScheduling() {
     }
   };
 
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function dataUrlToFile(
+    dataUrl: string,
+    filename: string,
+    mime = "image/png"
+  ): File {
+    const arr = dataUrl.split(",");
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8 = new Uint8Array(n);
+    while (n--) u8[n] = bstr.charCodeAt(n);
+    return new File([u8], filename, { type: mime });
+  }
+
+  function computeHiResOpts(node: HTMLElement, minLongSide = 1920) {
+    const rect = node.getBoundingClientRect();
+    const width = Math.max(node.scrollWidth, rect.width);
+    const height = Math.max(node.scrollHeight, rect.height);
+    const longer = Math.max(width, height);
+
+    // targetkan sisi terpanjang minimal 1920px (setara 1080p landscape)
+    const ratioTo1080p = Math.max(1, minLongSide / longer);
+
+    const devicePR = window.devicePixelRatio || 1;
+    // boost agar tajam, tapi cegah OOM
+    const pixelRatio = Math.min(
+      3,
+      Math.max(1.5, ratioTo1080p * devicePR * 1.5)
+    );
+
+    return { width, height, pixelRatio };
+  }
+
+  async function getTableDataUrl(
+    node: HTMLTableElement,
+    type: "png" | "jpeg" = "png",
+    minLongSide = 1920
+  ) {
+    // ⬇️ Pastikan webfont (Poppins, dsb) sudah siap
+    await waitForFontsReady();
+
+    const thead = node.querySelector("thead") as HTMLTableSectionElement | null;
+    const prevTheadClass = thead?.className ?? "";
+    if (thead)
+      thead.className = prevTheadClass
+        .replace(/\bsticky\b.*?\btop-0\b.*?\bz-10\b/g, "")
+        .trim();
+
+    const { width, height, pixelRatio } = computeHiResOpts(node, minLongSide);
+    const baseOpts = {
+      width,
+      height,
+      pixelRatio,
+      backgroundColor: "#ffffff",
+      cacheBust: true,
+      style: { overflow: "visible" } as Partial<CSSStyleDeclaration>, // ⬅️ tidak mengubah font
+    };
+
+    try {
+      const run = async (pr: number) => {
+        const opts = { ...baseOpts, pixelRatio: pr };
+        return type === "png"
+          ? await toPng(node, opts as any)
+          : await toJpeg(node, { ...opts, quality: 0.95 } as any);
+      };
+      try {
+        return await run(baseOpts.pixelRatio);
+      } catch {
+        const fallbackPR = Math.max(1, baseOpts.pixelRatio - 0.5);
+        return await run(fallbackPR);
+      }
+    } finally {
+      if (thead) thead.className = prevTheadClass;
+    }
+  }
+
+  async function waitForFontsReady(timeoutMs = 7000) {
+    try {
+      const anyDoc = document as any;
+      if (anyDoc.fonts?.ready) {
+        const p: Promise<void> = anyDoc.fonts.ready;
+        if (!timeoutMs) return await p;
+        await Promise.race([
+          p,
+          new Promise<void>((r) => setTimeout(r, timeoutMs)),
+        ]);
+      }
+    } catch {
+      /* abaikan jika browser tidak support */
+    }
+  }
+
+  async function buildStyledExcelBlob(): Promise<Blob> {
+    const XLSX: any = await import("xlsx-js-style");
+
+    // warna Tailwind yg dipakai di UI
+    const COLORS = {
+      gray50: "F9FAFB",
+      gray100: "F3F4F6",
+      gray700: "374151",
+      gray900: "111827",
+      blue200: "BFDBFE",
+      blue900: "1E3A8A",
+      red100: "FEE2E2",
+      red500: "EF4444",
+      yellow100: "FEF9C3",
+      green100: "D1FAE5", // emerald-100-ish
+      indigo100: "E0E7FF",
+      white: "FFFFFF",
+      border: "E5E7EB",
+    };
+
+    // header
+    const header = [
+      "Nama Proyek",
+      "Σ",
+      "Man Days",
+      "Progress (Hari)",
+      "Datang",
+      "Pulang",
+      ...techs.map((t) => t.name),
+      "Status",
+      "Sales",
+    ];
+    const rows: any[][] = [header];
+
+    // isi (sekaligus menahan data status utk styling)
+    const projectRowMeta: Array<{
+      excelRow: number; // 1-based
+      project: UIProject;
+      techCells: Array<{ cIdx: number; leader: boolean; selected: boolean }>;
+    }> = [];
+
+    for (const p of projectsData) {
+      const sigma = `${getProjectAssignmentCount(p.id)}/${p.sigmaTeknisi ?? 0}`;
+      const mdDisp = getManDaysDisplay(p).display;
+      const progDisp = getProgressStatus(p).display;
+
+      const base = [p.name, sigma, mdDisp, progDisp, p.jamDatang, p.jamPulang];
+
+      const techCols: string[] = [];
+      const techCellMeta: Array<{
+        cIdx: number;
+        leader: boolean;
+        selected: boolean;
+      }> = [];
+      techs.forEach((t, i) => {
+        const a = getCellAssignment(p.id, t.id);
+        const val = a?.isProjectLeader
+          ? "L"
+          : a?.isSelected
+          ? a?.initial || t.initial
+          : "";
+        techCols.push(val);
+        techCellMeta.push({
+          cIdx: 6 + i, // 0-based index kolom teknisi pertama = 6
+          leader: !!a?.isProjectLeader,
+          selected: !!a?.isSelected,
+        });
+      });
+
+      const statusLabel = getProjectStatusDisplay(p).label;
+      const sales = p.sales || "";
+
+      rows.push([...base, ...techCols, statusLabel, sales]);
+      // catat meta utk styling cell per baris
+      projectRowMeta.push({
+        excelRow: rows.length, // baris excel (1-based)
+        project: p,
+        techCells: techCellMeta,
+      });
+    }
+
+    // buat sheet
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+
+    // atur lebar kolom rapi
+    ws["!cols"] = [
+      { wch: 42 }, // Nama Proyek
+      { wch: 6 }, // Σ
+      { wch: 12 }, // Man Days
+      { wch: 14 }, // Progress
+      { wch: 8 }, // Datang
+      { wch: 8 }, // Pulang
+      ...techs.map(() => ({ wch: 4 })), // teknisi
+      { wch: 18 }, // Status
+      { wch: 22 }, // Sales
+    ];
+
+    // util
+    const colLetter = (n: number) => {
+      let s = "";
+      while (n > 0) {
+        const m = (n - 1) % 26;
+        s = String.fromCharCode(65 + m) + s;
+        n = Math.floor((n - 1) / 26);
+      }
+      return s;
+    };
+    const range = XLSX.utils.decode_range(
+      ws["!ref"] || `A1:${colLetter(header.length)}${rows.length}`
+    );
+
+    const ensureCell = (r: number, c: number) => {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      if (!ws[addr]) ws[addr] = { t: "s", v: "" };
+      return addr;
+    };
+
+    // HEADER styling (row 0)
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const addr = ensureCell(0, c);
+      ws[addr].s = {
+        font: { bold: true, sz: 11, color: { rgb: COLORS.gray900 } },
+        alignment: { horizontal: "center", vertical: "center", wrapText: true },
+        fill: { fgColor: { rgb: COLORS.gray100 } },
+        border: {
+          top: { style: "thin", color: { rgb: COLORS.border } },
+          left: { style: "thin", color: { rgb: COLORS.border } },
+          right: { style: "thin", color: { rgb: COLORS.border } },
+          bottom: { style: "thin", color: { rgb: COLORS.border } },
+        },
+      };
+    }
+    // header rotasi vertikal untuk kolom teknisi
+    const firstTechCol = 7; // 1-based
+    for (let i = 0; i < techs.length; i++) {
+      const addr = ensureCell(0, firstTechCol - 1 + i);
+      ws[addr].s = {
+        ...(ws[addr].s || {}),
+        alignment: {
+          horizontal: "center",
+          vertical: "center",
+          textRotation: 90,
+          wrapText: true,
+        },
+      };
+    }
+
+    // ZEBRA + border tipis + alignment dasar seluruh area data
+    for (let r = 1; r <= range.e.r; r++) {
+      const fill =
+        r % 2 === 1
+          ? { fgColor: { rgb: COLORS.gray50 } }
+          : { fgColor: { rgb: COLORS.white } };
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const addr = ensureCell(r, c);
+        const isTechCol =
+          c >= firstTechCol - 1 && c < firstTechCol - 1 + techs.length;
+        ws[addr].s = {
+          font: { sz: 10, color: { rgb: COLORS.gray900 } },
+          alignment: {
+            horizontal: isTechCol
+              ? "center"
+              : c <= 5
+              ? c <= 1
+                ? "left"
+                : "center"
+              : "left",
+            vertical: "center",
+            wrapText: true,
+          },
+          fill,
+          border: {
+            top: { style: "hair", color: { rgb: COLORS.border } },
+            left: { style: "hair", color: { rgb: COLORS.border } },
+            right: { style: "hair", color: { rgb: COLORS.border } },
+            bottom: { style: "hair", color: { rgb: COLORS.border } },
+          },
+        };
+      }
+    }
+
+    // === OVERRIDE WARNA sesuai UI ===
+    const statusColIdx = firstTechCol - 1 + techs.length; // 0-based
+    const salesColIdx = statusColIdx + 1;
+
+    projectRowMeta.forEach(({ excelRow, project, techCells }) => {
+      const r0 = excelRow - 1; // 0-based row for xlsx-js-style indexing
+
+      // Man Days (kolom 2)
+      const man = getManDaysStatus(project);
+      {
+        const addr = ensureCell(r0, 2);
+        const fillColor = man.bgColor.includes("green")
+          ? COLORS.green100
+          : man.bgColor.includes("red")
+          ? COLORS.red100
+          : COLORS.gray100;
+        ws[addr].s = {
+          ...(ws[addr].s || {}),
+          fill: { fgColor: { rgb: fillColor } },
+          font: { ...(ws[addr].s?.font || {}), color: { rgb: COLORS.gray700 } },
+          alignment: { ...(ws[addr].s?.alignment || {}), horizontal: "center" },
+        };
+      }
+
+      // Progress (kolom 3)
+      {
+        const prog = getProgressStatus(project);
+        const fillColor = prog.bgColor.includes("green")
+          ? COLORS.green100
+          : prog.bgColor.includes("red")
+          ? COLORS.red100
+          : prog.bgColor.includes("yellow")
+          ? COLORS.yellow100
+          : COLORS.gray100;
+        const addr = ensureCell(r0, 3);
+        ws[addr].s = {
+          ...(ws[addr].s || {}),
+          fill: { fgColor: { rgb: fillColor } },
+          font: { ...(ws[addr].s?.font || {}), color: { rgb: COLORS.gray700 } },
+          alignment: { ...(ws[addr].s?.alignment || {}), horizontal: "center" },
+        };
+      }
+
+      // Sel teknisi (leader merah-500 teks putih, assigned biru-200 teks biru-900)
+      techCells.forEach(({ cIdx, leader, selected }) => {
+        if (!leader && !selected) return;
+        const addr = ensureCell(r0, cIdx);
+        if (leader) {
+          ws[addr].s = {
+            ...(ws[addr].s || {}),
+            fill: { fgColor: { rgb: COLORS.red500 } },
+            font: {
+              ...(ws[addr].s?.font || {}),
+              bold: true,
+              color: { rgb: COLORS.white },
+            },
+            alignment: {
+              ...(ws[addr].s?.alignment || {}),
+              horizontal: "center",
+            },
+          };
+        } else if (selected) {
+          ws[addr].s = {
+            ...(ws[addr].s || {}),
+            fill: { fgColor: { rgb: COLORS.blue200 } },
+            font: {
+              ...(ws[addr].s?.font || {}),
+              bold: true,
+              color: { rgb: COLORS.blue900 },
+            },
+            alignment: {
+              ...(ws[addr].s?.alignment || {}),
+              horizontal: "center",
+            },
+          };
+        }
+      });
+
+      // Status (warna chip)
+      {
+        const disp = getProjectStatusDisplay(project);
+        const fillColor =
+          project.projectStatus === "completed"
+            ? COLORS.green100
+            : project.projectStatus === "awaiting_bast"
+            ? COLORS.indigo100
+            : project.projectStatus === "pending"
+            ? COLORS.yellow100
+            : project.projectStatus === "ongoing"
+            ? COLORS.green100
+            : COLORS.gray100;
+        const addr = ensureCell(r0, statusColIdx);
+        ws[addr].s = {
+          ...(ws[addr].s || {}),
+          fill: { fgColor: { rgb: fillColor } },
+          font: { ...(ws[addr].s?.font || {}), color: { rgb: COLORS.gray700 } },
+          alignment: { ...(ws[addr].s?.alignment || {}), horizontal: "center" },
+        };
+      }
+    });
+
+    // workbook + sheet “Assignments” (flat list) tetap sama
+    const flatHeader = [
+      "Tanggal",
+      "Project ID",
+      "Project Name",
+      "Technician ID",
+      "Technician Name",
+      "Initial",
+      "Leader",
+      "Selected",
+      "Datang",
+      "Pulang",
+    ];
+    const flatRows: any[][] = [flatHeader];
+    assignments
+      .filter((a) => a.isSelected || a.isProjectLeader)
+      .forEach((a) => {
+        const p = projectsData.find((pp) => pp.id === a.projectId);
+        const t = techs.find((tt) => tt.id === a.technicianId);
+        flatRows.push([
+          formatDateDDMMYYYY(currentDate),
+          a.projectId,
+          p?.name ?? "",
+          a.technicianId,
+          t?.name ?? "",
+          a.initial ?? t?.initial ?? "",
+          a.isProjectLeader ? "Y" : "N",
+          a.isSelected ? "Y" : "N",
+          p?.jamDatang ?? "",
+          p?.jamPulang ?? "",
+        ]);
+      });
+    const ws2 = XLSX.utils.aoa_to_sheet(flatRows);
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Penjadwalan");
+    XLSX.utils.book_append_sheet(wb, ws2, "Assignments");
+
+    const out = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    return new Blob([out], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+  }
+
+  async function buildExcelBlob(): Promise<Blob> {
+    const XLSX = (await import("xlsx")) as typeof import("xlsx");
+
+    // Sheet 1: Matriks (seperti tabel di UI)
+    const header = [
+      "Nama Proyek",
+      "Σ",
+      "Man Days",
+      "Progress (Hari)",
+      "Datang",
+      "Pulang",
+      ...techs.map((t) => t.name),
+      "Status",
+      "Sales",
+    ];
+    const rows: any[][] = [header];
+
+    for (const p of projectsData) {
+      const sigma = `${getProjectAssignmentCount(p.id)}/${p.sigmaTeknisi ?? 0}`;
+      const mdDisp = getManDaysDisplay(p).display;
+      const progDisp = getProgressStatus(p).display;
+      const row: any[] = [
+        p.name,
+        sigma,
+        mdDisp,
+        progDisp,
+        p.jamDatang,
+        p.jamPulang,
+      ];
+
+      for (const t of techs) {
+        const a = getCellAssignment(p.id, t.id);
+        row.push(
+          a?.isProjectLeader
+            ? "L"
+            : a?.isSelected
+            ? a?.initial || t.initial
+            : ""
+        );
+      }
+
+      const statusLabel = getProjectStatusDisplay(p).label;
+      row.push(statusLabel, p.sales || "");
+      rows.push(row);
+    }
+
+    const sh1 = XLSX.utils.aoa_to_sheet(rows);
+    // sedikit lebar kolom agar rapi
+    sh1["!cols"] = [
+      { wch: 42 },
+      { wch: 6 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 8 },
+      { wch: 8 },
+      ...techs.map(() => ({ wch: 4 })),
+      { wch: 18 },
+      { wch: 22 },
+    ];
+
+    // Sheet 2: Flat list assignments
+    const flatHeader = [
+      "Tanggal",
+      "Project ID",
+      "Project Name",
+      "Technician ID",
+      "Technician Name",
+      "Initial",
+      "Leader",
+      "Selected",
+      "Datang",
+      "Pulang",
+    ];
+    const flatRows: any[][] = [flatHeader];
+
+    assignments
+      .filter((a) => a.isSelected || a.isProjectLeader)
+      .forEach((a) => {
+        const p = projectsData.find((pp) => pp.id === a.projectId);
+        const t = techs.find((tt) => tt.id === a.technicianId);
+        flatRows.push([
+          formatDateDDMMYYYY(currentDate),
+          a.projectId,
+          p?.name ?? "",
+          a.technicianId,
+          t?.name ?? "",
+          a.initial ?? t?.initial ?? "",
+          a.isProjectLeader ? "Y" : "N",
+          a.isSelected ? "Y" : "N",
+          p?.jamDatang ?? "",
+          p?.jamPulang ?? "",
+        ]);
+      });
+    const sh2 = XLSX.utils.aoa_to_sheet(flatRows);
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sh1, "Penjadwalan");
+    XLSX.utils.book_append_sheet(wb, sh2, "Assignments");
+
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    return new Blob([wbout], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+  }
+
+  async function handleExportTableImage(type: "png" | "jpeg" = "png") {
+    if (!tableRef.current) return;
+    setIsExporting(true);
+
+    // helper: download dataURL dengan fallback iOS (open in new tab)
+    const downloadDataUrl = (dataUrl: string, filename: string) => {
+      try {
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch {
+        // iOS/Safari sering tak dukung download attribute → buka tab baru
+        window.open(dataUrl, "_blank");
+      }
+    };
+
+    try {
+      const node = tableRef.current;
+
+      // render gambar (≈1080p sisi terpanjang)
+      const dataUrl = await getTableDataUrl(node, type, 1920);
+      const ext = type === "png" ? "png" : "jpg";
+      const mime = type === "png" ? "image/png" : "image/jpeg";
+      const dateStr = formatDateDDMMYYYY(currentDate);
+      const imgName = `assign-penjadwalan_${currentDate}_1080p.${ext}`;
+
+      const imgFile = dataUrlToFile(dataUrl, imgName, mime);
+
+      // SHARE gambar langsung ke WhatsApp (mobile) — boleh terkompres
+      const canShareImage =
+        typeof navigator !== "undefined" &&
+        "canShare" in navigator &&
+        (navigator as any).canShare?.({ files: [imgFile] });
+
+      if (canShareImage) {
+        await (navigator as any).share({
+          files: [imgFile],
+          title: "Penjadwalan Teknisi",
+          text: `Penjadwalan Teknisi ${dateStr}`,
+        });
+        // setelah share, tetap simpan salinan lokal
+        try {
+          const blob = await (await fetch(dataUrl)).blob();
+          downloadBlob(blob, imgName);
+        } catch {
+          downloadDataUrl(dataUrl, imgName);
+        }
+      } else {
+        // desktop / tak support share: langsung unduh supaya bisa diattach di WhatsApp Web
+        try {
+          const blob = await (await fetch(dataUrl)).blob();
+          downloadBlob(blob, imgName);
+        } catch {
+          downloadDataUrl(dataUrl, imgName);
+        }
+        alert(
+          "Gambar sudah diunduh. Kirim manual lewat WhatsApp/WhatsApp Web ya."
+        );
+      }
+
+      // Excel berwarna (match UI)
+      const xlsxBlob = await buildStyledExcelBlob();
+      const xlsxName = `assign-penjadwalan_${currentDate}.xlsx`;
+      downloadBlob(xlsxBlob, xlsxName);
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menyiapkan gambar/Excel. Coba lagi.");
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   /* ---------- Navigasi tanggal ---------- */
   const handleDateNavigation = async (direction: "prev" | "next") => {
     const newIso = addDaysToIso(currentDate, direction === "prev" ? -1 : 1);
@@ -1101,6 +1720,11 @@ export default function AssignScheduling() {
         textColor = "text-emerald-700";
         label = "Selesai";
         break;
+      case "awaiting_bast":
+        bgColor = "bg-indigo-100";
+        textColor = "text-indigo-700";
+        label = "Menunggu BAST";
+        break;
       case "ongoing":
         bgColor = "bg-green-100";
         textColor = "text-green-700";
@@ -1378,6 +2002,14 @@ export default function AssignScheduling() {
                 <Plus className="h-4 w-4 mr-2" />
                 Buat Project
               </Button>
+              <Button
+                onClick={() => handleExportTableImage("png")}
+                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 text-sm"
+                disabled={isExporting}
+                title="Kirim gambar tabel ke WhatsApp"
+              >
+                {isExporting ? "Menyiapkan..." : "Share"}
+              </Button>
 
               {/* Navigasi tanggal */}
               <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
@@ -1411,7 +2043,7 @@ export default function AssignScheduling() {
 
           <div className="bg-white rounded-lg shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+              <table ref={tableRef} className="w-full text-xs">
                 <thead className="bg-gray-100 sticky top-0 z-10">
                   <tr>
                     <th className="px-2 py-2 text-left font-semibold text-gray-900 border-r border-gray-300 w-28">
@@ -1485,6 +2117,7 @@ export default function AssignScheduling() {
                       getProjectStatusDisplay(project);
                     const isLockedRow =
                       project.projectStatus === "pending" ||
+                      project.projectStatus === "awaiting_bast" ||
                       project.status === "completed";
 
                     // ⬇️⬇️ KEY KOMPOSIT – mencegah duplikasi key
@@ -1828,6 +2461,11 @@ export default function AssignScheduling() {
                   </SelectItem>
                   <SelectItem value="ongoing">Berlangsung (Hijau)</SelectItem>
                   <SelectItem value="pending">Pending (Kuning)</SelectItem>
+                  {/* ⭐ Baru */}
+                  <SelectItem value="awaiting_bast">
+                    Menunggu Persetujuan BAST (Indigo)
+                  </SelectItem>
+                  <SelectItem value="completed">Selesai</SelectItem>
                 </SelectContent>
               </Select>
             </div>
