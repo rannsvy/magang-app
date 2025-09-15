@@ -6,6 +6,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 type ShapedAssignment = {
   projectId: string;
   technicianCode: string;
+  technicianName: string;
   initial: string;
   isProjectLeader: boolean;
   isSelected: boolean;
@@ -38,14 +39,6 @@ function toWIBDate(isoTs?: string | null) {
   return new Date(wibMs).toISOString().slice(0, 10);
 }
 
-/* ===================== GET =====================
- * /api/assignments?date=YYYY-MM-DD
- * - Attendance H; fallback D-1 (sekali)
- * - Proyek pending disembunyikan
- * - Proyek selesai tampil H (WIB) saja; H+1 menghilang
- * - H (WIB) selesai: semua membership aktif ikut terlihat walau tanpa attendance
- * - Leader selalu terlihat (tak bergantung isSelected)
- * ================================================= */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const date = searchParams.get("date");
@@ -116,6 +109,7 @@ export async function GET(req: NextRequest) {
       `
       project_id,
       technician_id,
+      technician_name,
       is_leader,
       removed_at,
       technicians:technician_id ( id, code, initials )
@@ -226,16 +220,23 @@ export async function GET(req: NextRequest) {
   }
 
   // 4) Info teknisi (code/initials) dari membership → fallback table technicians
-  type TechInfo = { code: string; initials: string };
+  type TechInfo = { code: string; initials: string; name: string };
   const techInfoById = new Map<string, TechInfo>();
 
   for (const row of pa ?? []) {
     const tRaw: any = row.technicians;
     const t = Array.isArray(tRaw) ? tRaw[0] ?? null : tRaw;
+
     const code: string =
       (t?.code as string | null) ?? (row.technician_id as string);
     const initials: string = String(t?.initials ?? code ?? "?").toUpperCase();
-    techInfoById.set(row.technician_id, { code, initials });
+    const name: string =
+      (row.technician_name as string | null) || // ← dari trigger
+      (t?.name as string | null) || // fallback kalau ada kolom name
+      (t?.full_name as string | null) || // atau full_name
+      code; // fallback terakhir
+
+    techInfoById.set(row.technician_id, { code, initials, name });
   }
 
   const missingTechIds = new Set<string>();
@@ -255,7 +256,7 @@ export async function GET(req: NextRequest) {
         const initials: string = String(
           t.initials ?? code ?? "?"
         ).toUpperCase();
-        techInfoById.set(t.id, { code, initials });
+        techInfoById.set(t.id, { code, initials, name: code });
       }
     } else {
       console.warn(
@@ -271,14 +272,16 @@ export async function GET(req: NextRequest) {
     const [pid, tid] = key.split("::");
     if (!activeProjectSet.has(pid)) continue;
 
-    const info = techInfoById.get(tid) ?? {
+    const info: TechInfo = techInfoById.get(tid) ?? {
       code: tid,
-      initials: String(tid?.[0] ?? "?").toUpperCase(),
+      initials: String(tid[0] ?? "?").toUpperCase(),
+      name: tid,
     };
 
     shaped.push({
       projectId: pid,
       technicianCode: info.code,
+      technicianName: info.name,
       initial: info.initials,
       isProjectLeader: !!leaderMap.get(key) || membershipLeaderKeys.has(key),
       isSelected: selectedSet.has(key),
@@ -290,12 +293,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ data: filtered });
 }
 
-/* ===================== POST =====================
- * Menetapkan assignment & attendance HARI D
- * - Operasi hanya untuk proyek AKTIF (bukan pending & belum completed)
- * - Mendukung "hapus semua": kirim scope `projectIds` + kosongkan `assignments`
- * - Attendance dihapus/ditulis ulang untuk proyek yang disentuh & aktif
- * ================================================= */
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const date: string | undefined = body?.date;
