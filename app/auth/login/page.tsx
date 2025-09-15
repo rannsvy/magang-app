@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,7 +19,68 @@ export default function LoginPage() {
   const router = useRouter()
 
   // quote harian (tanpa role)
-  const quote = useMemo(() => getDailyQuote(), [])
+  const quote = useMemo(() => getDailyQuote(), []);
+
+  // seed awal tetap berdasarkan hari (biar start-of-day beda tema)
+  const dayIndex = useMemo(() => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), 0, 1);
+    return Math.floor((+now - +start) / (1000 * 60 * 60 * 24));
+  }, []);
+
+  const gradientThemes = [
+    { bg: "bg-gradient-to-br from-emerald-600 to-emerald-800", text: "text-white" },
+    { bg: "bg-gradient-to-br from-slate-900 to-slate-700",     text: "text-white" },
+    { bg: "bg-gradient-to-br from-rose-600 to-fuchsia-700",    text: "text-white" },
+    { bg: "bg-gradient-to-br from-cyan-600 to-blue-700",       text: "text-white" },
+    { bg: "bg-gradient-to-br from-sky-50 to-sky-200",          text: "text-slate-900" },
+    { bg: "bg-gradient-to-br from-amber-50 to-amber-200",      text: "text-slate-900" },
+    { bg: "bg-gradient-to-br from-violet-100 to-white",        text: "text-slate-900" },
+  ];
+
+  // ====== Crossfade halus & warna teks ikut background ======
+  const FADE_MS = 3000;   // 3s untuk transisi
+  const HOLD_MS = 12000;  // 12s diam -> total 15s/tema
+
+  const initialIdx =
+    Math.floor(Date.now() / (1000 * 60 * 60 * 24)) % gradientThemes.length;
+
+  const [currentIdx, setCurrentIdx] = useState(initialIdx);
+  const [nextIdx, setNextIdx]       = useState((initialIdx + 1) % gradientThemes.length);
+  const [textIdx, setTextIdx]       = useState(initialIdx); // <- warna teks aktif
+  const [crossfading, setCrossfading] = useState(false);
+
+  useEffect(() => {
+    let holdTimer: ReturnType<typeof setTimeout> | undefined;
+    let fadeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cycle = () => {
+      // mulai fade: langsung minta teks menuju warna tema berikutnya
+      setTextIdx(nextIdx);
+      setCrossfading(true);
+
+      // akhir fade: commit background baru & siapkan next
+      fadeTimer = setTimeout(() => {
+        setCurrentIdx((c) => {
+          const newCur = (c + 1) % gradientThemes.length;
+          setNextIdx((newCur + 1) % gradientThemes.length);
+          return newCur;
+        });
+        setCrossfading(false);
+        holdTimer = setTimeout(cycle, HOLD_MS);
+      }, FADE_MS);
+    };
+
+    // tampilkan tema awal dulu, lalu jalankan siklus
+    holdTimer = setTimeout(cycle, HOLD_MS);
+
+    return () => {
+      if (holdTimer) clearTimeout(holdTimer);
+      if (fadeTimer) clearTimeout(fadeTimer);
+    };
+  }, []);
+
+
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -48,10 +109,42 @@ export default function LoginPage() {
           </CardTitle>
           <CardDescription>Masuk ke akun Anda untuk melanjutkan</CardDescription>
 
-          {/* Quote harian */}
-          <div className="mt-4 rounded-md border bg-white px-4 py-3 text-sm italic text-gray-700">
+      <div className="mt-4 relative rounded-xl shadow-sm ring-1 ring-black/5 overflow-hidden">
+        {/* BG A */}
+        <div
+          className={[
+            "absolute inset-0 transition-opacity duration-[3000ms] ease-linear",
+            "will-change-[opacity] pointer-events-none",
+            gradientThemes[currentIdx].bg,
+            crossfading ? "opacity-0" : "opacity-100",
+          ].join(" ")}
+        />
+        {/* BG B */}
+        <div
+          className={[
+            "absolute inset-0 transition-opacity duration-[3000ms] ease-linear",
+            "will-change-[opacity] pointer-events-none",
+            gradientThemes[nextIdx].bg,
+            crossfading ? "opacity-100" : "opacity-0",
+          ].join(" ")}
+        />
+
+        {/* Teks: warna di-animate sinkron 3s */}
+        <blockquote
+          className={[
+            "relative z-10 px-6 py-7 sm:px-7 sm:py-8",
+            "text-center italic leading-tight tracking-tight [text-wrap:balance]",
+            "transition-colors duration-[3000ms] ease-linear",
+            gradientThemes[textIdx].text, // <- otomatis gelap/terang sesuai tema target
+          ].join(" ")}
+        >
+          <span className="block text-2xl sm:text-3xl lg:text-4xl font-semibold">
             “{quote}”
-          </div>
+          </span>
+        </blockquote>
+      </div>
+
+
         </CardHeader>
 
         <CardContent>
