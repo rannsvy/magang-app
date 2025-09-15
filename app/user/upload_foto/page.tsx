@@ -209,7 +209,7 @@ export default function UploadFotoPage() {
   const [cableMeterDraft, setCableMeterDraft] = useState<string>("");
 
   // pagination
-  const perPage = 15;
+  const perPage = 12;
   const totalPages = Math.ceil(categories.length / perPage);
   const slice = categories.slice(
     (currentPage - 1) * perPage,
@@ -587,7 +587,7 @@ export default function UploadFotoPage() {
 
       <main className="p-2">
         <div className="max-w-4xl mx-auto">
-          <div className="grid grid-cols-3 gap-1 mb-4">
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1 mb-4">
             {slice.map((category) => {
               const status = getCategoryStatus(category);
               const styles = getCategoryStyles(status);
@@ -595,27 +595,30 @@ export default function UploadFotoPage() {
 
               return (
                 <div key={category.id} className="space-y-1">
-                  <Card
-                    className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[110px] mx-auto`}
-                    onClick={() => handleCameraClick(category.id)}
-                  >
-                    <CardContent className="p-1 flex items-center justify-center h-[50px] w-[110px] relative">
-                      {category.photoThumb || category.photo ? (
-                        <img
-                          src={category.photoThumb || category.photo}
-                          alt={category.name}
-                          className="max-w-full max-h-full object-contain rounded"
-                          loading="lazy"
-                          decoding="async"
-                        />
-                      ) : (
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <Camera className="h-5 w-5 text-gray-400" />
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
+                <Card
+                  className={`cursor-pointer transition-all hover:shadow-md ${styles} mx-auto overflow-hidden rounded-md`}
+                  onClick={() => handleCameraClick(category.id)}
+                >
+                <CardContent className="p-2">
+                  <div className="relative size-[110px] overflow-hidden rounded-md bg-gray-100">
+                    {category.photoThumb || category.photo ? (
+                    <img
+                      src={category.photoThumb || category.photo}
+                      alt={category.name}
+                      className="absolute inset-0 h-full w-full object-cover
+                                [object-position:44%_50%] [transform:scale(1.04)]"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        {/* icon normal 20×20px */}
+                        <Camera className="h-6 w-6 text-gray-400" />
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+                </Card>
                   <p className="text-xs font-medium text-center text-gray-700 px-1">
                     {category.name}
                   </p>
