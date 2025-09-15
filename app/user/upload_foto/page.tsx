@@ -209,7 +209,7 @@ export default function UploadFotoPage() {
   const [cableMeterDraft, setCableMeterDraft] = useState<string>("");
 
   // pagination
-  const perPage = 10;
+  const perPage = 15;
   const totalPages = Math.ceil(categories.length / perPage);
   const slice = categories.slice(
     (currentPage - 1) * perPage,
@@ -587,7 +587,7 @@ export default function UploadFotoPage() {
 
       <main className="p-2">
         <div className="max-w-4xl mx-auto">
-          <div className="grid grid-cols-2 gap-1 mb-4">
+          <div className="grid grid-cols-3 gap-1 mb-4">
             {slice.map((category) => {
               const status = getCategoryStatus(category);
               const styles = getCategoryStyles(status);
