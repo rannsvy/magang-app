@@ -34,36 +34,36 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/apiFetch";
 
+/* ================== Tipe & util ================== */
 type StatusType = "Di_Kantor" | "ditugaskan" | "selesai";
 
-interface Technician {
+type Teknisi = {
   id: string;
-  code: string | null;
-  name: string;
-  initial: string;
+  nama_panggilan: string;
+  nama_lengkap: string;
+  inisial: string;
   email: string;
   phone: string;
-  joinDate: string;
+  tanggal_gabung: string;
   status: StatusType;
-}
+  is_active?: boolean;
+};
 
-interface Job {
-  id: string;
-  assignmentId: string;
-  jobName: string;
+type Job = {
+  id: string; // project id
+  assignmentId: string; // gunakan id project (placeholder)
+  jobName: string; // projects.name
   location: string;
-  assignmentDate: string;
-  technicianId: string;
-  technicianName: string;
+  assignmentDate: string; // (tidak ada di API → kosong)
+  technicianName: string; // gabungan assignedTechnicians
   status: StatusType;
-  template: string;
-  notes: string;
-}
+  template: string; // (placeholder)
+  notes: string; // (placeholder)
+};
 
 const TECH_PLACEHOLDER = "Cari teknisi...";
 const JOB_PLACEHOLDER = "Cari pekerjaan...";
 
-// helper aman untuk lower-case dan tampilan teks
 const lo = (v: unknown) => (v ?? "").toString().toLowerCase();
 const text = (v: unknown, fallback = "—") =>
   v == null || String(v).trim() === "" ? fallback : String(v);
@@ -97,17 +97,18 @@ const getStatusBadge = (status: StatusType) => {
   }
 };
 
-type TechForm = {
+/* ================== Form Teknisi ================== */
+type FormTeknisi = {
   id?: string;
-  code: string;
-  name: string;
-  initials: string;
+  nama_panggilan: string;
+  nama_lengkap: string;
+  inisial: string; // max 2
   email: string;
   phone: string;
   is_active: "true" | "false";
 };
 
-/** ---------- WRAPPER: hanya pegang gate mounted ---------- */
+/** ---------- wrapper mounted gate ---------- */
 export default function ManageTechnicians() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -132,7 +133,7 @@ export default function ManageTechnicians() {
 
 /** ---------- BODY ---------- */
 function ManageTechniciansBody() {
-  const [technicians, setTechnicians] = useState<Technician[]>([]);
+  const [teknisi, setTeknisi] = useState<Teknisi[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -143,34 +144,109 @@ function ManageTechniciansBody() {
   const [jobCurrentPage, setJobCurrentPage] = useState(1);
   const itemsPerPage = 5;
 
-  // edit job
+  // edit job (read-only sumbernya, tapi UI tetap ada)
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [isEditJobModalOpen, setIsEditJobModalOpen] = useState(false);
 
-  // add/edit technician
+  // add/edit teknisi
   const [isTechModalOpen, setIsTechModalOpen] = useState(false);
   const [techModalMode, setTechModalMode] = useState<"create" | "edit">(
     "create"
   );
-  const [techForm, setTechForm] = useState<TechForm>({
-    code: "",
-    name: "",
-    initials: "",
+  const [techForm, setTechForm] = useState<FormTeknisi>({
+    nama_panggilan: "",
+    nama_lengkap: "",
+    inisial: "",
     email: "",
     phone: "",
     is_active: "true",
   });
 
+  /* --------- loaders ---------- */
   useEffect(() => {
     (async () => {
       try {
         setLoading(true);
-        const [techRes, jobRes] = await Promise.all([
-          apiFetch("/api/technicians"),
-          apiFetch("/api/jobs"),
-        ]);
-        setTechnicians(techRes.data ?? []);
-        setJobs(jobRes.data ?? []);
+        // 1) Teknisi
+        const techRes = await apiFetch("/api/technicians", {
+          cache: "no-store",
+        });
+        const list = Array.isArray(techRes?.data) ? techRes.data : [];
+        const mapped: Teknisi[] = list.map(
+          (t: any): Teknisi => ({
+            id: String(t.id),
+            nama_panggilan:
+              t.nama_panggilan ??
+              t.name ??
+              t.nama ??
+              t.nama_lengkap ??
+              "Teknisi",
+            nama_lengkap:
+              t.nama_lengkap ??
+              t.name ??
+              t.nama ??
+              t.nama_panggilan ??
+              "Teknisi",
+            inisial: String(t.inisial ?? t.initial ?? t.initials ?? "?")
+              .toUpperCase()
+              .slice(0, 2),
+            email: t.email ?? "",
+            phone: t.phone ?? "",
+            tanggal_gabung:
+              t.join_date ??
+              t.joinDate ??
+              (t.created_at ? String(t.created_at).slice(0, 10) : ""),
+            status: (t.status_sekarang ??
+              t.current_status ??
+              t.status ??
+              "Di_Kantor") as StatusType,
+            is_active: t.is_active ?? true,
+          })
+        );
+        setTeknisi(mapped);
+
+        // 2) Jobs (pakai /api/technicians/jobs)
+        const jobsRes = await apiFetch("/api/technicians/jobs?debug=1", {
+          cache: "no-store",
+        });
+        const items = Array.isArray(jobsRes?.items)
+          ? jobsRes.items
+          : Array.isArray(jobsRes?.data)
+          ? jobsRes.data
+          : [];
+        const jobMapped: Job[] = items.map((p: any): Job => {
+          // map status UI ke StatusType
+          const s: StatusType =
+            p.status === "completed"
+              ? "selesai"
+              : p.status === "in-progress"
+              ? "ditugaskan"
+              : "Di_Kantor";
+          const crew =
+            Array.isArray(p.assignedTechnicians) && p.assignedTechnicians.length
+              ? p.assignedTechnicians
+                  .map((a: any) =>
+                    a?.name
+                      ? String(a.name)
+                      : a?.isLeader
+                      ? "Leader"
+                      : "Teknisi"
+                  )
+                  .join(", ")
+              : "";
+          return {
+            id: String(p.id ?? p.project_id ?? ""),
+            assignmentId: String(p.id ?? p.project_id ?? ""),
+            jobName: String(p.name ?? "Project"),
+            location: p.lokasi ?? "",
+            assignmentDate: "", // tidak tersedia di API ini
+            technicianName: crew,
+            status: s,
+            template: "",
+            notes: "",
+          };
+        });
+        setJobs(jobMapped);
       } catch (e) {
         console.error(e);
         alert("Gagal memuat data");
@@ -180,37 +256,88 @@ function ManageTechniciansBody() {
     })();
   }, []);
 
-  async function reloadTechnicians() {
-    const res = await apiFetch("/api/technicians");
+  async function reloadTeknisi() {
+    const res = await apiFetch("/api/technicians", { cache: "no-store" });
     if (res.error) throw new Error(res.error);
-    setTechnicians(res.data ?? []);
+    const list = Array.isArray(res?.data) ? res.data : [];
+    const mapped: Teknisi[] = list.map((t: any) => ({
+      id: String(t.id),
+      nama_panggilan:
+        t.nama_panggilan ?? t.name ?? t.nama ?? t.nama_lengkap ?? "Teknisi",
+      nama_lengkap:
+        t.nama_lengkap ?? t.name ?? t.nama ?? t.nama_panggilan ?? "Teknisi",
+      inisial: String(t.inisial ?? t.initial ?? t.initials ?? "?")
+        .toUpperCase()
+        .slice(0, 2),
+      email: t.email ?? "",
+      phone: t.phone ?? "",
+      tanggal_gabung:
+        t.join_date ??
+        t.joinDate ??
+        (t.created_at ? String(t.created_at).slice(0, 10) : ""),
+      status: (t.status_sekarang ??
+        t.current_status ??
+        t.status ??
+        "Di_Kantor") as StatusType,
+      is_active: t.is_active ?? true,
+    }));
+    setTeknisi(mapped);
   }
 
   async function reloadJobs() {
-    const res = await apiFetch("/api/jobs");
+    const res = await apiFetch("/api/technicians/jobs?debug=1", {
+      cache: "no-store",
+    });
     if (res.error) throw new Error(res.error);
-    setJobs(res.data ?? []);
+    const items = Array.isArray(res?.items)
+      ? res.items
+      : Array.isArray(res?.data)
+      ? res.data
+      : [];
+    const jobMapped: Job[] = items.map((p: any): Job => {
+      const s: StatusType =
+        p.status === "completed"
+          ? "selesai"
+          : p.status === "in-progress"
+          ? "ditugaskan"
+          : "Di_Kantor";
+      const crew =
+        Array.isArray(p.assignedTechnicians) && p.assignedTechnicians.length
+          ? p.assignedTechnicians
+              .map((a: any) => (a?.name ? String(a.name) : "Teknisi"))
+              .join(", ")
+          : "";
+      return {
+        id: String(p.id ?? p.project_id ?? ""),
+        assignmentId: String(p.id ?? p.project_id ?? ""),
+        jobName: String(p.name ?? "Project"),
+        location: p.lokasi ?? "",
+        assignmentDate: "",
+        technicianName: crew,
+        status: s,
+        template: "",
+        notes: "",
+      };
+    });
+    setJobs(jobMapped);
   }
 
-  async function deleteTechnician(
-    technicianId: string,
-    technicianName: string
-  ) {
+  async function deleteTeknisi(teknisiId: string, displayName: string) {
     if (
       !confirm(
-        `Apakah Anda yakin ingin menghapus teknisi ${technicianName}? Tindakan ini tidak dapat dibatalkan.`
+        `Apakah Anda yakin ingin menghapus teknisi ${displayName}? Tindakan ini tidak dapat dibatalkan.`
       )
     ) {
       return;
     }
     try {
       setLoading(true);
-      const response = await apiFetch(`/api/technicians?id=${technicianId}`, {
+      const response = await apiFetch(`/api/technicians?id=${teknisiId}`, {
         method: "DELETE",
       });
       if (response.error) throw new Error(response.error);
-      await reloadTechnicians();
-      alert(`Teknisi ${technicianName} berhasil dihapus`);
+      await reloadTeknisi();
+      alert(`Teknisi ${displayName} berhasil dihapus`);
     } catch (error: any) {
       console.error("Error deleting technician:", error);
       alert(`Gagal menghapus teknisi: ${error.message}`);
@@ -219,13 +346,13 @@ function ManageTechniciansBody() {
     }
   }
 
-  // ====== Tambah/Edit Teknisi ======
+  /* ====== Tambah/Edit Teknisi ====== */
   function openCreateTech() {
     setTechModalMode("create");
     setTechForm({
-      code: "",
-      name: "",
-      initials: "",
+      nama_panggilan: "",
+      nama_lengkap: "",
+      inisial: "",
       email: "",
       phone: "",
       is_active: "true",
@@ -233,27 +360,27 @@ function ManageTechniciansBody() {
     setIsTechModalOpen(true);
   }
 
-  function openEditTech(t: Technician) {
+  function openEditTech(t: Teknisi) {
     setTechModalMode("edit");
     setTechForm({
       id: t.id,
-      code: t.code ?? "",
-      name: t.name,
-      initials: t.initial ?? "",
+      nama_panggilan: t.nama_panggilan,
+      nama_lengkap: t.nama_lengkap,
+      inisial: t.inisial,
       email: t.email ?? "",
       phone: t.phone ?? "",
-      is_active: "true", // jika ingin real is_active, expose di GET
+      is_active: t.is_active ?? true ? "true" : "false",
     });
     setIsTechModalOpen(true);
   }
 
   function validateTechForm() {
-    if (!techForm.name.trim()) {
-      alert("Nama teknisi wajib diisi.");
+    if (!techForm.nama_lengkap.trim() && !techForm.nama_panggilan.trim()) {
+      alert("Minimal isi salah satu: Nama Lengkap atau Nama Panggilan.");
       return false;
     }
-    if (techForm.initials && techForm.initials.length > 4) {
-      alert("Initials maksimal 4 karakter.");
+    if (techForm.inisial && techForm.inisial.length > 2) {
+      alert("Inisial maksimal 2 huruf.");
       return false;
     }
     return true;
@@ -264,10 +391,10 @@ function ManageTechniciansBody() {
     try {
       setLoading(true);
       const payload = {
-        code: techForm.code || null,
-        name: techForm.name.trim(),
-        initials: techForm.initials
-          ? techForm.initials.toUpperCase().slice(0, 4)
+        nama_panggilan: techForm.nama_panggilan.trim() || null,
+        nama_lengkap: techForm.nama_lengkap.trim() || null,
+        inisial: techForm.inisial
+          ? techForm.inisial.toUpperCase().slice(0, 2)
           : null,
         email: techForm.email || null,
         phone: techForm.phone || null,
@@ -281,7 +408,7 @@ function ManageTechniciansBody() {
           body: JSON.stringify(payload),
         });
         if (res.error) throw new Error(res.error);
-        await reloadTechnicians();
+        await reloadTeknisi();
         alert("Teknisi berhasil ditambahkan.");
       } else {
         const id = techForm.id as string;
@@ -291,7 +418,7 @@ function ManageTechniciansBody() {
           body: JSON.stringify(payload),
         });
         if (res.error) throw new Error(res.error);
-        await reloadTechnicians();
+        await reloadTeknisi();
         alert("Teknisi berhasil diperbarui.");
       }
 
@@ -303,65 +430,33 @@ function ManageTechniciansBody() {
     }
   }
 
-  // ====== Edit/Hapus Job ======
+  /* ====== Edit/Hapus Job (saat ini read-only; endpoint khusus belum ada) ====== */
   const handleEditJob = (job: Job) => {
     setEditingJob({ ...job });
     setIsEditJobModalOpen(true);
   };
 
   async function handleSaveJob() {
-    if (!editingJob) return;
-    try {
-      setLoading(true);
-      const payload = {
-        location: editingJob.location,
-        assignmentDate: editingJob.assignmentDate,
-        template: editingJob.template,
-        notes: editingJob.notes,
-      };
-      const res = await apiFetch(`/api/jobs/${editingJob.assignmentId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (res.error) throw new Error(res.error);
-      await reloadJobs();
-      alert("Perubahan job berhasil disimpan!");
-      setIsEditJobModalOpen(false);
-      setEditingJob(null);
-    } catch (e: any) {
-      alert(`Gagal menyimpan perubahan: ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
+    // Placeholder: belum ada /api/jobs PATCH di backend baru
+    alert("Edit Job belum tersedia pada skema/endpoint saat ini.");
+    setIsEditJobModalOpen(false);
+    setEditingJob(null);
   }
 
   async function handleDeleteJob(assignmentId: string) {
-    if (!confirm("Apakah Anda yakin ingin menghapus job ini?")) return;
-    try {
-      setLoading(true);
-      const res = await apiFetch(`/api/jobs?id=${assignmentId}`, {
-        method: "DELETE",
-      });
-      if (res.error) throw new Error(res.error);
-      await reloadJobs();
-      alert(`Job dengan Assignment ID: ${assignmentId} telah dihapus`);
-    } catch (e: any) {
-      alert(`Gagal menghapus job: ${e.message}`);
-    } finally {
-      setLoading(false);
-    }
+    // Placeholder: belum ada /api/jobs DELETE di backend baru
+    alert("Hapus Job belum tersedia pada skema/endpoint saat ini.");
   }
 
-  // ====== Filter & Pagination ======
-  const filteredTechnicians = technicians.filter((tech) => {
+  /* ====== Filter & Pagination ====== */
+  const filteredTeknisi = teknisi.filter((t) => {
     const q = searchTerm.toLowerCase();
     const matchesSearch =
-      lo(tech.name).includes(q) ||
-      lo(tech.email).includes(q) ||
-      (tech.phone ?? "").includes(searchTerm);
-    const matchesStatus =
-      statusFilter === "all" || tech.status === statusFilter;
+      lo(t.nama_lengkap).includes(q) ||
+      lo(t.nama_panggilan).includes(q) ||
+      lo(t.email).includes(q) ||
+      (t.phone ?? "").includes(searchTerm);
+    const matchesStatus = statusFilter === "all" || t.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
 
@@ -374,10 +469,10 @@ function ManageTechniciansBody() {
     );
   });
 
-  // Technicians pagination
+  // Teknisi pagination
   const itemsStart = (currentPage - 1) * itemsPerPage;
-  const totalPages = Math.ceil(filteredTechnicians.length / itemsPerPage) || 1;
-  const paginatedTechnicians = filteredTechnicians.slice(
+  const totalPages = Math.ceil(filteredTeknisi.length / itemsPerPage) || 1;
+  const paginatedTeknisi = filteredTeknisi.slice(
     itemsStart,
     itemsStart + itemsPerPage
   );
@@ -460,7 +555,7 @@ function ManageTechniciansBody() {
                       <thead>
                         <tr className="border-b border-gray-200">
                           <th className="text-left py-4 px-4 font-semibold text-gray-700 text-lg">
-                            Nama Teknisi
+                            Nama
                           </th>
                           <th className="text-left py-4 px-4 font-semibold text-gray-700 text-lg">
                             Email
@@ -477,7 +572,7 @@ function ManageTechniciansBody() {
                         </tr>
                       </thead>
                       <tbody>
-                        {paginatedTechnicians.length === 0 ? (
+                        {paginatedTeknisi.length === 0 ? (
                           <tr>
                             <td
                               className="py-6 px-4 text-center text-gray-500"
@@ -487,34 +582,42 @@ function ManageTechniciansBody() {
                             </td>
                           </tr>
                         ) : (
-                          paginatedTechnicians.map((tech) => (
+                          paginatedTeknisi.map((t) => (
                             <tr
-                              key={tech.id}
+                              key={t.id}
                               className="border-b border-gray-100 hover:bg-gray-50"
                             >
                               <td className="py-4 px-4">
                                 <div className="font-medium text-gray-900 text-lg">
-                                  {tech.name}
+                                  {t.nama_panggilan || t.nama_lengkap}
+                                  {t.inisial ? (
+                                    <span className="ml-2 text-gray-500">
+                                      ({t.inisial})
+                                    </span>
+                                  ) : null}
                                 </div>
                                 <div className="text-sm text-gray-500">
-                                  Bergabung: {tech.joinDate}
+                                  Nama Lengkap: {t.nama_lengkap || "—"}
+                                </div>
+                                <div className="text-sm text-gray-500">
+                                  Bergabung: {t.tanggal_gabung || "—"}
                                 </div>
                               </td>
                               <td className="py-4 px-4 text-gray-700 text-lg">
-                                {tech.email}
+                                {t.email}
                               </td>
                               <td className="py-4 px-4 text-gray-700 text-lg">
-                                {tech.phone}
+                                {t.phone}
                               </td>
                               <td className="py-4 px-4">
-                                {getStatusBadge(tech.status)}
+                                {getStatusBadge(t.status)}
                               </td>
                               <td className="py-4 px-4">
                                 <div className="flex justify-center gap-2">
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={() => openEditTech(tech)}
+                                    onClick={() => openEditTech(t)}
                                     className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
                                     disabled={loading}
                                   >
@@ -524,7 +627,10 @@ function ManageTechniciansBody() {
                                     variant="outline"
                                     size="sm"
                                     onClick={() =>
-                                      deleteTechnician(tech.id, tech.name)
+                                      deleteTeknisi(
+                                        t.id,
+                                        t.nama_panggilan || t.nama_lengkap
+                                      )
                                     }
                                     className="text-red-600 hover:text-red-700 hover:bg-red-50"
                                     disabled={loading}
@@ -540,15 +646,15 @@ function ManageTechniciansBody() {
                     </table>
                   </div>
 
-                  {filteredTechnicians.length > 0 && totalPages > 1 && (
+                  {filteredTeknisi.length > 0 && totalPages > 1 && (
                     <div className="flex items-center justify-between mt-6">
                       <div className="text-lg text-gray-700">
                         Menampilkan {itemsStart + 1}-
                         {Math.min(
                           itemsStart + itemsPerPage,
-                          filteredTechnicians.length
+                          filteredTeknisi.length
                         )}{" "}
-                        dari {filteredTechnicians.length} teknisi
+                        dari {filteredTeknisi.length} teknisi
                       </div>
                       <div className="flex items-center gap-2">
                         <Button
@@ -581,7 +687,7 @@ function ManageTechniciansBody() {
               </Card>
             </TabsContent>
 
-            {/* Tab 2: Jobs */}
+            {/* Tab 2: Jobs (read-only dari /api/technicians/jobs) */}
             <TabsContent value="jobs">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
                 <div className="relative max-w-md">
@@ -607,7 +713,7 @@ function ManageTechniciansBody() {
                       <thead>
                         <tr className="border-b border-gray-200">
                           <th className="text-left py-4 px-4 font-semibold text-gray-700 text-lg">
-                            ID Pekerjaan
+                            ID Proyek
                           </th>
                           <th className="text-left py-4 px-4 font-semibold text-gray-700 text-lg">
                             Nama Pekerjaan
@@ -616,10 +722,7 @@ function ManageTechniciansBody() {
                             Lokasi
                           </th>
                           <th className="text-left py-4 px-4 font-semibold text-gray-700 text-lg">
-                            Tanggal Penugasan
-                          </th>
-                          <th className="text-left py-4 px-4 font-semibold text-gray-700 text-lg">
-                            Status Pekerjaan
+                            Status
                           </th>
                           <th className="text-center py-4 px-4 font-semibold text-gray-700 text-lg">
                             Aksi
@@ -627,73 +730,66 @@ function ManageTechniciansBody() {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredJobs.length === 0 ? (
+                        {paginatedJobs.length === 0 ? (
                           <tr>
                             <td
                               className="py-6 px-4 text-center text-gray-500"
-                              colSpan={6}
+                              colSpan={5}
                             >
                               Tidak ada data pekerjaan.
                             </td>
                           </tr>
                         ) : (
-                          filteredJobs
-                            .slice(jobItemsStart, jobItemsStart + itemsPerPage)
-                            .map((job) => (
-                              <tr
-                                key={job.assignmentId || job.id}
-                                className="border-b border-gray-100 hover:bg-gray-50"
-                              >
-                                <td className="py-4 px-4 font-medium text-gray-900 text-lg">
-                                  {text(job.id)}
-                                </td>
-                                <td className="py-4 px-4">
-                                  <div className="font-medium text-gray-900 text-lg">
-                                    {text(job.jobName)}
-                                  </div>
-                                  <div className="text-sm text-gray-500">
-                                    Teknisi: {text(job.technicianName)}
-                                  </div>
-                                </td>
-                                <td className="py-4 px-4 text-gray-700 text-lg">
-                                  {text(job.location)}
-                                </td>
-                                <td className="py-4 px-4 text-gray-700 text-lg">
-                                  {text(job.assignmentDate)}
-                                </td>
-                                <td className="py-4 px-4">
-                                  {getStatusBadge(
-                                    (job.status || "ditugaskan") as StatusType
-                                  )}
-                                </td>
-                                <td className="py-4 px-4">
-                                  <div className="flex justify-center gap-2">
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => handleEditJob(job)}
-                                      className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                                      disabled={loading}
-                                    >
-                                      <Edit className="h-4 w-4" />
-                                    </Button>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() =>
-                                        handleDeleteJob(
-                                          job.assignmentId || job.id
-                                        )
-                                      }
-                                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                                      disabled={loading}
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </Button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))
+                          paginatedJobs.map((job) => (
+                            <tr
+                              key={job.assignmentId || job.id}
+                              className="border-b border-gray-100 hover:bg-gray-50"
+                            >
+                              <td className="py-4 px-4 font-medium text-gray-900 text-lg">
+                                {text(job.id)}
+                              </td>
+                              <td className="py-4 px-4">
+                                <div className="font-medium text-gray-900 text-lg">
+                                  {text(job.jobName)}
+                                </div>
+                                <div className="text-sm text-gray-500">
+                                  Teknisi: {text(job.technicianName)}
+                                </div>
+                              </td>
+                              <td className="py-4 px-4 text-gray-700 text-lg">
+                                {text(job.location)}
+                              </td>
+                              <td className="py-4 px-4">
+                                {getStatusBadge(job.status)}
+                              </td>
+                              <td className="py-4 px-4">
+                                <div className="flex justify-center gap-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleEditJob(job)}
+                                    className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                    disabled={loading}
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() =>
+                                      handleDeleteJob(
+                                        job.assignmentId || job.id
+                                      )
+                                    }
+                                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                    disabled={loading}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
                         )}
                       </tbody>
                     </table>
@@ -752,7 +848,6 @@ function ManageTechniciansBody() {
                     ? "Tambah Teknisi"
                     : "Edit Teknisi"}
                 </DialogTitle>
-                {/* Hilangkan warning shadcn dengan deskripsi tersembunyi */}
                 <DialogDescription className="sr-only">
                   Formulir untuk menambah atau mengedit teknisi.
                 </DialogDescription>
@@ -761,48 +856,60 @@ function ManageTechniciansBody() {
               <div className="space-y-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="code" className="text-lg font-medium">
-                      Kode (opsional)
+                    <Label htmlFor="inisial" className="text-lg font-medium">
+                      Inisial (maks 2)
                     </Label>
                     <Input
-                      id="code"
-                      value={techForm.code}
+                      id="inisial"
+                      value={techForm.inisial}
                       onChange={(e) =>
-                        setTechForm((s) => ({ ...s, code: e.target.value }))
+                        setTechForm((s) => ({
+                          ...s,
+                          inisial: e.target.value.toUpperCase().slice(0, 2),
+                        }))
                       }
                       className="mt-2 text-lg py-3"
-                      placeholder="e.g. T-001"
+                      placeholder="CTH: AB"
                     />
-                    <p className="text-xs text-gray-500 mt-1">
-                      Harus unik bila diisi.
-                    </p>
                   </div>
                   <div>
-                    <Label htmlFor="initials" className="text-lg font-medium">
-                      Initials
+                    <Label
+                      htmlFor="nama_panggilan"
+                      className="text-lg font-medium"
+                    >
+                      Nama Panggilan
                     </Label>
                     <Input
-                      id="initials"
-                      value={techForm.initials}
+                      id="nama_panggilan"
+                      value={techForm.nama_panggilan}
                       onChange={(e) =>
-                        setTechForm((s) => ({ ...s, initials: e.target.value }))
+                        setTechForm((s) => ({
+                          ...s,
+                          nama_panggilan: e.target.value,
+                        }))
                       }
                       className="mt-2 text-lg py-3"
-                      placeholder="Max 4 huruf"
+                      placeholder="Mis. Dika"
                     />
                   </div>
                   <div className="md:col-span-2">
-                    <Label htmlFor="name" className="text-lg font-medium">
-                      Nama*
+                    <Label
+                      htmlFor="nama_lengkap"
+                      className="text-lg font-medium"
+                    >
+                      Nama Lengkap*
                     </Label>
                     <Input
-                      id="name"
-                      value={techForm.name}
+                      id="nama_lengkap"
+                      value={techForm.nama_lengkap}
                       onChange={(e) =>
-                        setTechForm((s) => ({ ...s, name: e.target.value }))
+                        setTechForm((s) => ({
+                          ...s,
+                          nama_lengkap: e.target.value,
+                        }))
                       }
                       className="mt-2 text-lg py-3"
-                      placeholder="Nama teknisi"
+                      placeholder="Nama lengkap teknisi"
                     />
                   </div>
                   <div>
@@ -877,14 +984,16 @@ function ManageTechniciansBody() {
             </DialogContent>
           </Dialog>
 
-          {/* Modal: Edit Job */}
+          {/* Modal: Edit Job (read-only) */}
           <Dialog
             open={isEditJobModalOpen}
             onOpenChange={setIsEditJobModalOpen}
           >
             <DialogContent className="max-w-2xl">
               <DialogHeader>
-                <DialogTitle className="text-2xl">Edit Job Teknisi</DialogTitle>
+                <DialogTitle className="text-2xl">
+                  Detail Job Teknisi
+                </DialogTitle>
                 <DialogDescription className="sr-only">
                   Formulir pengeditan data pekerjaan teknisi.
                 </DialogDescription>
@@ -901,9 +1010,6 @@ function ManageTechniciansBody() {
                       disabled
                       className="mt-2 text-lg py-3 bg-gray-50"
                     />
-                    <p className="text-sm text-gray-500 mt-1">
-                      Field ini tidak dapat diedit
-                    </p>
                   </div>
                   <div>
                     <Label htmlFor="location" className="text-lg font-medium">
@@ -912,74 +1018,26 @@ function ManageTechniciansBody() {
                     <Input
                       id="location"
                       value={editingJob.location}
-                      onChange={(e) =>
-                        setEditingJob({
-                          ...editingJob,
-                          location: e.target.value,
-                        })
-                      }
-                      className="mt-2 text-lg py-3"
+                      disabled
+                      className="mt-2 text-lg py-3 bg-gray-50"
                     />
                   </div>
                   <div>
-                    <Label
-                      htmlFor="assignmentDate"
-                      className="text-lg font-medium"
-                    >
-                      Tanggal Penugasan
-                    </Label>
+                    <Label className="text-lg font-medium">Teknisi</Label>
                     <Input
-                      id="assignmentDate"
-                      type="date"
-                      value={editingJob.assignmentDate}
-                      onChange={(e) =>
-                        setEditingJob({
-                          ...editingJob,
-                          assignmentDate: e.target.value,
-                        })
-                      }
-                      className="mt-2 text-lg py-3"
+                      value={editingJob.technicianName}
+                      disabled
+                      className="mt-2 text-lg py-3 bg-gray-50"
                     />
                   </div>
-                  <div>
-                    <Label htmlFor="template" className="text-lg font-medium">
-                      Template Laporan
-                    </Label>
-                    <Select
-                      value={editingJob.template}
-                      onValueChange={(value) =>
-                        setEditingJob({ ...editingJob, template: value })
-                      }
-                    >
-                      <SelectTrigger className="mt-2 text-lg py-3">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Template A">Template A</SelectItem>
-                        <SelectItem value="Template B">Template B</SelectItem>
-                        <SelectItem value="Template C">Template C</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label htmlFor="notes" className="text-lg font-medium">
-                      Catatan Tambahan
-                    </Label>
-                    <Textarea
-                      id="notes"
-                      value={editingJob.notes}
-                      onChange={(e) =>
-                        setEditingJob({ ...editingJob, notes: e.target.value })
-                      }
-                      className="mt-2 text-lg"
-                      rows={4}
-                    />
+                  <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-3">
+                    Edit/Hapus Job belum tersedia pada skema API saat ini.
                   </div>
                   <div className="flex gap-4 pt-4">
                     <Button
                       onClick={handleSaveJob}
                       className="bg-blue-600 hover:bg-blue-700 text-lg px-6 py-3"
-                      disabled={loading}
+                      disabled
                     >
                       Simpan Perubahan
                     </Button>
@@ -987,9 +1045,8 @@ function ManageTechniciansBody() {
                       variant="outline"
                       onClick={() => setIsEditJobModalOpen(false)}
                       className="text-lg px-6 py-3"
-                      disabled={loading}
                     >
-                      Batal
+                      Tutup
                     </Button>
                   </div>
                 </div>

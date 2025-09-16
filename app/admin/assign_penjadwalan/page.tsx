@@ -175,18 +175,19 @@ export default function AssignScheduling() {
         } catch {}
       }
       const ui: UITechnician[] = rows.map((t: any) => ({
-        id: String(t.code ?? t.id),
-        name: t.name ?? t.nama ?? "Teknisi",
-        initial: String(
-          t.initials ?? t.initial ?? t.name?.[0] ?? "?"
+        id: String(t.id), // <-- pakai UUID langsung
+        name: String(t.nama_panggilan ?? "Teknisi"),
+        inisial: String(
+          t.inisial ?? "?"
         ).toUpperCase(),
       }));
       setTechs(ui);
+
+      // mapping id→uuid (identitas) agar handleSaveAssignment tetap simpel
       const mapping: Record<string, string> = {};
       for (const t of rows) {
-        const code = String(t.code ?? t.id);
-        const uuid = String(t.id ?? t.uuid ?? code);
-        mapping[code] = uuid;
+        const uuid = String(t.id ?? t.uuid);
+        mapping[uuid] = uuid; // identity
       }
       setTechCodeToUuid(mapping);
     } catch (e) {
@@ -286,8 +287,8 @@ export default function AssignScheduling() {
               projectId: pid,
               technicianId: String(t.code ?? t.id),
               isSelected: true,
-              initial: String(
-                t.initials ?? t.initial ?? t.name?.[0] ?? ""
+              inisial: String(
+                t.inisials ?? t.inisial ?? t.name?.[0] ?? ""
               ).toUpperCase(),
               isProjectLeader: Boolean(
                 t.isProjectLeader ?? t.project_leader ?? false
@@ -308,7 +309,7 @@ export default function AssignScheduling() {
             r.technician_id
         ),
         isSelected: Boolean(r.isSelected ?? false),
-        initial: String(r.initial ?? r.initials ?? "").toUpperCase(),
+        inisial: String(r.inisial ?? r.inisials ?? "").toUpperCase(),
         isProjectLeader: Boolean(r.isProjectLeader ?? false),
       }));
       setAssignments(filteredAssignments);
@@ -393,7 +394,7 @@ export default function AssignScheduling() {
           updated[existingIndex] = {
             ...existing,
             isSelected: true,
-            initial: technician.initial,
+            inisial: technician.inisial,
             isProjectLeader: existing.isProjectLeader || false,
           };
           const projectAssignments = updated.filter(
@@ -431,7 +432,7 @@ export default function AssignScheduling() {
             projectId,
             technicianId,
             isSelected: true,
-            initial: technician.initial,
+            inisial: technician.inisial,
             isProjectLeader: false,
           },
         ];
@@ -460,7 +461,7 @@ export default function AssignScheduling() {
           ...current,
           isSelected: newLeaderStatus ? true : current.isSelected,
           isProjectLeader: newLeaderStatus,
-          initial: technician.initial,
+          inisial: technician.inisial,
         };
         if (newLeaderStatus) {
           for (let i = 0; i < updated.length; i++) {
@@ -483,7 +484,7 @@ export default function AssignScheduling() {
             technicianId,
             isSelected: true,
             isProjectLeader: true,
-            initial: technician.initial,
+            inisial: technician.inisial,
           },
         ];
       }
@@ -505,7 +506,7 @@ export default function AssignScheduling() {
             projectId: project.id,
             technicianId: t.id,
             isSelected: locked ? Boolean(exist?.isSelected) : true,
-            initial: t.initial,
+            inisial: t.inisial,
             isProjectLeader: exist?.isProjectLeader || false,
           });
         });

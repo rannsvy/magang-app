@@ -1,17 +1,15 @@
 // app/api/technicians/jobs/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabaseServers";
+import { supabaseServer } from "@/lib/supabaseServers"; // sesuai import kamu
 
 type UiJob = {
-  id: string; // projects.id
-  job_id: string; // projects.job_id
+  id: string;
+  job_id: string;
   name: string;
   lokasi: string | null;
   status: "not-started" | "in-progress" | "completed";
   progress?: number | null;
   assignedTechnicians: { name: string; isLeader: boolean }[];
-
-  // tambahan untuk UI filter baru
   type?: "survey" | "instalasi";
   building_name?: string | null;
 };
@@ -27,7 +25,7 @@ export async function GET(req: NextRequest) {
     const supabase = supabaseServer();
     const url = new URL(req.url);
 
-    const technicianParam = url.searchParams.get("technician"); // UUID atau code
+    const technicianParam = url.searchParams.get("technician"); // UUID atau inisial (baru)
     const debugAll = url.searchParams.get("debug") === "1";
 
     let technicianId: string | null = null;
@@ -36,11 +34,12 @@ export async function GET(req: NextRequest) {
       if (isUuid(technicianParam)) {
         technicianId = technicianParam;
       } else {
-        // treat as "code" → lookup id dari tabel technicians
+        // treat as INISIAL → lookup id dari tabel technicians
+        const inisial = String(technicianParam).toUpperCase();
         const { data: t, error: tErr } = await supabase
           .from("technicians")
           .select("id")
-          .eq("code", technicianParam)
+          .eq("inisial", inisial)
           .maybeSingle();
         if (tErr) throw tErr;
         technicianId = t?.id ?? null;
@@ -54,12 +53,11 @@ export async function GET(req: NextRequest) {
     let q = supabase
       .from("projects")
       .select(baseSelect as any)
-      .is("project_assignments.removed_at", null) // hanya assignment aktif
+      .is("project_assignments.removed_at", null)
       .order("created_at", { ascending: false });
 
     if (!debugAll) {
       if (!technicianId) {
-        // tanpa id yang valid, kembalikan kosong (lebih aman)
         return NextResponse.json({ items: [] });
       }
       q = q.eq("project_assignments.technician_id", technicianId);
@@ -71,7 +69,7 @@ export async function GET(req: NextRequest) {
     const rows = (data ?? []) as any[];
     const projectIds = rows.map((p) => p.id);
 
-    // ====== Tambahan: cek apakah project punya rooms survey ======
+    // cek survey rooms (tetap)
     let surveySet = new Set<string>();
     if (projectIds.length) {
       const rs = await supabase
@@ -93,7 +91,6 @@ export async function GET(req: NextRequest) {
         ? "not-started"
         : "in-progress";
 
-      // Progress sederhana: crew aktif hari ini vs target sigma_teknisi
       const crewActive = (p.project_assignments ?? []).filter(
         (a: any) => !a.removed_at
       );
@@ -120,8 +117,6 @@ export async function GET(req: NextRequest) {
         status: uiStatus,
         progress,
         assignedTechnicians,
-
-        // field untuk filter/tampilan Survey
         type: isSurvey ? "survey" : "instalasi",
         building_name: isSurvey ? String(p.name ?? "Gedung") : null,
       };

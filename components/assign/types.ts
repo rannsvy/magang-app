@@ -8,7 +8,7 @@ export type ProjectStatus =
 export type ProgressStatus = "ongoing" | "completed" | "overdue";
 export type ProjectCategory = "instalasi" | "survey" | null;
 
-export type UITechnician = { id: string; name: string; initial: string };
+export type UITechnician = { id: string; name: string; inisial: string };
 
 export type DbProjectWithStats = {
   id: string;
@@ -56,7 +56,7 @@ export interface CellAssignment {
   projectId: string;
   technicianId: string;
   isSelected: boolean;
-  initial?: string;
+  inisial?: string;
   isProjectLeader?: boolean;
 }
 

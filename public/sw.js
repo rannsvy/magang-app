@@ -1,5 +1,5 @@
 /* public/sw.js — fast offline upload with timeout & ACK */
-const VERSION = "magang-app-v1.0.34"; // ⬅️ bump versi agar SW baru aktif
+const VERSION = "magang-app-v1.0.35"; // ⬅️ bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -235,7 +235,16 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
-  // 0) Intercept upload/meta: network-first with TIMEOUT; if slow/fail → enqueue
+  if (
+    url.origin === self.location.origin &&
+    (url.pathname === "/auth/callback" ||
+      url.pathname.startsWith("/auth/callback") ||
+      url.pathname === "/auth/confirm" ||
+      url.pathname.startsWith("/auth/confirm"))
+  ) {
+    return; 
+  }
+
   if (
     req.method === "POST" &&
     (url.pathname === UPLOAD_PATH || url.pathname === META_PATH)

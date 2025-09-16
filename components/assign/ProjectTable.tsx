@@ -214,11 +214,11 @@ export default function ProjectTable({
                     if (isLead) {
                       cellBg = "bg-red-500";
                       textColor = "text-white";
-                      disp = a?.initial || t.initial;
+                      disp = a?.inisial || t.inisial;
                     } else if (isSel) {
                       cellBg = "bg-blue-200";
                       textColor = "text-blue-900";
-                      disp = a?.initial || t.initial;
+                      disp = a?.inisial || t.inisial;
                     }
 
                     const disabledCell = isLockedRow;
@@ -331,7 +331,7 @@ export default function ProjectTable({
                           isIdle ? "text-gray-700" : ""
                         }`}
                       >
-                        {isIdle ? t.initial : ""}
+                        {isIdle ? t.inisial : ""}
                       </div>
                     </td>
                   );

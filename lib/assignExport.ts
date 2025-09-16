@@ -174,7 +174,7 @@ export async function buildStyledExcelBlob(
       const val = a?.isProjectLeader
         ? "L"
         : a?.isSelected
-        ? a?.initial || t.initial
+        ? a?.inisial || t.inisial
         : "";
       techCols.push(val);
       techCellMeta.push({
@@ -387,7 +387,7 @@ export async function buildStyledExcelBlob(
     "Project Name",
     "Technician ID",
     "Technician Name",
-    "Initial",
+    "Inisial",
     "Leader",
     "Selected",
     "Datang",
@@ -405,7 +405,7 @@ export async function buildStyledExcelBlob(
         p?.name ?? "",
         a.technicianId,
         t?.name ?? "",
-        a.initial ?? t?.initial ?? "",
+        a.inisial ?? t?.inisial ?? "",
         a.isProjectLeader ? "Y" : "N",
         a.isSelected ? "Y" : "N",
         p?.jamDatang ?? "",
