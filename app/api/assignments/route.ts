@@ -12,7 +12,7 @@ type ShapedAssignment = {
   isSelected: boolean;
 };
 
-/* ===================== Helpers Waktu (tetap) ===================== */
+/* ===================== Helpers Waktu ===================== */
 function nowWIBIso(): string {
   const wibMs = Date.now() + 7 * 60 * 60 * 1000;
   return new Date(wibMs).toISOString().replace("Z", "+07:00");
@@ -155,11 +155,16 @@ export async function GET(req: NextRequest) {
   }
   if (activeProjectSet.size === 0) return NextResponse.json({ data: [] });
 
-  // 3) Build selectedSet
+  // 3) Build selectedSet + leaderMap (H + carry dari D-1 saja)
   const selectedSet = new Set<string>(selectedTodaySet);
   const leaderMap = new Map<string, boolean>();
-  for (const k of selectedTodaySet) leaderMap.set(k, leaderTodaySet.has(k));
 
+  // Flag leader untuk data H (hari ini)
+  for (const k of selectedTodaySet) {
+    leaderMap.set(k, leaderTodaySet.has(k));
+  }
+
+  // Jika proyek belum ada attendance H, copy dari D-1
   for (const pid of activeProjectSet) {
     const hasToday = (todayCountByProject.get(pid) ?? 0) > 0;
     if (!hasToday) {
@@ -168,11 +173,13 @@ export async function GET(req: NextRequest) {
         const key = `${r.project_id}::${r.technician_id}`;
         if (!activeMembershipSet.has(key)) continue;
         selectedSet.add(key);
-        leaderMap.set(key, membershipLeaderKeys.has(key));
+        // leader mengikuti kemarin/membership (tanpa memaksa lebih dari D-1)
+        leaderMap.set(key, membershipLeaderKeys.has(key) || !!r.project_leader);
       }
     }
   }
 
+  // Jika proyek selesai tepat H, tampilkan semua membership (leader ikut)
   if (completedTodayProjects.size > 0) {
     for (const row of pa ?? []) {
       if (completedTodayProjects.has(row.project_id)) {
@@ -183,12 +190,13 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Pastikan leader membership selalu tampil
-  const displayKeys = new Set<string>(selectedSet);
-  for (const key of membershipLeaderKeys) {
-    const [pid] = key.split("::");
-    if (activeProjectSet.has(pid)) displayKeys.add(key);
-  }
+  /**
+   * PERUBAHAN UTAMA:
+   * Treat leaders the same as regular techs — tidak ada “pemaksaan tampil”
+   * khusus di luar H & carry D-1.
+   */
+  const displayKeys = selectedSet;
+
   if (displayKeys.size === 0) return NextResponse.json({ data: [] });
 
   // 4) Info teknisi (tanpa code; gunakan id + inisial + nama)
@@ -238,7 +246,7 @@ export async function GET(req: NextRequest) {
       technicianId: info.id, // UUID
       technicianName: info.name,
       inisial: info.inisial,
-      isProjectLeader: leaderMap.get(key) ?? membershipLeaderKeys.has(key),
+      isProjectLeader: leaderMap.get(key) ?? false,
       isSelected: true,
     });
   }
