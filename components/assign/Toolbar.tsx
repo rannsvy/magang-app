@@ -1,7 +1,15 @@
 "use client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar, ChevronLeft, ChevronRight, Edit, Plus, Share } from "lucide-react";
+import {
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  Edit,
+  Plus,
+  Share,
+  LayoutGrid,
+} from "lucide-react";
 import React from "react";
 
 type Props = {
@@ -20,6 +28,12 @@ type Props = {
   onPrevDate: () => void;
   onNextDate: () => void;
   totalAssignments: number;
+
+  // Pager tampilan tabel (1 = ProjectTable, 2 = ProjectTableCars)
+  tablePage: number;
+  tablePageCount?: number; // default 2
+  onPrevTablePage: () => void;
+  onNextTablePage: () => void;
 };
 
 export default function Toolbar({
@@ -29,16 +43,23 @@ export default function Toolbar({
   onCreateProjectOpen,
   onShare,
   isExporting,
-  onSaveAssignment,
-  selectedCount,
-  loading,
+  onSaveAssignment, // (tidak dipakai di toolbar, tapi biarkan di props jika dibutuhkan nanti)
+  selectedCount,    // idem
+  loading,          // idem
   currentDateLabel,
   onPrevDate,
   onNextDate,
   totalAssignments,
+  tablePage,
+  tablePageCount = 2,
+  onPrevTablePage,
+  onNextTablePage,
 }: Props) {
+  const tableLabel = tablePage === 1 ? "Tabel: Project" : "Tabel: Kendaraan";
+
   return (
     <div className="mb-4 flex items-center justify-between bg-white p-3 rounded-lg shadow-sm">
+      {/* Kiri */}
       <div className="flex items-center gap-3">
         <Checkbox
           id="select-all"
@@ -46,10 +67,7 @@ export default function Toolbar({
           onCheckedChange={(v) => onSelectAllChange(Boolean(v))}
           className="h-4 w-4"
         />
-        <label
-          htmlFor="select-all"
-          className="text-sm font-medium cursor-pointer"
-        >
+        <label htmlFor="select-all" className="text-sm font-medium cursor-pointer">
           Select All Projects & Technicians
         </label>
         <div className="ml-3 text-xs text-gray-500">
@@ -57,7 +75,38 @@ export default function Toolbar({
         </div>
       </div>
 
+      {/* Kanan */}
       <div className="flex items-center gap-3">
+        {/* PAGER TABEL — diletakkan di kiri tombol Edit Project */}
+        <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onPrevTablePage}
+            className="h-8 w-8 p-0 hover:bg-gray-200"
+            aria-label="Tabel Sebelumnya"
+            disabled={tablePage <= 1}
+            title="Tampilkan tabel sebelumnya"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <div className="flex items-center gap-2 px-2 min-w-[140px] justify-center">
+            <LayoutGrid className="h-4 w-4 text-gray-600" />
+            <span className="text-sm font-medium text-gray-700">{tableLabel}</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onNextTablePage}
+            className="h-8 w-8 p-0 hover:bg-gray-200"
+            aria-label="Tabel Berikutnya"
+            disabled={tablePage >= tablePageCount}
+            title="Tampilkan tabel berikutnya"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+
         <Button
           onClick={onEditProjectOpen}
           className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 text-sm"
@@ -82,6 +131,7 @@ export default function Toolbar({
           {isExporting ? "Menyiapkan..." : "Share"}
         </Button>
 
+        {/* Pager tanggal */}
         <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
           <Button
             variant="ghost"

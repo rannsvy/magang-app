@@ -1,10 +1,11 @@
 "use client";
 
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AdminHeader } from "@/components/admin-header";
 import Toolbar from "@/components/assign/Toolbar";
 import ProjectTable from "@/components/assign/ProjectTable";
+import ProjectTableCars from "@/components/assign/ProjectTableCars";
 import ProjectShortcutPopup from "@/components/assign/ProjectShortcutPopup";
 import EditProjectDialog from "@/components/assign/EditProjectDialog";
 import CreateProjectDialog from "@/components/assign/CreateProjectDialog";
@@ -19,8 +20,6 @@ import { apiFetch } from "@/lib/apiFetch";
 import {
   CellAssignment,
   EditProjectForm,
-  ProjectCategory,
-  ProjectStatus,
   UITechnician,
   UIProject,
 } from "@/components/assign/types";
@@ -32,10 +31,6 @@ import {
   safeUUID,
   time5,
   unwrap,
-  getManDaysDisplay,
-  getManDaysStatus,
-  getProgressStatus,
-  getProjectStatusDisplay,
 } from "@/components/assign/helpers";
 
 import {
@@ -60,6 +55,9 @@ export default function AssignScheduling() {
   const [currentDate, setCurrentDate] = useState<string>(() =>
     new Date().toISOString().slice(0, 10)
   );
+
+  // Pager antar tabel (1 = projects, 2 = cars)
+  const [tablePage, setTablePage] = useState<number>(1);
 
   const [techs, setTechs] = useState<UITechnician[]>([]);
   const [projectsData, setProjectsData] = useState<UIProject[]>([]);
@@ -175,19 +173,16 @@ export default function AssignScheduling() {
         } catch {}
       }
       const ui: UITechnician[] = rows.map((t: any) => ({
-        id: String(t.id), // <-- pakai UUID langsung
+        id: String(t.id),
         name: String(t.nama_panggilan ?? "Teknisi"),
-        inisial: String(
-          t.inisial ?? "?"
-        ).toUpperCase(),
+        inisial: String(t.inisial ?? "?").toUpperCase(),
       }));
       setTechs(ui);
 
-      // mapping id→uuid (identitas) agar handleSaveAssignment tetap simpel
       const mapping: Record<string, string> = {};
       for (const t of rows) {
         const uuid = String(t.id ?? t.uuid);
-        mapping[uuid] = uuid; // identity
+        mapping[uuid] = uuid;
       }
       setTechCodeToUuid(mapping);
     } catch (e) {
@@ -226,7 +221,7 @@ export default function AssignScheduling() {
         );
         const status = p.status ?? p.progressStatus ?? "ongoing";
         const projectStatus =
-          p.project_status ?? p.projectStatus ?? "unassigned";
+            p.project_status ?? p.projectStatus ?? "unassigned";
         const mdCurrent = Number(
           p.actual_man_days ??
             p.actualManDays ??
@@ -358,6 +353,12 @@ export default function AssignScheduling() {
     return { status: "assigned", color: "bg-green-200 text-green-900" };
   };
 
+  // Tentukan inisial untuk technicianId (untuk human tech: pakai inisial mereka; untuk kendaraan: kosong agar fallback ke kolom kendaraan)
+  const getInitialForTechnicianId = (technicianId: string): string => {
+    const t = techs.find((x) => x.id === technicianId);
+    return t?.inisial ?? "";
+  };
+
   /* ---------- Interaksi Grid ---------- */
   const handleCellClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
@@ -365,8 +366,7 @@ export default function AssignScheduling() {
     if (project.projectStatus === "pending") return;
     if (project.status === "completed") return;
 
-    const technician = techs.find((t) => t.id === technicianId);
-    if (!technician) return;
+    const initial = getInitialForTechnicianId(technicianId);
 
     setAssignments((prev) => {
       const existingIndex = prev.findIndex(
@@ -394,7 +394,7 @@ export default function AssignScheduling() {
           updated[existingIndex] = {
             ...existing,
             isSelected: true,
-            inisial: technician.inisial,
+            inisial: initial, // kosong utk kendaraan → fallback ke t.inisial di table
             isProjectLeader: existing.isProjectLeader || false,
           };
           const projectAssignments = updated.filter(
@@ -432,7 +432,7 @@ export default function AssignScheduling() {
             projectId,
             technicianId,
             isSelected: true,
-            inisial: technician.inisial,
+            inisial: initial, // "" untuk kendaraan
             isProjectLeader: false,
           },
         ];
@@ -446,8 +446,7 @@ export default function AssignScheduling() {
     if (project.projectStatus === "pending") return;
     if (project.status === "completed") return;
 
-    const technician = techs.find((t) => t.id === technicianId);
-    if (!technician) return;
+    const initial = getInitialForTechnicianId(technicianId);
 
     setAssignments((prev) => {
       const existingIndex = prev.findIndex(
@@ -461,7 +460,7 @@ export default function AssignScheduling() {
           ...current,
           isSelected: newLeaderStatus ? true : current.isSelected,
           isProjectLeader: newLeaderStatus,
-          inisial: technician.inisial,
+          inisial: initial, // "" utk kendaraan → table fallback ke kolom inisial kendaraan
         };
         if (newLeaderStatus) {
           for (let i = 0; i < updated.length; i++) {
@@ -484,7 +483,7 @@ export default function AssignScheduling() {
             technicianId,
             isSelected: true,
             isProjectLeader: true,
-            inisial: technician.inisial,
+            inisial: initial, // "" utk kendaraan
           },
         ];
       }
@@ -568,9 +567,7 @@ export default function AssignScheduling() {
         } catch {
           downloadDataUrl(dataUrl, imgName);
         }
-        alert(
-          "Gambar sudah diunduh. Kirim manual lewat WhatsApp/WhatsApp Web ya."
-        );
+        alert("Gambar sudah diunduh. Kirim manual lewat WhatsApp/WhatsApp Web ya.");
       }
 
       const xlsxBlob = await buildStyledExcelBlob(
@@ -702,6 +699,10 @@ export default function AssignScheduling() {
     await loadAssignments(newIso);
   };
 
+  /* ---------- Navigasi halaman tabel ---------- */
+  const handleTablePrev = () => setTablePage((p) => Math.max(1, p - 1));
+  const handleTableNext = () => setTablePage((p) => Math.min(2, p + 1));
+
   return (
     <div className="min-h-screen bg-gray-50">
       <AdminHeader
@@ -737,34 +738,62 @@ export default function AssignScheduling() {
             onPrevDate={() => handleDateNavigation("prev")}
             onNextDate={() => handleDateNavigation("next")}
             totalAssignments={
-              assignments.filter((a) => a.isSelected || a.isProjectLeader)
-                .length
+              assignments.filter((a) => a.isSelected || a.isProjectLeader).length
             }
+            /* pager tampilan tabel */
+            tablePage={tablePage}
+            tablePageCount={2}
+            onPrevTablePage={handleTablePrev}
+            onNextTablePage={handleTableNext}
           />
 
-          <ProjectTable
-            tableRef={tableRef}
-            techs={techs}
-            projects={projectsData}
-            assignments={assignments}
-            onCellClick={handleCellClick}
-            onCellDoubleClick={handleCellDoubleClick}
-            onStatusDoubleClick={(project) => {
-              setEditProjectForm({
-                projectId: project.id,
-                status: project.projectStatus,
-                reason: project.pendingReason || "",
-                isReadOnlyProject: true,
-              });
-              setShowEditProject(true);
-            }}
-            onProjectNameRightClick={handleProjectNameRightClick}
-            getCellAssignment={getCellAssignment}
-            getTechnicianTrackNumber={getTechnicianTrackNumber}
-            getProjectAssignmentCount={getProjectAssignmentCount}
-            getIdleTechnicians={getIdleTechnicians}
-            getTechnicianStatus={getTechnicianStatus}
-          />
+          {/* Render tabel berdasar tablePage */}
+          {tablePage === 1 ? (
+            <ProjectTable
+              tableRef={tableRef}
+              techs={techs}
+              projects={projectsData}
+              assignments={assignments}
+              onCellClick={handleCellClick}
+              onCellDoubleClick={handleCellDoubleClick}
+              onStatusDoubleClick={(project) => {
+                setEditProjectForm({
+                  projectId: project.id,
+                  status: project.projectStatus,
+                  reason: project.pendingReason || "",
+                  isReadOnlyProject: true,
+                });
+                setShowEditProject(true);
+              }}
+              onProjectNameRightClick={handleProjectNameRightClick}
+              getCellAssignment={getCellAssignment}
+              getTechnicianTrackNumber={getTechnicianTrackNumber}
+              getProjectAssignmentCount={getProjectAssignmentCount}
+              getIdleTechnicians={getIdleTechnicians}
+              getTechnicianStatus={getTechnicianStatus}
+            />
+          ) : (
+            <ProjectTableCars
+              tableRef={tableRef}
+              projects={projectsData}
+              assignments={assignments}
+              onCellClick={handleCellClick}
+              onCellDoubleClick={handleCellDoubleClick}
+              onStatusDoubleClick={(project) => {
+                setEditProjectForm({
+                  projectId: project.id,
+                  status: project.projectStatus,
+                  reason: project.pendingReason || "",
+                  isReadOnlyProject: true,
+                });
+                setShowEditProject(true);
+              }}
+              onProjectNameRightClick={handleProjectNameRightClick}
+              getCellAssignment={getCellAssignment}
+              getTechnicianTrackNumber={getTechnicianTrackNumber}
+              getProjectAssignmentCount={getProjectAssignmentCount}
+            />
+          )}
 
           <AssignmentSummary count={getSelectedCount()} />
         </div>
