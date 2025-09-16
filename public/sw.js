@@ -1,160 +1,417 @@
-// sw.js
-const CACHE_NAME = "technician-report-v2";
-const STATIC_CACHE = "static-v2";
-const DYNAMIC_CACHE = "dynamic-v2";
+/* public/sw.js — fast offline upload with timeout & ACK */
+const VERSION = "magang-app-v1.0.35"; // ⬅️ bump versi agar SW baru aktif
+const STATIC_CACHE = VERSION + "-static";
+const DYNAMIC_CACHE = VERSION + "-dynamic";
 
-const urlsToCache = [
+const APP_SHELL = [
   "/",
-  "/auth/login",
   "/user/dashboard",
-  "/admin/dashboard",
+  "/user/upload_foto",
+  "/auth/login",
   "/offline",
   "/manifest.json",
   "/icon-192x192.png",
   "/icon-512x512.png",
 ];
 
-self.addEventListener("install", (event) => {
-  console.log("[SW] Installing service worker...");
-  event.waitUntil(
-    caches
-      .open(STATIC_CACHE)
-      .then((cache) => {
-        console.log("[SW] Caching static assets");
-        return cache.addAll(urlsToCache);
-      })
-      .then(() => self.skipWaiting())
-      .catch((error) => {
-        console.error("[SW] Failed to cache static assets:", error);
-      })
-  );
-});
+/* ===== Config upload/meta ===== */
+const QUEUE_DB = "photo-upload-queue-db";
+const QUEUE_STORE = "requests";
+const UPLOAD_PATH = "/api/job-photos/upload";
+const META_PATH = "/api/job-photos/meta";
+const UPLOAD_TIMEOUT_MS = 2500; // ⬅️ kalau fetch > 2.5s → antre, UI langsung dapat respons
 
-self.addEventListener("activate", (event) => {
-  console.log("[SW] Activating service worker...");
-  event.waitUntil(
-    caches
-      .keys()
-      .then((cacheNames) =>
-        Promise.all(
-          cacheNames.map((cacheName) => {
-            if (cacheName !== STATIC_CACHE && cacheName !== DYNAMIC_CACHE) {
-              console.log("[SW] Deleting old cache:", cacheName);
-              return caches.delete(cacheName);
-            }
-          })
-        )
-      )
-      .then(() => self.clients.claim())
-  );
-});
-
-/** Helper aman untuk cache.put() — hanya untuk GET & status 200 */
-async function safeCachePut(cacheName, request, response) {
-  try {
-    if (request.method !== "GET") return; // <- penting!
-    if (!response || response.status !== 200) return;
-    const cache = await caches.open(cacheName);
-    // pakai clone supaya response tetap bisa dikembalikan ke browser
-    await cache.put(request, response.clone());
-  } catch (err) {
-    // Jangan bikin app crash kalau ada yang tidak bisa dicache (opaque, dll)
-    console.warn("[SW] cache.put skipped:", err);
+/* ===== IndexedDB (queue) ===== */
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(QUEUE_DB, 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(QUEUE_STORE)) {
+        db.createObjectStore(QUEUE_STORE, { keyPath: "id" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function queueAdd(rec) {
+  const db = await idbOpen();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(QUEUE_STORE, "readwrite");
+    tx.objectStore(QUEUE_STORE).put(rec);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+async function queueAll() {
+  const db = await idbOpen();
+  const items = await new Promise((resolve, reject) => {
+    const tx = db.transaction(QUEUE_STORE, "readonly");
+    const req = tx.objectStore(QUEUE_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return items;
+}
+async function queueDel(id) {
+  const db = await idbOpen();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(QUEUE_STORE, "readwrite");
+    tx.objectStore(QUEUE_STORE).delete(id);
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+async function notifyClients(msg) {
+  const arr = await self.clients.matchAll({ includeUncontrolled: true });
+  for (const c of arr) {
+    try {
+      c.postMessage(msg);
+    } catch (_) {}
   }
 }
 
-self.addEventListener("fetch", (event) => {
-  const { request } = event;
-  const url = new URL(request.url);
+/* ===== Replay helpers ===== */
+function sanitizeHeaders(raw) {
+  const h = {};
+  if (!raw) return h;
+  for (const k in raw) {
+    const lk = k.toLowerCase();
+    if (
+      [
+        "content-length",
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "transfer-encoding",
+      ].includes(lk)
+    )
+      continue;
+    h[lk] = raw[k];
+  }
+  return h;
+}
 
-  // === PENTING: Jangan cache selain GET ===
-  if (request.method !== "GET") {
-    // Untuk POST/PUT/PATCH/DELETE, langsung network-only
-    event.respondWith(fetch(request));
-    return;
+async function processQueue() {
+  const items = await queueAll();
+  const okIds = [];
+
+  for (const item of items) {
+    try {
+      const headers = sanitizeHeaders(item.headers || {});
+      const res = await fetch(item.url, {
+        method: item.method || "POST",
+        headers,
+        body: item.body || null,
+      });
+
+      if (res && res.ok) {
+        await queueDel(item.id);
+        okIds.push(item.id);
+        await notifyClients({ type: "upload-synced", queueId: item.id });
+      } else {
+        const code = res ? res.status : 0;
+        await notifyClients({
+          type: "upload-error",
+          queueId: item.id,
+          status: code,
+          message: `Replay failed: ${code}`,
+        });
+      }
+    } catch (e) {
+      await notifyClients({
+        type: "upload-error",
+        queueId: item.id,
+        message: String(e),
+      });
+    }
   }
 
-  // === API GET: network-first (fallback ke cache) ===
-  if (url.pathname.startsWith("/api/")) {
-    event.respondWith(
-      (async () => {
-        try {
-          const networkResponse = await fetch(request);
-          await safeCachePut(DYNAMIC_CACHE, request, networkResponse);
-          return networkResponse.clone();
-        } catch (err) {
-          const cached = await caches.match(request);
-          if (cached) return cached;
-          // kalau tidak ada cache, propagasikan error agar terlihat di devtools
-          throw err;
-        }
-      })()
-    );
-    return;
-  }
+  if (okIds.length)
+    await notifyClients({ type: "sync-complete", queueIds: okIds });
+}
 
-  // === Navigations: network-first (fallback ke offline) ===
-  if (request.mode === "navigate") {
-    event.respondWith(
-      (async () => {
-        try {
-          const networkResponse = await fetch(request);
-          await safeCachePut(DYNAMIC_CACHE, request, networkResponse);
-          return networkResponse.clone();
-        } catch {
-          const cached = await caches.match(request);
-          if (cached) return cached;
-          return caches.match("/offline");
-        }
-      })()
-    );
-    return;
-  }
-
-  // === Asset lain (GET): cache-first (fallback ke network, lalu cache) ===
-  event.respondWith(
-    (async () => {
-      const cached = await caches.match(request);
-      if (cached) return cached;
-
+/* ===== Cache utils ===== */
+async function precache(cache, urls) {
+  await Promise.all(
+    urls.map(async (u) => {
       try {
-        const networkResponse = await fetch(request);
-        await safeCachePut(DYNAMIC_CACHE, request, networkResponse);
-        return networkResponse.clone();
-      } catch (err) {
-        // kalau asset dokumen gagal dan ada offline page
-        if (request.destination === "document") {
-          const offline = await caches.match("/offline");
-          if (offline) return offline;
+        await cache.add(new Request(u, { cache: "reload" }));
+      } catch (_) {}
+    })
+  );
+}
+async function putDual(cache, req, res) {
+  try {
+    await cache.put(req, res.clone());
+  } catch (_) {}
+  try {
+    const url = new URL(req.url);
+    const pathReq = new Request(url.pathname, {
+      headers: req.headers,
+      mode: "same-origin",
+    });
+    await cache.put(pathReq, res.clone());
+  } catch (_) {}
+}
+async function matchHtml(urlOrReq) {
+  let hit = await caches.match(urlOrReq, { ignoreSearch: true });
+  if (hit) return hit;
+  const url =
+    typeof urlOrReq === "string"
+      ? new URL(urlOrReq, self.location.origin)
+      : new URL(urlOrReq.url);
+  const candidates = [
+    url.href,
+    url.pathname + url.hash,
+    url.pathname,
+    url.pathname.replace(/\/$/, ""),
+    url.pathname.endsWith("/") ? url.pathname : url.pathname + "/",
+  ];
+  for (const c of candidates) {
+    hit = await caches.match(c, { ignoreSearch: true });
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/* ===== Install / Activate ===== */
+self.addEventListener("install", (e) => {
+  e.waitUntil(
+    (async () => {
+      const cache = await caches.open(STATIC_CACHE);
+      await precache(cache, APP_SHELL);
+    })()
+  );
+  self.skipWaiting();
+});
+self.addEventListener("activate", (e) => {
+  e.waitUntil(
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys.map((k) =>
+            k.startsWith("magang-app-") &&
+            k !== STATIC_CACHE &&
+            k !== DYNAMIC_CACHE
+              ? caches.delete(k)
+              : Promise.resolve()
+          )
+        )
+      )
+  );
+  self.clients.claim();
+});
+
+/* ===== Background Sync & Messages ===== */
+self.addEventListener("sync", (e) => {
+  if (e.tag === "photo-upload-sync" || e.tag === "meta-sync")
+    e.waitUntil(processQueue());
+});
+self.addEventListener("message", (e) => {
+  if (e.data?.type === "force-sync") {
+    e.waitUntil(processQueue());
+  }
+  if (e.data?.type === "heartbeat") {
+    e.waitUntil(
+      (async () => {
+        const items = await queueAll();
+        if (items.length) await processQueue();
+      })()
+    );
+  }
+  if (e.data?.type === "persist-now") {
+    notifyClients({ type: "persist-now" });
+  }
+});
+
+/* ===== Fetch ===== */
+self.addEventListener("fetch", (e) => {
+  const req = e.request;
+  const url = new URL(req.url);
+
+  if (
+    url.origin === self.location.origin &&
+    (url.pathname === "/auth/callback" ||
+      url.pathname.startsWith("/auth/callback") ||
+      url.pathname === "/auth/confirm" ||
+      url.pathname.startsWith("/auth/confirm"))
+  ) {
+    return; 
+  }
+
+  if (
+    req.method === "POST" &&
+    (url.pathname === UPLOAD_PATH || url.pathname === META_PATH)
+  ) {
+    e.respondWith(
+      (async () => {
+        try {
+          const onlineRes = await Promise.race([
+            fetch(req.clone()),
+            new Promise((_, rej) =>
+              setTimeout(() => rej(new Error("timeout")), UPLOAD_TIMEOUT_MS)
+            ),
+          ]);
+
+          // ACK cepat ke client jika upload sukses
+          if (url.pathname === UPLOAD_PATH) {
+            try {
+              const resClone = onlineRes.clone();
+              const data = await resClone.json().catch(() => null);
+              if (data && (data.ok || data.photoUrl || data.thumbUrl)) {
+                await notifyClients({
+                  type: "upload-online-ack",
+                  categoryId: data.categoryId || null,
+                  thumbUrl: data.thumbUrl || null,
+                  serialNumber: data.serialNumber || null,
+                  meter: typeof data.meter === "number" ? data.meter : null,
+                });
+                await notifyClients({ type: "persist-now" });
+              }
+            } catch (_) {}
+          }
+          return onlineRes;
+        } catch {
+          // timeout / error → antre
+          const body = await req.clone().arrayBuffer();
+          const headers = {};
+          req.headers.forEach((v, k) => (headers[k] = v));
+          const id = Date.now() + "-" + Math.random().toString(36).slice(2);
+          await queueAdd({
+            id,
+            url: req.url,
+            method: "POST",
+            headers,
+            body,
+            createdAt: Date.now(),
+            kind: url.pathname === META_PATH ? "meta" : "upload",
+          });
+          try {
+            await self.registration.sync.register(
+              url.pathname === META_PATH ? "meta-sync" : "photo-upload-sync"
+            );
+          } catch (_) {}
+          return new Response(
+            JSON.stringify({ status: "queued", queueId: id }),
+            {
+              headers: { "Content-Type": "application/json" },
+            }
+          );
         }
-        throw err;
+      })()
+    );
+    return;
+  }
+
+  if (req.method !== "GET") return;
+
+  const isSameOrigin = url.origin === self.location.origin;
+  const accept = req.headers.get("accept") || "";
+  const isHTML = req.mode === "navigate" || accept.includes("text/html");
+
+  // 🛡️ NEW: Bypass cache untuk Supabase & cross-origin JSON (hindari data basi)
+  const isSupabase = /\.supabase\.(co|net)$/.test(url.hostname);
+  const wantsJson = accept.includes("application/json");
+
+  if (!isSameOrigin && (isSupabase || wantsJson)) {
+    e.respondWith(fetch(req)); // network-only
+    return;
+  }
+
+  // 1) HTML → network-first; fallback cache/offline
+  if (isHTML) {
+    e.respondWith(
+      (async () => {
+        try {
+          const res = await fetch(req);
+          const resForCache = res.clone();
+          e.waitUntil(
+            caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache))
+          );
+          return res;
+        } catch {
+          return (
+            (await matchHtml(req)) ||
+            (await caches.match("/", { ignoreSearch: true })) ||
+            (await caches.match("/offline", { ignoreSearch: true })) ||
+            new Response("<h1>Offline</h1>", {
+              headers: { "Content-Type": "text/html" },
+            })
+          );
+        }
+      })()
+    );
+    return;
+  }
+
+  // 2) Static assets (same-origin) → stale-while-revalidate
+  const isStatic =
+    isSameOrigin &&
+    (url.pathname.startsWith("/_next/") ||
+      /\.(?:js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|webp|ico)$/i.test(
+        url.pathname
+      ));
+
+  if (isStatic) {
+    e.respondWith(
+      (async () => {
+        const cache = await caches.open(DYNAMIC_CACHE);
+        const cached = await cache.match(req, { ignoreSearch: true });
+        const network = fetch(req)
+          .then((res) => {
+            const copy = res.clone();
+            e.waitUntil(cache.put(req, copy));
+            return res;
+          })
+          .catch(() => null);
+        return cached || (await network) || (await matchHtml("/offline"));
+      })()
+    );
+    return;
+  }
+
+  // 3) API GET (same-origin) → network-first + fallback cache
+  if (url.pathname.startsWith("/api/")) {
+    e.respondWith(
+      (async () => {
+        try {
+          const res = await fetch(req);
+          const resForCache = res.clone();
+          e.waitUntil(
+            caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache))
+          );
+          return res;
+        } catch {
+          const hit = await caches.match(req, { ignoreSearch: true });
+          return (
+            hit ||
+            new Response(JSON.stringify({ error: "offline" }), {
+              headers: { "Content-Type": "application/json" },
+              status: 503,
+            })
+          );
+        }
+      })()
+    );
+    return;
+  }
+
+  // 4) Default → network-first; fallback cache
+  e.respondWith(
+    (async () => {
+      try {
+        return await fetch(req);
+      } catch {
+        return (
+          (await caches.match(req, { ignoreSearch: true })) || Response.error()
+        );
       }
     })()
   );
-});
-
-// (Opsional) Background Sync — proses antrean di sini bila kamu pakai indexedDB/queue sendiri.
-// Jangan register sync di dalam handler ini (anti-pattern).
-self.addEventListener("sync", (event) => {
-  if (event.tag === "background-sync") {
-    console.log("[SW] Background sync triggered");
-    // event.waitUntil(processQueuedRequests());
-  }
-});
-
-self.addEventListener("push", (event) => {
-  if (event.data) {
-    const data = event.data.json();
-    const options = {
-      body: data.body,
-      icon: "/icon-192x192.png",
-      badge: "/icon-192x192.png",
-      vibrate: [100, 50, 100],
-      data: {
-        dateOfArrival: Date.now(),
-        primaryKey: data.primaryKey,
-      },
-    };
-    event.waitUntil(self.registration.showNotification(data.title, options));
-  }
 });

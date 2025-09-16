@@ -115,6 +115,14 @@ export async function GET(req?: NextRequest) {
       pendingSince: p.pending_since ?? null,
     });
 
+    // Tentukan completed day (H) dalam WIB
+    const completedWIB = p.completed_at
+      ? new Date(new Date(p.completed_at).getTime() + 7 * 60 * 60 * 1000)
+          .toISOString()
+          .slice(0, 10)
+      : null;
+    const isCompletedDay = !!completedWIB && completedWIB === queryDate;
+
     let progressStatus: "ongoing" | "completed" | "overdue" = "ongoing";
     if (p.completed_at) {
       progressStatus = "completed";
@@ -134,7 +142,12 @@ export async function GET(req?: NextRequest) {
       presales_name: p.presales_name,
 
       status: progressStatus,
-      project_status: p.project_status as "unassigned" | "ongoing" | "pending",
+      // tampilkan kategori 'completed' hanya di hari H (UI)
+      project_status: (isCompletedDay ? "completed" : p.project_status) as
+        | "unassigned"
+        | "ongoing"
+        | "pending"
+        | "completed",
       pending_reason: p.pending_reason ?? null,
 
       sigma_hari: p.sigma_hari ?? 0,

@@ -6,7 +6,12 @@ export function genId() {
 
 /** Serialisasi FormData supaya bisa disimpan ke IndexedDB */
 export async function formDataToStorable(fd: FormData) {
-  const parts: { key: string; fileName: string; type: string; bytes: ArrayBuffer }[] = [];
+  const parts: {
+    key: string;
+    fileName: string;
+    type: string;
+    bytes: ArrayBuffer;
+  }[] = [];
   for (const [key, val] of fd.entries()) {
     if (val instanceof File) {
       const buf = await val.arrayBuffer();
@@ -85,12 +90,19 @@ async function defaultUploader(p: PendingUpload): Promise<Response> {
       });
       fd.append(part.key, file);
     }
-    return fetch(p.endpoint, { method: p.method, headers: p.headers, body: fd });
+    return fetch(p.endpoint, {
+      method: p.method,
+      headers: p.headers,
+      body: fd,
+    });
   }
 
   return fetch(p.endpoint, {
     method: p.method,
-    headers: { ...(p.headers || {}), "Content-Type": "application/octet-stream" },
+    headers: {
+      ...(p.headers || {}),
+      "Content-Type": "application/octet-stream",
+    },
     body: p.body as ArrayBuffer,
   });
 }

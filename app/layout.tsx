@@ -21,12 +21,12 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Sistem Laporan Teknisi",
-    title: "Sistem Laporan Otomatis Teknisi",
+    title: "Reaport",
     description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   },
   twitter: {
     card: "summary",
-    title: "Sistem Laporan Otomatis Teknisi",
+    title: "Reaport",
     description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   },
 }
