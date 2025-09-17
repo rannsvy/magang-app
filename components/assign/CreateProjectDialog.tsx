@@ -1216,24 +1216,7 @@ export default function CreateProjectDialog({
           </div>
         )}
 
-        <div className="flex justify-end gap-3">
-          <Button
-            variant="outline"
-            onClick={() => {
-              onOpenChange(false);
-              resetAll();
-            }}
-          >
-            Batal
-          </Button>
-          <Button
-            onClick={handleCreateClick}
-            disabled={isSaving || !canCreate}
-            className="bg-green-600 hover:bg-green-700"
-          >
-            {isSaving ? "Menyimpan..." : "Buat Project"}
-          </Button>
-        </div>
+        {/* FOOTER tombol dihapus untuk menghindari duplikasi */}
       </DialogContent>
     </Dialog>
   );
