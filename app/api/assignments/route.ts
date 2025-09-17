@@ -5,8 +5,8 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 type ShapedAssignment = {
   projectId: string;
-  technicianId: string; // UUID
-  technicianName: string;
+  technicianId: string; // UUID teknisi ATAU "car-01" untuk kendaraan
+  technicianName: string; // untuk kendaraan boleh isi model
   inisial: string;
   isProjectLeader: boolean;
   isSelected: boolean;
@@ -33,8 +33,19 @@ function toWIBDate(isoTs?: string | null) {
   const wibMs = t.getTime() + 7 * 60 * 60 * 1000;
   return new Date(wibMs).toISOString().slice(0, 10);
 }
+function initialFrom(text: string) {
+  const raw = String(text || "").trim();
+  if (!raw) return "?";
+  const tokens = raw.split(/\s+/);
+  let tok = tokens[tokens.length - 1] || tokens[0] || "";
+  if (!/[A-Za-z\u00C0-\u024F]/.test(tok)) tok = tokens[0] || "";
+  const ch = (tok.match(/[A-Za-z\u00C0-\u024F]/) || [tok[0] || "?"])[0];
+  return (ch || "?").toUpperCase();
+}
 
-/* ===================== GET ===================== */
+/* ====================================================================== */
+/* ===============================  GET  ================================ */
+/* ====================================================================== */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const date = searchParams.get("date");
@@ -45,6 +56,103 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  /* ------------------------------------------------------------------ */
+  /*  A) Coba ambil dari project_assignments (harian, gabungan)        */
+  /* ------------------------------------------------------------------ */
+  const { data: paDaily, error: paDailyErr } = await supabaseServer
+    .from("project_assignments")
+    .select("project_id, technician_id, vehicle_id, is_leader, removed_at")
+    .eq("work_date", date)
+    .is("removed_at", null);
+
+  if (paDailyErr) {
+    return NextResponse.json({ error: paDailyErr.message }, { status: 500 });
+  }
+
+  if ((paDaily?.length ?? 0) > 0) {
+    // Ambil metadata teknisi & kendaraan
+    const techIds = Array.from(
+      new Set(
+        paDaily
+          .filter((r) => r.technician_id)
+          .map((r) => r.technician_id as string)
+      )
+    );
+    const vehIds = Array.from(
+      new Set(
+        paDaily.filter((r) => r.vehicle_id).map((r) => r.vehicle_id as string)
+      )
+    );
+
+    // teknisi
+    let techMap = new Map<string, { inisial: string; name: string }>();
+    if (techIds.length) {
+      const { data: techs, error: tErr } = await supabaseServer
+        .from("technicians")
+        .select("id, inisial, nama_panggilan, nama_lengkap")
+        .in("id", techIds);
+      if (tErr)
+        return NextResponse.json({ error: tErr.message }, { status: 500 });
+      for (const t of techs ?? []) {
+        techMap.set(t.id, {
+          inisial: String(t.inisial ?? "?").toUpperCase(),
+          name:
+            (t.nama_panggilan as string | null) ??
+            (t.nama_lengkap as string | null) ??
+            String(t.id),
+        });
+      }
+    }
+
+    // kendaraan
+    let vehMap = new Map<string, { code: string; model: string }>();
+    if (vehIds.length) {
+      const { data: vehs, error: vErr } = await supabaseServer
+        .from("vehicles")
+        .select("id, vehicle_code, model, name")
+        .in("id", vehIds);
+      if (vErr)
+        return NextResponse.json({ error: vErr.message }, { status: 500 });
+      for (const v of vehs ?? []) {
+        vehMap.set(v.id, {
+          code: v.vehicle_code,
+          model: v.model ?? v.name ?? "",
+        });
+      }
+    }
+
+    const shaped: ShapedAssignment[] = [];
+    for (const r of paDaily ?? []) {
+      if (r.technician_id) {
+        const meta = techMap.get(r.technician_id);
+        shaped.push({
+          projectId: r.project_id,
+          technicianId: r.technician_id, // UUID teknisi
+          technicianName: meta?.name ?? r.technician_id,
+          inisial: meta?.inisial ?? "?",
+          isProjectLeader: !!r.is_leader,
+          isSelected: true,
+        });
+      } else if (r.vehicle_id) {
+        const meta = vehMap.get(r.vehicle_id);
+        const model = meta?.model ?? "";
+        shaped.push({
+          projectId: r.project_id,
+          technicianId: meta?.code || "car-??", // <- dipakai UI kendaraan
+          technicianName: model || (meta?.code ?? "Kendaraan"),
+          inisial: initialFrom(model || meta?.code || "C"),
+          isProjectLeader: !!r.is_leader,
+          isSelected: true,
+        });
+      }
+    }
+
+    return NextResponse.json({ data: shaped });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  B) Fallback: logika lama (attendance H & carry D-1) — teknisi     */
+  /* ------------------------------------------------------------------ */
   const dMinus1 = prevDate(date);
 
   // 0) Attendance H & D-1
@@ -115,6 +223,7 @@ export async function GET(req: NextRequest) {
   const activeMembershipSet = new Set<string>();
   const membershipLeaderKeys = new Set<string>();
   for (const row of pa ?? []) {
+    if (!row.technician_id) continue;
     const key = `${row.project_id}::${row.technician_id}`;
     activeMembershipSet.add(key);
     if (row.is_leader) membershipLeaderKeys.add(key);
@@ -122,7 +231,8 @@ export async function GET(req: NextRequest) {
 
   // 2) Filter proyek aktif di hari 'date'
   const candidateProjectIds = new Set<string>();
-  for (const r of pa ?? []) candidateProjectIds.add(r.project_id);
+  for (const r of pa ?? [])
+    if (r.technician_id) candidateProjectIds.add(r.project_id);
   for (const r of attToday ?? []) candidateProjectIds.add(r.project_id);
   for (const r of attPrev ?? []) candidateProjectIds.add(r.project_id);
 
@@ -173,7 +283,6 @@ export async function GET(req: NextRequest) {
         const key = `${r.project_id}::${r.technician_id}`;
         if (!activeMembershipSet.has(key)) continue;
         selectedSet.add(key);
-        // leader mengikuti kemarin/membership (tanpa memaksa lebih dari D-1)
         leaderMap.set(key, membershipLeaderKeys.has(key) || !!r.project_leader);
       }
     }
@@ -182,6 +291,7 @@ export async function GET(req: NextRequest) {
   // Jika proyek selesai tepat H, tampilkan semua membership (leader ikut)
   if (completedTodayProjects.size > 0) {
     for (const row of pa ?? []) {
+      if (!row.technician_id) continue;
       if (completedTodayProjects.has(row.project_id)) {
         const key = `${row.project_id}::${row.technician_id}`;
         selectedSet.add(key);
@@ -190,19 +300,16 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  /**
-   * PERUBAHAN UTAMA:
-   * Treat leaders the same as regular techs — tidak ada “pemaksaan tampil”
-   * khusus di luar H & carry D-1.
-   */
+  // displayKeys = selectedSet (tanpa “pemaksaan tampil” khusus)
   const displayKeys = selectedSet;
 
   if (displayKeys.size === 0) return NextResponse.json({ data: [] });
 
-  // 4) Info teknisi (tanpa code; gunakan id + inisial + nama)
+  // 4) Info teknisi
   type TechInfo = { id: string; inisial: string; name: string };
   const techInfoById = new Map<string, TechInfo>();
   for (const row of pa ?? []) {
+    if (!row.technician_id) continue;
     const tRaw: any = row.technicians;
     const t = Array.isArray(tRaw) ? tRaw[0] ?? null : tRaw;
     const id: string = String(t?.id ?? row.technician_id);
@@ -231,7 +338,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // 5) Payload ke UI (pakai technicianId)
+  // 5) Payload ke UI (teknisi saja pada fallback)
   const shaped: ShapedAssignment[] = [];
   for (const key of displayKeys) {
     const [pid, tid] = key.split("::");
@@ -246,22 +353,37 @@ export async function GET(req: NextRequest) {
       technicianId: info.id, // UUID
       technicianName: info.name,
       inisial: info.inisial,
-      isProjectLeader: leaderMap.get(key) ?? false,
+      isProjectLeader: !!(leaderMap.get(key) ?? false),
       isSelected: true,
     });
   }
 
-  const filtered = shaped.filter((x) => x.isSelected || x.isProjectLeader);
-  return NextResponse.json({ data: filtered });
+  return NextResponse.json({ data: shaped });
 }
 
-/* ===================== POST (HARIAN, NON-HISTORICAL) ===================== */
+/* ====================================================================== */
+/* ===============================  POST ================================ */
+/* ====================================================================== */
+/**
+ * POST harian (non-historical)
+ * Body:
+ * {
+ *   date: "YYYY-MM-DD",
+ *   projectIds: string[],    // opsional (kalau kosong diisi dari items)
+ *   assignments: [{
+ *      projectId: string,
+ *      technicianId: string,       // UUID teknisi ATAU "car-01" (kendaraan)
+ *      isSelected?: boolean,
+ *      isProjectLeader?: boolean
+ *   }]
+ * }
+ */
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const date: string | undefined = body?.date;
   const items: Array<{
     projectId: string;
-    technicianId: string; // UUID
+    technicianId: string; // UUID teknisi ATAU "car-01"
     isSelected?: boolean;
     isProjectLeader?: boolean;
   }> = Array.isArray(body?.assignments) ? body.assignments : [];
@@ -270,20 +392,40 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "date wajib diisi" }, { status: 400 });
   }
 
-  // Kelompokkan teknisi terpilih per project (attendance HARI INI)
+  // Kelompokkan pilihan per project (teknisi & kendaraan)
   const byProject = new Map<
     string,
-    { selected: Set<string>; leaders: Set<string> }
+    {
+      techSelected: Set<string>;
+      techLeaders: Set<string>;
+      vehSelected: Set<string>; // "car-01" dst
+      vehLeaders: Set<string>;
+    }
   >();
+
   for (const it of items) {
     const bucket = byProject.get(it.projectId) ?? {
-      selected: new Set<string>(),
-      leaders: new Set<string>(),
+      techSelected: new Set<string>(),
+      techLeaders: new Set<string>(),
+      vehSelected: new Set<string>(),
+      vehLeaders: new Set<string>(),
     };
-    if (it.isSelected !== false) bucket.selected.add(it.technicianId);
-    if (it.isProjectLeader) bucket.leaders.add(it.technicianId);
+
+    const isVehicle =
+      typeof it.technicianId === "string" && it.technicianId.startsWith("car-");
+
+    if (it.isSelected !== false) {
+      if (isVehicle) bucket.vehSelected.add(it.technicianId);
+      else bucket.techSelected.add(it.technicianId);
+    }
+    if (it.isProjectLeader) {
+      if (isVehicle) bucket.vehLeaders.add(it.technicianId);
+      else bucket.techLeaders.add(it.technicianId);
+    }
+
     byProject.set(it.projectId, bucket);
   }
+
   const projectsWithAssignments = Array.from(byProject.keys());
 
   // Scope proyek yang mau disentuh
@@ -324,7 +466,7 @@ export async function POST(req: NextRequest) {
     (id) => !pendingSet.has(id) && !completedSet.has(id) && !bastSet.has(id)
   );
 
-  /* ========= 1) Attendance HARI INI ========= */
+  /* ========= 1) Attendance HARI INI (untuk TEKNISI saja) ========= */
 
   // Hapus attendance hari ini untuk proyek aktif dalam scope
   if (activeScopeProjectIds.length) {
@@ -338,7 +480,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Tulis ulang attendance hari ini
+  // Tulis ulang attendance hari ini dari pilihan teknisi
   const attRows: Array<{
     project_id: string;
     technician_id: string;
@@ -346,8 +488,9 @@ export async function POST(req: NextRequest) {
     project_leader?: boolean;
   }> = [];
   for (const pid of activeScopeProjectIds) {
-    const selected = byProject.get(pid)?.selected ?? new Set<string>();
-    const leaders = byProject.get(pid)?.leaders ?? new Set<string>();
+    const bucket = byProject.get(pid);
+    const selected = bucket?.techSelected ?? new Set<string>();
+    const leaders = bucket?.techLeaders ?? new Set<string>();
     for (const tid of selected) {
       attRows.push({
         project_id: pid,
@@ -384,99 +527,90 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  /* ========= 2) SYNC project_assignments (membership) ========= */
-  // Atur apakah non-terpilih dihapus (soft-remove) dari membership aktif:
-  const REMOVE_NONSELECTED = true;
+  /* ========= 2) SYNC project_assignments (harian, TEKNISI & KENDARAAN) ========= */
+  // Hapus semua baris untuk tanggal & scope project (sinkronisasi penuh)
+  if (activeScopeProjectIds.length) {
+    const { error: delPADayErr } = await supabaseAdmin
+      .from("project_assignments")
+      .delete()
+      .eq("work_date", date)
+      .in("project_id", activeScopeProjectIds);
+    if (delPADayErr) {
+      return NextResponse.json({ error: delPADayErr.message }, { status: 500 });
+    }
+  }
+
+  // Mapping vehicle_code -> vehicles.id
+  const allVehicleCodes = Array.from(
+    new Set(
+      items
+        .filter(
+          (i) => i.isSelected !== false && i.technicianId?.startsWith?.("car-")
+        )
+        .map((i) => i.technicianId)
+    )
+  );
+
+  const codeToVehId = new Map<string, string>();
+  if (allVehicleCodes.length) {
+    const { data: vehs, error: vErr } = await supabaseServer
+      .from("vehicles")
+      .select("id, vehicle_code")
+      .in("vehicle_code", allVehicleCodes);
+    if (vErr)
+      return NextResponse.json({ error: vErr.message }, { status: 500 });
+    for (const v of vehs ?? []) codeToVehId.set(v.vehicle_code, v.id);
+  }
+
+  // Build rows baru (gabungan)
+  const paRows: Array<{
+    work_date: string;
+    project_id: string;
+    technician_id?: string | null;
+    vehicle_id?: string | null;
+    is_leader: boolean;
+    assigned_at: string;
+  }> = [];
 
   for (const pid of activeScopeProjectIds) {
-    const selected = byProject.get(pid)?.selected ?? new Set<string>();
-    const leaders = byProject.get(pid)?.leaders ?? new Set<string>();
-
-    // a) Ambil membership aktif saat ini
-    const { data: current, error: curErr } = await supabaseAdmin
-      .from("project_assignments")
-      .select("id, technician_id, is_leader")
-      .eq("project_id", pid)
-      .is("removed_at", null);
-
-    if (curErr) {
-      return NextResponse.json({ error: curErr.message }, { status: 500 });
-    }
-
-    const currentByTech = new Map<string, { id: string; is_leader: boolean }>();
-    for (const r of current ?? []) {
-      currentByTech.set(r.technician_id, {
-        id: r.id,
-        is_leader: !!r.is_leader,
+    const bucket = byProject.get(pid);
+    // teknisi
+    for (const tid of bucket?.techSelected ?? []) {
+      paRows.push({
+        work_date: date,
+        project_id: pid,
+        technician_id: tid,
+        vehicle_id: null,
+        is_leader: !!bucket?.techLeaders?.has(tid),
+        assigned_at: nowWIBIso(),
       });
     }
+    // kendaraan
+    for (const code of bucket?.vehSelected ?? []) {
+      const vid = codeToVehId.get(code);
+      if (!vid) continue; // jika kode tak ditemukan, skip
+      paRows.push({
+        work_date: date,
+        project_id: pid,
+        technician_id: null,
+        vehicle_id: vid,
+        is_leader: !!bucket?.vehLeaders?.has(code),
+        assigned_at: nowWIBIso(),
+      });
+    }
+  }
 
-    // b) Insert yang belum ada
-    const toInsert: Array<{
-      project_id: string;
-      technician_id: string;
-      is_leader: boolean;
-    }> = [];
-    for (const tid of selected) {
-      if (!currentByTech.has(tid)) {
-        toInsert.push({
-          project_id: pid,
-          technician_id: tid,
-          is_leader: leaders.has(tid),
-        });
-      }
-    }
-    if (toInsert.length) {
-      const { error: insErr } = await supabaseAdmin
-        .from("project_assignments")
-        .insert(toInsert);
-      if (insErr) {
-        return NextResponse.json({ error: insErr.message }, { status: 500 });
-      }
-    }
-
-    // c) Update flag leader pada yang sudah ada bila berubah
-    const toUpdate: Array<{ id: string; is_leader: boolean }> = [];
-    for (const [tid, cur] of currentByTech.entries()) {
-      const shouldBeLeader = leaders.has(tid);
-      if (cur.is_leader !== shouldBeLeader) {
-        toUpdate.push({ id: cur.id, is_leader: shouldBeLeader });
-      }
-    }
-    if (toUpdate.length) {
-      const { error: updErr } = await supabaseAdmin
-        .from("project_assignments")
-        .upsert(
-          toUpdate.map((x) => ({ id: x.id, is_leader: x.is_leader })),
-          { onConflict: "id" }
-        );
-      if (updErr) {
-        return NextResponse.json({ error: updErr.message }, { status: 500 });
-      }
-    }
-
-    // d) (Opsional) Soft-remove yang tidak dipilih hari ini
-    if (REMOVE_NONSELECTED) {
-      const toRemoveIds: string[] = [];
-      for (const [tid, cur] of currentByTech.entries()) {
-        if (!selected.has(tid)) {
-          toRemoveIds.push(cur.id);
-        }
-      }
-      if (toRemoveIds.length) {
-        const { error: remErr } = await supabaseAdmin
-          .from("project_assignments")
-          .update({ removed_at: new Date().toISOString() })
-          .in("id", toRemoveIds);
-        if (remErr) {
-          return NextResponse.json({ error: remErr.message }, { status: 500 });
-        }
-      }
+  if (paRows.length) {
+    const { error: insPaErr } = await supabaseAdmin
+      .from("project_assignments")
+      .insert(paRows);
+    if (insPaErr) {
+      return NextResponse.json({ error: insPaErr.message }, { status: 500 });
     }
   }
 
   return NextResponse.json(
-    { data: { count: attRows.length } },
+    { data: { count: paRows.length, attendance: attRows.length } },
     { status: 201 }
   );
 }

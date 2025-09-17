@@ -1,4 +1,4 @@
-// app/user/upload-foto/page.tsx
+// app/user/upload_foto/page.tsx
 "use client";
 
 import type React from "react";
@@ -40,7 +40,7 @@ interface PhotoCategory {
   id: string;
   name: string;
   requiresSerialNumber: boolean;
-  requiresCable?: boolean; // ← dari API (type: "photo+cable") atau fallback regex
+  requiresCable?: boolean; // dari API / type: "photo+cable" / fallback regex
   photo?: string;
   photoThumb?: string;
   offlineThumb?: string;
@@ -55,13 +55,6 @@ interface PhotoCategory {
   uploadError?: string;
 }
 
-/* ===== Helpers ===== */
-const toNum = (v: unknown): number | undefined => {
-  if (v === null || v === undefined) return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
-};
-
 type LooseCrop = {
   x: number;
   y: number;
@@ -69,6 +62,7 @@ type LooseCrop = {
   height: number;
   unit?: "px" | "%";
 };
+
 const cropsAlmostEqual = (
   a?: LooseCrop | null,
   b?: LooseCrop | null,
@@ -144,6 +138,7 @@ async function cropElToDataUrl(
   return c.toDataURL("image/png");
 }
 
+/* ===== Helpers ===== */
 const isCableCategoryByName = (name: string) =>
   /kabel\s*cam\s*\d/i.test(name) && /(before|after)/i.test(name);
 
@@ -166,7 +161,6 @@ async function fetchCategories(jobId: string): Promise<PhotoCategory[]> {
   if (!res.ok) throw new Error(json.error || "Gagal memuat kategori");
 
   return (json.items || []).map((it: any) => {
-    // Sumber flag cable: prefer field API `requiresCable` atau `type: "photo+cable"`, fallback regex nama
     const requiresCable =
       !!it.requiresCable ||
       String(it.type || "").toLowerCase() === "photo+cable" ||
@@ -287,8 +281,8 @@ export default function UploadFotoPage() {
   // indikator loading tombol "Simpan Crop"
   const [savingCrop, setSavingCrop] = useState(false);
 
-  // pagination
-  const perPage = 10;
+  // pagination — “seperti semula” (12 / halaman)
+  const perPage = 12;
   const totalPages = Math.max(1, Math.ceil(categories.length / perPage));
   const slice = categories.slice(
     (currentPage - 1) * perPage,
@@ -964,11 +958,11 @@ export default function UploadFotoPage() {
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-1 mb-4">
+              {/* === TAMPILAN SEPERTI SEMULA (grid 3/4/5) + preview FULL === */}
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1 mb-4">
                 {slice.map((category) => {
                   const status = getCategoryStatus(category);
                   const styles = getCategoryStyles(status);
-                  const oc = ocr[category.id];
                   const imgSrc =
                     category.offlineThumb ||
                     category.photoThumb ||
@@ -978,25 +972,26 @@ export default function UploadFotoPage() {
                   return (
                     <div key={category.id} className="space-y-1">
                       <Card
-                        className={`cursor-pointer transition-all hover:shadow-md ${styles} max-w-[110px] mx-auto`}
+                        className={`cursor-pointer transition-all hover:shadow-md ${styles} overflow-hidden w-full`}
                         onClick={() => handleCameraClick(category.id)}
                       >
-                        <CardContent className="p-1 flex items-center justify-center h-[50px] w-[110px] relative">
-                          {imgSrc ? (
-                            <img
-                              src={imgSrc}
-                              alt={category.name}
-                              className="max-w-full max-h-full object-contain rounded"
-                              loading="lazy"
-                              decoding="async"
-                              width={130}
-                              height={80}
-                            />
-                          ) : (
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <Camera className="h-5 w-5 text-gray-400" />
-                            </div>
-                          )}
+                        <CardContent className="">
+                          {/* Kotak rasio 1:1, gambar memenuhi penuh */}
+                          <div className="relative w-full aspect-square overflow-hidden rounded-md bg-gray-100">
+                            {imgSrc ? (
+                              <img
+                                src={imgSrc}
+                                alt={category.name}
+                                className="absolute inset-0 h-full w-full object-cover"
+                                loading="lazy"
+                                decoding="async"
+                              />
+                            ) : (
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <Camera className="h-6 w-6 text-gray-400" />
+                              </div>
+                            )}
+                          </div>
                         </CardContent>
                       </Card>
 
@@ -1098,26 +1093,32 @@ export default function UploadFotoPage() {
                                   </div>
                                 </div>
 
-                                {oc && oc.status !== "idle" && (
-                                  <p className="text-[10px] text-center">
-                                    {oc.status === "barcode" &&
-                                      "Mencoba baca barcode..."}
-                                    {oc.status === "ocr" &&
-                                      `Memproses OCR: ${oc.progress}%`}
-                                    {oc.status === "done" && "Selesai ✔"}
-                                    {oc.status === "error" && (
-                                      <span className="text-red-600">
-                                        Gagal:{" "}
-                                        {oc.error || "SN tidak terdeteksi."}
-                                      </span>
-                                    )}
-                                  </p>
-                                )}
+                                {ocr[category.id] &&
+                                  ocr[category.id].status !== "idle" && (
+                                    <p className="text-[10px] text-center">
+                                      {ocr[category.id].status === "barcode" &&
+                                        "Mencoba baca barcode..."}
+                                      {ocr[category.id].status === "ocr" &&
+                                        `Memproses OCR: ${
+                                          ocr[category.id].progress
+                                        }%`}
+                                      {ocr[category.id].status === "done" &&
+                                        "Selesai ✔"}
+                                      {ocr[category.id].status === "error" && (
+                                        <span className="text-red-600">
+                                          Gagal:{" "}
+                                          {ocr[category.id].error ||
+                                            "SN tidak terdeteksi."}
+                                        </span>
+                                      )}
+                                    </p>
+                                  )}
                               </>
                             )}
                           </div>
                         )}
 
+                      {/* Input file (hidden) */}
                       <input
                         ref={setFileInputRef(category.id)}
                         type="file"
@@ -1185,7 +1186,7 @@ export default function UploadFotoPage() {
                   src={srcToCrop}
                   alt="To crop"
                   onLoad={(e) => onImageLoaded(e.currentTarget)}
-                  className="max-h/[70vh] max-w/[92vw] w-auto h-auto object-contain"
+                  className="max-h-[70vh] max-w-[92vw] w-auto h-auto object-contain"
                 />
               </ReactCrop>
             </div>
