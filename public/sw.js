@@ -1,19 +1,23 @@
-/* public/sw.js — fast offline upload with timeout & ACK (Instalasi + Survey) */
-const VERSION = "magang-app-v1.0.42"; // ⬅️ bump versi agar SW baru aktif
+/* public/sw.js — fast offline upload with timeout & ACK (Instalasi + Survey, merged) */
+const VERSION = "magang-app-v1.0.45"; // ⬅️ bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
+/* ===== App Shell (gabungan) ===== */
 const APP_SHELL = [
   "/",
   "/user/dashboard",
   "/user/upload_foto",
   "/user/survey",
-  "/user/survey/room", // tampilan survey (room)
-  "/user/survey/floors", // kalau kamu pakai floors, aman ditinggal
-  "/user/survey/upload", // halaman upload survey
+  "/user/survey/room",
+  "/user/survey/floors",
+  "/user/survey/upload",
   "/auth/login",
   "/offline",
   "/manifest.json",
+  // ikon/logo yang ada di dua versi
+  "/icon-192x192.png",
+  "/icon-512x512.png",
   "/logo-reaport.png",
 ];
 
@@ -24,7 +28,7 @@ const UPLOAD_PATH = "/api/job-photos/upload";
 const META_PATH = "/api/job-photos/meta";
 // 🔥 Dukung Survey
 const SURVEY_UPLOAD_PATH = "/api/survey/uploads";
-// const SURVEY_META_PATH = "/api/survey/meta"; // siapkan kalau perlu
+// const SURVEY_META_PATH = "/api/survey/meta"; // siapkan jika perlu
 const UPLOAD_TIMEOUT_MS = 2500; // jika fetch > 2.5s → antre (UI cepat dapat respons)
 
 /* ===== IndexedDB (queue) ===== */
@@ -242,7 +246,18 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
-  // 0) Intercept upload/meta: network-first with TIMEOUT; if slow/fail → enqueue
+  // 🔐 Bypass untuk Supabase auth callback/confirm (dari code 1)
+  if (
+    url.origin === self.location.origin &&
+    (url.pathname === "/auth/callback" ||
+      url.pathname.startsWith("/auth/callback") ||
+      url.pathname === "/auth/confirm" ||
+      url.pathname.startsWith("/auth/confirm"))
+  ) {
+    return;
+  }
+
+  // 0) Intercept upload/meta: network-first dengan TIMEOUT; kalau lambat/gagal → antre
   if (
     req.method === "POST" &&
     (url.pathname === UPLOAD_PATH ||
@@ -274,10 +289,8 @@ self.addEventListener("fetch", (e) => {
               ) {
                 await notifyClients({
                   type: "upload-online-ack",
-                  // instalasi kadang kirim categoryId; survey mungkin tidak
-                  categoryId: data.categoryId || null,
-                  // beberapa API pakai snake_case
-                  thumbUrl: data.thumbUrl || data.thumb_url || null,
+                  categoryId: data.categoryId || null, // instalasi kadang kirim
+                  thumbUrl: data.thumbUrl || data.thumb_url || null, // camel/snake
                   serialNumber: data.serialNumber || null,
                   meter: typeof data.meter === "number" ? data.meter : null,
                 });
@@ -299,11 +312,17 @@ self.addEventListener("fetch", (e) => {
             headers,
             body,
             createdAt: Date.now(),
-            kind: url.pathname.includes("meta") ? "meta" : "upload",
+            // tandai meta via path:
+            kind:
+              url.pathname === META_PATH /* || url.pathname === SURVEY_META_PATH */
+                ? "meta"
+                : "upload",
           });
           try {
             await self.registration.sync.register(
-              url.pathname.includes("meta") ? "meta-sync" : "photo-upload-sync"
+              url.pathname === META_PATH /* || url.pathname === SURVEY_META_PATH */
+                ? "meta-sync"
+                : "photo-upload-sync"
             );
           } catch (_) {}
           return new Response(
@@ -391,17 +410,15 @@ self.addEventListener("fetch", (e) => {
           e.waitUntil(
             caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache))
           );
-          return res;
         } catch {
           const hit = await caches.match(req, { ignoreSearch: true });
-          return (
-            hit ||
-            new Response(JSON.stringify({ error: "offline" }), {
-              headers: { "Content-Type": "application/json" },
-              status: 503,
-            })
-          );
+          if (hit) return hit;
+          return new Response(JSON.stringify({ error: "offline" }), {
+            headers: { "Content-Type": "application/json" },
+            status: 503,
+          });
         }
+        return res;
       })()
     );
     return;

@@ -1,12 +1,21 @@
-// /app/lib/wib.ts
-export function effectiveWIBDate(d: Date = new Date()): string {
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Jakarta",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return fmt.format(d); 
+// @/lib/wib.ts
+
+/**
+ * Mengembalikan tanggal (WIB) dalam format "YYYY-MM-DD".
+ * Jika ref diberikan (Date|number|ISO string), gunakan itu sebagai acuan; else gunakan "now".
+ */
+export function effectiveWIBDate(ref?: Date | number | string): string {
+  const base =
+    ref instanceof Date
+      ? ref.getTime()
+      : typeof ref === "number"
+      ? ref
+      : typeof ref === "string"
+      ? Date.parse(ref)
+      : Date.now();
+
+  const wibMs = base + 7 * 60 * 60 * 1000; // UTC -> WIB
+  return new Date(wibMs).toISOString().slice(0, 10);
 }
 
 export function isoToWIBDate(iso: string): string {
@@ -19,17 +28,14 @@ export function nowWIBIso(): string {
 }
 
 export function visibleUntilCompletedAt(
-  completedAtIso: string | null | undefined,
-  queryDateWib: string,
-  todayWib: string = effectiveWIBDate(),
-  nowUtcMs: number = Date.now()
+  completedAt: string | null,
+  queryDate: string, // "YYYY-MM-DD" (WIB)
+  _todayWIB?: string, // tidak dipakai
+  _nowMs?: number // tidak dipakai
 ): boolean {
-  if (!completedAtIso) return true;
+  if (!completedAt) return true;
 
-  const completedDateWib = isoToWIBDate(completedAtIso);
-  if (queryDateWib < completedDateWib) return true;
-  if (queryDateWib > completedDateWib) return false;
-
-  if (queryDateWib !== todayWib) return true; 
-  return nowUtcMs < Date.parse(completedAtIso); 
+  const completedWIB = effectiveWIBDate(completedAt); // YYYY-MM-DD in WIB
+  // tampil hanya bila queryDate <= completedWIB (H tampil, H+1 hilang)
+  return queryDate <= completedWIB;
 }

@@ -6,7 +6,7 @@ import "./globals.css"
 import ServiceWorkerRegister from "./providers/ServiceWorkerRegister"
 
 export const metadata: Metadata = {
-  title: "Sistem Laporan Otomatis Teknisi",
+  title: "Reaport",
   description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   generator: "v0.dev",
   manifest: "/manifest.json",
@@ -21,12 +21,12 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "Sistem Laporan Teknisi",
-    title: "Sistem Laporan Otomatis Teknisi",
+    title: "Reaport",
     description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   },
   twitter: {
     card: "summary",
-    title: "Sistem Laporan Otomatis Teknisi",
+    title: "Reaport",
     description: "Aplikasi laporan otomatis untuk teknisi lapangan dan admin",
   },
 }

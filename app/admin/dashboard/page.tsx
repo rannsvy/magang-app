@@ -165,10 +165,10 @@ export default function AdminDashboard() {
                   </div>
                   <div>
                     <h3 className="text-3xl font-bold text-gray-900 mb-2">
-                      Kelola Teknisi
+                      Kelola Data
                     </h3>
                     <p className="text-[14px] text-gray-600">
-                      Lihat & kelola data teknisi
+                      Lihat & Kelola Data User dan Kendaraaan
                     </p>
                   </div>
                 </div>

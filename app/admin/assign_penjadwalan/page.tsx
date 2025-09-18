@@ -1,37 +1,44 @@
-// app/admin/assign_penjadwalan/page.tsx
 "use client";
 
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
+import { useEffect, useRef, useState } from "react";
 import { AdminHeader } from "@/components/admin-header";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  CheckCircle,
-  Calendar,
-  Plus,
-  Edit,
-  ChevronLeft,
-  ChevronRight,
-} from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import { apiFetch } from "@/lib/apiFetch";
+import Toolbar from "@/components/assign/Toolbar";
+import ProjectTable from "@/components/assign/ProjectTable";
+import ProjectTableCars from "@/components/assign/ProjectTableCars";
+import ProjectShortcutPopup from "@/components/assign/ProjectShortcutPopup";
+import EditProjectDialog from "@/components/assign/EditProjectDialog";
+import CreateProjectDialog from "@/components/assign/CreateProjectDialog";
+import AssignmentSummary from "@/components/assign/AssignmentSummary";
+
+import { Button } from "@/components/ui/button";
+import { CheckCircle } from "lucide-react";
+
 import { createClient } from "@supabase/supabase-js";
+import { apiFetch } from "@/lib/apiFetch";
+
+import {
+  CellAssignment,
+  EditProjectForm,
+  UITechnician,
+  UIProject,
+} from "@/components/assign/types";
+
+import {
+  addDaysToIso,
+  formatDateDDMMYYYY,
+  msToNextMidnight,
+  safeUUID,
+  time5,
+  unwrap,
+} from "@/components/assign/helpers";
+
+import {
+  buildStyledExcelBlob,
+  dataUrlToFile,
+  downloadBlob,
+  getTableDataUrl,
+} from "@/lib/assignExport";
 
 /* ================== Supabase client for realtime ================== */
 const sbAdmin = createClient(
@@ -39,216 +46,27 @@ const sbAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-/* ================== Types ================== */
-type ProjectStatus = "unassigned" | "ongoing" | "pending";
-type ProgressStatus = "ongoing" | "completed" | "overdue";
-type UITechnician = { id: string; name: string; initial: string };
+type VehicleUI = { id: string; model: string; plate: string; inisial: string };
 
-type DbProjectWithStats = {
-  id: string;
-  job_id: string;
-  name: string;
-  lokasi: string | null;
-  status: ProgressStatus;
-  project_status: ProjectStatus;
-  pending_reason: string | null;
-  sigma_hari: number | null;
-  sigma_teknisi: number | null;
-  sigma_man_days: number | null;
-  jam_datang: string | null;
-  jam_pulang: string | null;
-  days_elapsed: number | null;
-  created_at: string;
-  assignment_count: number;
-  leader_count: number;
-  actual_man_days: number | null;
-  sales?: string | null;
-  sales_name?: string | null;
-  nama_sales?: string | null;
-};
-
-type UIProject = {
-  id: string;
-  name: string;
-  manPower: number;
-  jamDatang: string;
-  jamPulang: string;
-  jobId: string;
-  duration: number;
-  daysElapsed: number;
-  status: ProgressStatus;
-  projectStatus: ProjectStatus;
-  pendingReason: string;
-  sigmaHari: number;
-  sigmaTeknisi: number;
-  sigmaManDays: string;
-  actualManDays: number;
-  sales?: string;
-};
-
-type ProjectCategory = "instalasi" | "survey" | null;
-
-interface CellAssignment {
-  projectId: string;
-  technicianId: string;
-  isSelected: boolean;
-  initial?: string;
-  isProjectLeader?: boolean;
-}
-
-interface NewProjectForm {
-  namaProject: string;
-  lokasi: string;
-  namaSales: string;
-  namaPresales: string;
-  tanggalSpkUser: string;
-  tanggalTerimaPo: string;
-  tanggalMulaiProject: string;
-  tanggalDeadlineProject: string;
-  sigmaManDays: string;
-  sigmaHari: string;
-  sigmaTeknisi: string;
-  tipeTemplate: string;
-  durasi?: string;
-  insentif?: string;
-  paketCount?: number;
-  paketDetails?: Array<{ rw: string; rt: string }>;
-}
-
-interface NewSurveyProjectForm {
-  namaProject: string;
-  namaGedung: string;
-  lokasi: string;
-  lantai: string;
-  ruanganPerLantai: string;
-  roomDetails: Array<{ floor: number; rooms: string[] }>;
-  tanggalMulaiProject: string;
-  tanggalDeadlineProject: string;
-  totalHari: string;
-  totalTeknisi: string;
-  totalManDays: string;
-  tipeTemplate: string;
-}
-
-interface EditProjectForm {
-  projectId: string;
-  status: ProjectStatus;
-  reason: string;
-  isReadOnlyProject?: boolean;
-}
-
-/* ================== Helpers ================== */
-const fmtID = (iso: string) => {
-  if (!iso) return "-";
-  const [y, m, d] = iso.split("-");
-  return `${d}-${m}-${y}`;
-};
-const formatDateDDMMYYYY = (iso: string) => fmtID(iso);
-
-const msToNextMidnight = () => {
-  const now = new Date();
-  const next = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate() + 1,
-    0,
-    0,
-    2
-  );
-  return next.getTime() - now.getTime();
-};
-
-function unwrap<T = any>(payload: any): T {
-  if (!payload) return [] as unknown as T;
-  if (Array.isArray(payload)) return payload as T;
-  if ("data" in payload) return payload.data as T;
-  if ("projects" in payload) return payload.projects as T;
-  if ("technicians" in payload) return payload.technicians as T;
-  if ("items" in payload) return payload.items as T;
-  return payload as T;
-}
-
-function time5(v: any, def = "08:00") {
-  if (!v) return def;
-  const s = String(v);
-  return s.length >= 5 ? s.slice(0, 5) : def;
-}
-
-const safeUUID = () =>
-  typeof crypto !== "undefined" && (crypto as any).randomUUID
-    ? (crypto as any).randomUUID()
-    : Math.random().toString(36).slice(2);
-
-const addDaysToIso = (iso: string, delta: number) => {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(y, (m || 1) - 1, d || 1);
-  dt.setDate(dt.getDate() + delta);
-  const y2 = dt.getFullYear();
-  const m2 = String(dt.getMonth() + 1).padStart(2, "0");
-  const d2 = String(dt.getDate()).padStart(2, "0");
-  return `${y2}-${m2}-${d2}`;
-};
-
-/* ================== Komponen ================== */
 export default function AssignScheduling() {
-  const router = useRouter();
+  const tableRef = useRef<HTMLTableElement>(null);
+
+  const [isExporting, setIsExporting] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const [currentDate, setCurrentDate] = useState<string>(() =>
     new Date().toISOString().slice(0, 10)
   );
 
-  const [isSavingProject, setIsSavingProject] = useState(false);
   const [techs, setTechs] = useState<UITechnician[]>([]);
   const [projectsData, setProjectsData] = useState<UIProject[]>([]);
   const [techCodeToUuid, setTechCodeToUuid] = useState<Record<string, string>>(
     {}
   );
 
-  const [projectCategory, setProjectCategory] = useState<ProjectCategory>(null);
-
-  const [newSurveyProjectForm, setNewSurveyProjectForm] =
-    useState<NewSurveyProjectForm>({
-      namaProject: "",
-      namaGedung: "",
-      lokasi: "",
-      lantai: "",
-      ruanganPerLantai: "",
-      roomDetails: [],
-      tanggalMulaiProject: "",
-      tanggalDeadlineProject: "",
-      totalHari: "",
-      totalTeknisi: "",
-      totalManDays: "",
-      tipeTemplate: "",
-    });
-
-  const [currentFloorPage, setCurrentFloorPage] = useState(1);
-
   const [assignments, setAssignments] = useState<CellAssignment[]>([]);
   const [selectAll, setSelectAll] = useState(false);
-  const [showConfirmation, setShowConfirmation] = useState(false);
-  const [showCreateProject, setShowCreateProject] = useState(false);
-  const [showProjectSuccess, setShowProjectSuccess] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [newProjectForm, setNewProjectForm] = useState<NewProjectForm>({
-    namaProject: "",
-    lokasi: "",
-    namaSales: "",
-    namaPresales: "",
-    tanggalSpkUser: "",
-    tanggalTerimaPo: "",
-    tanggalMulaiProject: "",
-    tanggalDeadlineProject: "",
-    sigmaManDays: "",
-    sigmaHari: "",
-    sigmaTeknisi: "",
-    tipeTemplate: "",
-    durasi: "120",
-    insentif: "2000",
-    paketCount: 0,
-    paketDetails: [],
-  });
-  const [showSubFields, setShowSubFields] = useState(false);
+
   const [showEditProject, setShowEditProject] = useState(false);
   const [editProjectForm, setEditProjectForm] = useState<EditProjectForm>({
     projectId: "",
@@ -257,8 +75,9 @@ export default function AssignScheduling() {
     isReadOnlyProject: false,
   });
 
-  const [dateValidationError, setDateValidationError] = useState<string>("");
-  const [tipeTemplateError, setTipeTemplateError] = useState<string>("");
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [showProjectSuccess, setShowProjectSuccess] = useState(false);
+  const [showConfirmation, setShowConfirmation] = useState(false);
 
   const [showProjectShortcut, setShowProjectShortcut] = useState(false);
   const [shortcutPosition, setShortcutPosition] = useState({ x: 0, y: 0 });
@@ -267,18 +86,25 @@ export default function AssignScheduling() {
   const shortcutRef = useRef<HTMLDivElement>(null);
   const lastClickTimeRef = useRef<number>(0);
 
+  /* ===== Pager tampilan tabel: 1 = ProjectTable (teknisi), 2 = ProjectTableCars (kendaraan) ===== */
+  const [tablePage, setTablePage] = useState<number>(1);
+  const tablePageCount = 2;
+  const onPrevTablePage = () => setTablePage((p) => Math.max(1, p - 1));
+  const onNextTablePage = () =>
+    setTablePage((p) => Math.min(tablePageCount, p + 1));
+
   /* ---------- Load awal ---------- */
   useEffect(() => {
     (async () => {
       await Promise.all([loadTechnicians(), loadProjects()]);
       await loadAssignments(currentDate);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDate]);
 
   /* ---------- Scheduler: auto advance di tengah malam ---------- */
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
-
     const schedule = () => {
       timer = setTimeout(async () => {
         const key = `advance-done-${currentDate}`;
@@ -299,9 +125,7 @@ export default function AssignScheduling() {
         schedule();
       }, msToNextMidnight());
     };
-
     schedule();
-
     const onFocus = async () => {
       const todayIso = new Date().toISOString().slice(0, 10);
       if (todayIso !== currentDate) {
@@ -311,7 +135,6 @@ export default function AssignScheduling() {
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
-
     return () => {
       if (timer) clearTimeout(timer);
       window.removeEventListener("focus", onFocus);
@@ -329,7 +152,6 @@ export default function AssignScheduling() {
         await loadAssignments(currentDate);
       }, 150);
     };
-
     const ch = sbAdmin
       .channel("assign-admin-projects")
       .on(
@@ -338,7 +160,6 @@ export default function AssignScheduling() {
         trigger
       )
       .subscribe();
-
     return () => {
       clearTimeout(t);
       sbAdmin.removeChannel(ch);
@@ -358,21 +179,17 @@ export default function AssignScheduling() {
           rows = unwrap<any[]>(res);
         } catch {}
       }
-
       const ui: UITechnician[] = rows.map((t: any) => ({
-        id: String(t.code ?? t.id),
-        name: t.name ?? t.nama ?? "Teknisi",
-        initial: String(
-          t.initials ?? t.initial ?? t.name?.[0] ?? "?"
-        ).toUpperCase(),
+        id: String(t.id),
+        name: String(t.nama_panggilan ?? "Teknisi"),
+        inisial: String(t.inisial ?? "?").toUpperCase(),
       }));
       setTechs(ui);
 
       const mapping: Record<string, string> = {};
       for (const t of rows) {
-        const code = String(t.code ?? t.id);
-        const uuid = String(t.id ?? t.uuid ?? code);
-        mapping[code] = uuid;
+        const uuid = String(t.id ?? t.uuid);
+        mapping[uuid] = uuid;
       }
       setTechCodeToUuid(mapping);
     } catch (e) {
@@ -388,17 +205,14 @@ export default function AssignScheduling() {
         cache: "no-store",
       });
       let rows = unwrap<any[]>(res);
-
       if (!rows?.length) {
         res = await apiFetch<any>(`/api/grid?date=${currentDate}`, {
           cache: "no-store",
         });
-        const grid = unwrap<{ date?: string; projects?: any[]; data?: any[] }>(
-          res
+        rows = unwrap<any[]>(
+          unwrap<{ date?: string; projects?: any[]; data?: any[] }>(res)
         );
-        rows = unwrap<any[]>(grid);
       }
-
       const ui: UIProject[] = rows.map((p: any) => {
         const id = String(p.id ?? p.projectId ?? safeUUID());
         const name = p.name ?? p.nama ?? "Project";
@@ -412,12 +226,9 @@ export default function AssignScheduling() {
               ? Number(p.progressHari.split("/")[0])
               : 0)
         );
-        const status = (p.status ??
-          p.progressStatus ??
-          "ongoing") as ProgressStatus;
-        const projectStatus = (p.project_status ??
-          p.projectStatus ??
-          "unassigned") as ProjectStatus;
+        const status = p.status ?? p.progressStatus ?? "ongoing";
+        const projectStatus =
+          p.project_status ?? p.projectStatus ?? "unassigned";
         const mdCurrent = Number(
           p.actual_man_days ??
             p.actualManDays ??
@@ -428,7 +239,6 @@ export default function AssignScheduling() {
         const jamDatang = time5(p.jam_datang ?? p.datangDefault, "08:00");
         const jamPulang = time5(p.jam_pulang ?? p.pulangDefault, "17:00");
         const sales: string = p.sales ?? p.sales_name ?? p.nama_sales ?? "";
-
         return {
           id,
           name,
@@ -441,14 +251,13 @@ export default function AssignScheduling() {
           status,
           projectStatus,
           pendingReason: p.pending_reason ?? p.pendingReason ?? "",
-          sigmaHari: sigmaHari,
+          sigmaHari,
           sigmaTeknisi: sigmaTek,
           sigmaManDays: String(sigmaMD),
           actualManDays: mdCurrent,
           sales,
         } as UIProject;
       });
-
       setProjectsData(ui);
     } catch (e) {
       console.error("loadProjects failed:", e);
@@ -457,68 +266,60 @@ export default function AssignScheduling() {
   }
 
   async function loadAssignments(isoDate: string) {
-    try {
-      let res = await apiFetch<any>(`/api/assignments?date=${isoDate}`, {
-        cache: "no-store",
-      });
-      let rows = unwrap<any[]>(res);
+  try {
+    const res = await apiFetch<any>(`/api/assignments?date=${isoDate}`, {
+      cache: "no-store",
+    });
+    const rows = unwrap<any[]>(res) ?? [];
+    const shaped: CellAssignment[] = rows.map((r: any) => ({
+      projectId: String(r.projectId ?? r.project_id),
+      technicianId: String(
+        r.technicianId ?? r.technician_id ?? r.vehicleCode ?? r.vehicle_code
+      ),
+      isSelected: true,
+      inisial: String(r.inisial ?? r.initial ?? "?").toUpperCase(),
+      isProjectLeader: Boolean(r.isProjectLeader ?? r.is_leader ?? false),
+    }));
 
-      if (!rows?.length) {
-        res = await apiFetch<any>(`/api/grid?date=${isoDate}`, {
-          cache: "no-store",
-        });
-        const grid = unwrap<{ date?: string; projects?: any[]; data?: any[] }>(
-          res
-        );
-        const projects = unwrap<any[]>(grid);
-
-        const derived: CellAssignment[] = [];
-        for (const p of projects ?? []) {
-          const pid = String(p.id ?? p.projectId ?? safeUUID());
-          const technicians = p.technicians ?? [];
-          for (const t of technicians) {
-            derived.push({
-              projectId: pid,
-              technicianId: String(t.code ?? t.id),
-              isSelected: true,
-              initial: String(
-                t.initials ?? t.initial ?? t.name?.[0] ?? ""
-              ).toUpperCase(),
-              isProjectLeader: Boolean(
-                t.isProjectLeader ?? t.project_leader ?? false
-              ),
-            });
-          }
-        }
-        setAssignments(derived);
-        return;
-      }
-
-      const filteredAssignments = rows.map((r: any) => ({
-        projectId: String(r.projectId ?? r.project_id),
-        technicianId: String(
-          r.technicianCode ??
-            r.technician_code ??
-            r.technicianId ??
-            r.technician_id
-        ),
-        isSelected: Boolean(r.isSelected ?? false),
-        initial: String(r.initial ?? r.initials ?? "").toUpperCase(),
-        isProjectLeader: Boolean(r.isProjectLeader ?? false),
-      }));
-
-      setAssignments(filteredAssignments);
-    } catch (e) {
-      console.error("loadAssignments failed:", e);
-      setAssignments([]);
-    }
+    setAssignments(shaped);
+  } catch (e) {
+    console.error("loadAssignments failed:", e);
+    setAssignments([]);
   }
+}
 
-  /* ---------- Helpers UI ---------- */
+  /* ---------- Helpers dari state ---------- */
   const getCellAssignment = (projectId: string, technicianId: string) =>
     assignments.find(
       (a) => a.projectId === projectId && a.technicianId === technicianId
     );
+
+  const isVehicleId = (id: string) => id.startsWith("car-");
+
+  // Σ per proyek mengikuti tampilan aktif
+  const getProjectAssignmentCount = (projectId: string) =>
+    assignments.filter((a) => {
+      const picked =
+        a.projectId === projectId && (a.isSelected || a.isProjectLeader);
+      if (!picked) return false;
+      return tablePage === 2
+        ? isVehicleId(a.technicianId)
+        : !isVehicleId(a.technicianId);
+    }).length;
+
+  // jumlah selected hanya untuk tampilan aktif (badge, tabel)
+  const getSelectedCount = () =>
+    assignments.filter(
+      (a) =>
+        (a.isSelected || a.isProjectLeader) &&
+        (tablePage === 2
+          ? isVehicleId(a.technicianId)
+          : !isVehicleId(a.technicianId))
+    ).length;
+
+  // jumlah selected keseluruhan (semua tabel) — dipakai enable tombol & label simpan
+  const getSelectedCountAll = () =>
+    assignments.filter((a) => a.isSelected || a.isProjectLeader).length;
 
   const getTechnicianTrackNumber = (technicianId: string) =>
     assignments.filter(
@@ -526,23 +327,39 @@ export default function AssignScheduling() {
         a.technicianId === technicianId && (a.isSelected || a.isProjectLeader)
     ).length;
 
-  const getProjectAssignmentCount = (projectId: string) =>
-    assignments.filter(
-      (a) => a.projectId === projectId && (a.isSelected || a.isProjectLeader)
-    ).length;
+  const getIdleTechnicians = () => {
+    const assigned = new Set(assignments.map((a) => a.technicianId));
+    return techs.filter((t) => !assigned.has(t.id));
+  };
+
+  const getTechnicianStatus = (technicianId: string) => {
+    const techAssignments = assignments.filter(
+      (a) => a.technicianId === technicianId
+    );
+    if (techAssignments.length === 0) {
+      return { status: "idle", color: "bg-gray-300 text-gray-700" };
+    }
+    const isWorkingToday = techAssignments.some(
+      (a) => a.isSelected || a.isProjectLeader
+    );
+    if (isWorkingToday)
+      return { status: "working", color: "bg-blue-200 text-blue-900" };
+    return { status: "assigned", color: "bg-green-200 text-green-900" };
+  };
 
   /* ---------- Interaksi Grid ---------- */
+  // Klik/Double klik juga bekerja untuk kolom kendaraan (car-xx)
   const handleCellClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
     if (!project) return;
     if (project.projectStatus === "pending") return;
     if (project.status === "completed") return;
 
-    const technician = techs.find((t) => t.id === technicianId);
-    if (!technician) return;
-
-    // ⬇️⬇️ PERUBAHAN: Tidak lagi membatasi teknisi agar hanya di 1 project.
-    // (blok pemeriksaan & alert diphapus agar multi-assign diperbolehkan)
+    const tech = techs.find((t) => t.id === technicianId);
+    const fallbackInitial =
+      typeof technicianId === "string" && technicianId.startsWith("car-")
+        ? technicianId.split("-")[1]?.[0]?.toUpperCase() || "C"
+        : "?";
 
     setAssignments((prev) => {
       const existingIndex = prev.findIndex(
@@ -551,13 +368,13 @@ export default function AssignScheduling() {
       if (existingIndex >= 0) {
         const existing = prev[existingIndex];
         if (existing.isSelected) {
-          if (existing.isProjectLeader) return prev; // leader tidak bisa dihapus single-click
+          if (existing.isProjectLeader) return prev;
           const updated = prev.filter((_, index) => index !== existingIndex);
-          const remainingProjectAssignments = updated.filter(
+          const remaining = updated.filter(
             (a) =>
               a.projectId === projectId && (a.isSelected || a.isProjectLeader)
           );
-          if (remainingProjectAssignments.length === 0) {
+          if (remaining.length === 0) {
             setProjectsData((prevProjects) =>
               prevProjects.map((p) =>
                 p.id === projectId ? { ...p, projectStatus: "unassigned" } : p
@@ -570,7 +387,7 @@ export default function AssignScheduling() {
           updated[existingIndex] = {
             ...existing,
             isSelected: true,
-            initial: technician.initial,
+            inisial: tech?.inisial || existing.inisial || fallbackInitial,
             isProjectLeader: existing.isProjectLeader || false,
           };
           const projectAssignments = updated.filter(
@@ -608,7 +425,7 @@ export default function AssignScheduling() {
             projectId,
             technicianId,
             isSelected: true,
-            initial: technician.initial,
+            inisial: tech?.inisial || fallbackInitial,
             isProjectLeader: false,
           },
         ];
@@ -622,8 +439,11 @@ export default function AssignScheduling() {
     if (project.projectStatus === "pending") return;
     if (project.status === "completed") return;
 
-    const technician = techs.find((t) => t.id === technicianId);
-    if (!technician) return;
+    const tech = techs.find((t) => t.id === technicianId);
+    const fallbackInitial =
+      typeof technicianId === "string" && technicianId.startsWith("car-")
+        ? technicianId.split("-")[1]?.[0]?.toUpperCase() || "C"
+        : "?";
 
     setAssignments((prev) => {
       const existingIndex = prev.findIndex(
@@ -633,14 +453,12 @@ export default function AssignScheduling() {
         const updated = [...prev];
         const current = updated[existingIndex];
         const newLeaderStatus = !current.isProjectLeader;
-
         updated[existingIndex] = {
           ...current,
           isSelected: newLeaderStatus ? true : current.isSelected,
           isProjectLeader: newLeaderStatus,
-          initial: technician.initial,
+          inisial: tech?.inisial || current.inisial || fallbackInitial,
         };
-
         if (newLeaderStatus) {
           for (let i = 0; i < updated.length; i++) {
             if (i !== existingIndex && updated[i].projectId === projectId) {
@@ -652,9 +470,8 @@ export default function AssignScheduling() {
       } else {
         const updated = [...prev];
         for (let i = 0; i < updated.length; i++) {
-          if (updated[i].projectId === projectId) {
+          if (updated[i].projectId === projectId)
             updated[i] = { ...updated[i], isProjectLeader: false };
-          }
         }
         return [
           ...updated,
@@ -663,295 +480,205 @@ export default function AssignScheduling() {
             technicianId,
             isSelected: true,
             isProjectLeader: true,
-            initial: technician.initial,
+            inisial: tech?.inisial || fallbackInitial,
           },
         ];
       }
     });
   };
 
-  const handleSelectAll = (checked: boolean) => {
+  // Ambil daftar kendaraan saat diperlukan (untuk Select All di halaman kendaraan)
+  async function fetchVehicles(): Promise<VehicleUI[]> {
+    try {
+      const res = await fetch("/api/vehicles", { cache: "no-store" });
+      if (!res.ok) throw new Error(await res.text());
+      const json = (await res.json()) as { vehicles: VehicleUI[] };
+      return json?.vehicles ?? [];
+    } catch (e) {
+      console.error("fetchVehicles failed:", e);
+      return [];
+    }
+  }
+
+  const handleSelectAll = async (checked: boolean) => {
     setSelectAll(checked);
-    if (checked) {
-      const allAssignments: CellAssignment[] = [];
+
+    if (!checked) {
+      // sisakan leaders (baik teknisi maupun kendaraan)
+      setAssignments((prev) => prev.filter((a) => a.isProjectLeader));
+      return;
+    }
+
+    // Build mass-assign sesuai halaman aktif
+    if (tablePage === 1) {
+      // Mode teknisi
+      const all: CellAssignment[] = [];
       projectsData.forEach((project) => {
         const locked =
           project.projectStatus === "pending" || project.status === "completed";
-        techs.forEach((technician) => {
-          const existingAssignment = assignments.find(
-            (a) =>
-              a.projectId === project.id && a.technicianId === technician.id
+        techs.forEach((t) => {
+          const exist = assignments.find(
+            (a) => a.projectId === project.id && a.technicianId === t.id
           );
-          allAssignments.push({
+          all.push({
             projectId: project.id,
-            technicianId: technician.id,
-            isSelected: locked ? Boolean(existingAssignment?.isSelected) : true,
-            initial: technician.initial,
-            isProjectLeader: existingAssignment?.isProjectLeader || false,
+            technicianId: t.id,
+            isSelected: locked ? Boolean(exist?.isSelected) : true,
+            inisial: t.inisial,
+            isProjectLeader: exist?.isProjectLeader || false,
           });
         });
       });
-      setAssignments(allAssignments);
+      setAssignments((prev) => {
+        // gabungkan dengan assignment kendaraan yang sudah ada
+        const vehOnly = prev.filter((a) => a.technicianId.startsWith("car-"));
+        return [...vehOnly, ...all];
+      });
     } else {
-      setAssignments((prev) => prev.filter((a) => a.isProjectLeader));
+      // Mode kendaraan: ambil daftar kendaraan dari API
+      const vehicles = await fetchVehicles();
+      const allVeh: CellAssignment[] = [];
+      projectsData.forEach((project) => {
+        const locked =
+          project.projectStatus === "pending" || project.status === "completed";
+        vehicles.forEach((v) => {
+          const vid = v.id; // "car-xx"
+          const exist = assignments.find(
+            (a) => a.projectId === project.id && a.technicianId === vid
+          );
+          allVeh.push({
+            projectId: project.id,
+            technicianId: vid,
+            isSelected: locked ? Boolean(exist?.isSelected) : true,
+            inisial:
+              exist?.inisial ||
+              (v.inisial
+                ? v.inisial.toUpperCase()
+                : vid.split("-")[1]?.[0]?.toUpperCase() || "C"),
+            isProjectLeader: exist?.isProjectLeader || false,
+          });
+        });
+      });
+      setAssignments((prev) => {
+        // gabungkan dengan assignment teknisi yang sudah ada
+        const techOnly = prev.filter((a) => !a.technicianId.startsWith("car-"));
+        return [...techOnly, ...allVeh];
+      });
     }
   };
 
-  /* ---------- Navigasi tanggal ---------- */
-  const handleDateNavigation = async (direction: "prev" | "next") => {
-    const newIso = addDaysToIso(currentDate, direction === "prev" ? -1 : 1);
-    setCurrentDate(newIso);
-    await loadAssignments(newIso);
-  };
+  /* ---------- Export / Share ---------- */
+  const handleExportTableImage = async (type: "png" | "jpeg" = "png") => {
+    if (!tableRef.current) return;
+    setIsExporting(true);
 
-  /* ---------- Pemanggilan API ---------- */
-  const handleSaveAssignment = async () => {
-    const projectIds = projectsData.map((p) => p.id);
-    const payload = {
-      date: currentDate,
-      projectIds,
-      assignments: assignments
-        .filter((a) => a.isSelected || a.isProjectLeader)
-        .map((a) => {
-          const techUuid = techCodeToUuid[a.technicianId] ?? a.technicianId;
-          const projectUuid = a.projectId;
-          if (!techUuid || !projectUuid) return null;
-          return {
-            projectId: projectUuid,
-            technicianId: techUuid,
-            isSelected: a.isSelected,
-            isProjectLeader: !!a.isProjectLeader,
-          };
-        })
-        .filter(Boolean),
+    const downloadDataUrl = (dataUrl: string, filename: string) => {
+      try {
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch {
+        window.open(dataUrl, "_blank");
+      }
     };
 
     try {
-      setLoading(true);
-      await apiFetch<{ data: any }>("/api/assignments", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      await Promise.all([loadProjects(), loadAssignments(currentDate)]);
-      setShowConfirmation(true);
-    } catch (e: any) {
-      alert(e?.message || "Gagal menyimpan assignment");
-    } finally {
-      setLoading(false);
-    }
-  };
+      const node = tableRef.current;
+      const dataUrl = await getTableDataUrl(node, type, 1920);
+      const ext = type === "png" ? "png" : "jpg";
+      const mime = type === "png" ? "image/png" : "image/jpeg";
+      const dateStr = formatDateDDMMYYYY(currentDate);
+      const imgName = `assign-penjadwalan_${currentDate}_1080p.${ext}`;
+      const imgFile = dataUrlToFile(dataUrl, imgName, mime);
 
-  const handleCreateProject = async () => {
-    if (
-      !newProjectForm.namaProject ||
-      !newProjectForm.tanggalMulaiProject ||
-      !newProjectForm.tanggalDeadlineProject ||
-      !newProjectForm.sigmaManDays ||
-      !newProjectForm.sigmaHari ||
-      !newProjectForm.sigmaTeknisi
-    ) {
-      return;
-    }
-    if (!newProjectForm.tipeTemplate) {
-      setTipeTemplateError("Harap pilih tipe template");
-      return;
-    }
-    if (
-      !validateDates(
-        newProjectForm.tanggalMulaiProject,
-        newProjectForm.tanggalDeadlineProject
-      )
-    ) {
-      return;
-    }
-    setTipeTemplateError("");
+      const canShareImage =
+        typeof navigator !== "undefined" &&
+        "canShare" in navigator &&
+        (navigator as any).canShare?.({ files: [imgFile] });
 
-    try {
-      setIsSavingProject(true);
-
-      const payload = {
-        namaProject: newProjectForm.namaProject || null,
-        lokasi: newProjectForm.lokasi || null,
-        namaSales: newProjectForm.namaSales || null,
-        namaPresales: newProjectForm.namaPresales || null,
-        tanggalSpkUser: newProjectForm.tanggalSpkUser || null,
-        tanggalTerimaPo: newProjectForm.tanggalTerimaPo || null,
-        tanggalMulaiProject: newProjectForm.tanggalMulaiProject,
-        tanggalDeadlineProject: newProjectForm.tanggalDeadlineProject,
-        sigmaManDays: Number(newProjectForm.sigmaManDays),
-        sigmaHari: Number(newProjectForm.sigmaHari),
-        sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
-        templateKey: newProjectForm.tipeTemplate,
-        durasiMinutes: newProjectForm.durasi
-          ? Number(newProjectForm.durasi)
-          : undefined,
-        insentif: newProjectForm.insentif
-          ? Number(newProjectForm.insentif)
-          : undefined,
-        paketDetails:
-          (newProjectForm.paketDetails ?? []).map((p, idx) => ({
-            seq: idx + 1,
-            rw: p.rw || null,
-            rt: p.rt || null,
-          })) ?? [],
-      };
-
-      const res = await apiFetch<{ data: DbProjectWithStats }>(
-        "/api/projects",
-        {
-          method: "POST",
-          body: JSON.stringify(payload),
+      if (canShareImage) {
+        await (navigator as any).share({
+          files: [imgFile],
+          title: "Penjadwalan Teknisi",
+          text: `Penjadwalan Teknisi ${dateStr}`,
+        });
+        try {
+          const blob = await (await fetch(dataUrl)).blob();
+          downloadBlob(blob, imgName);
+        } catch {
+          downloadDataUrl(dataUrl, imgName);
         }
-      );
-      const p = (res as any).data ?? res;
-      const uiProject: UIProject = {
-        id: p.id,
-        name: p.name,
-        manPower: p.sigma_teknisi ?? 0,
-        jamDatang: p.jam_datang ? String(p.jam_datang).slice(0, 5) : "08:00",
-        jamPulang: p.jam_pulang ? String(p.jam_pulang).slice(0, 5) : "17:00",
-        jobId: p.job_id,
-        duration: p.sigma_hari ?? 0,
-        daysElapsed: p.days_elapsed ?? 0,
-        status: p.status,
-        projectStatus: p.project_status,
-        pendingReason: p.pending_reason ?? "",
-        sigmaHari: p.sigma_hari ?? 0,
-        sigmaTeknisi: p.sigma_teknisi ?? 0,
-        sigmaManDays: String(p.sigma_man_days ?? 0),
-        actualManDays: p.actual_man_days ?? 0,
-        sales: p.sales ?? p.sales_name ?? p.nama_sales ?? "",
-      };
-
-      setProjectsData((prev) => [uiProject, ...prev]);
-      setShowCreateProject(false);
-      setShowProjectSuccess(true);
-      setNewProjectForm({
-        namaProject: "",
-        lokasi: "",
-        namaSales: "",
-        namaPresales: "",
-        tanggalSpkUser: "",
-        tanggalTerimaPo: "",
-        tanggalMulaiProject: "",
-        tanggalDeadlineProject: "",
-        sigmaManDays: "",
-        sigmaHari: "",
-        sigmaTeknisi: "",
-        tipeTemplate: "",
-        durasi: "120",
-        insentif: "2000",
-        paketCount: 0,
-        paketDetails: [],
-      });
-      setShowSubFields(false);
-      setDateValidationError("");
-      setTipeTemplateError("");
-    } catch (err: any) {
-      console.error(err);
-      alert(err?.message || "Gagal membuat project");
-    } finally {
-      setIsSavingProject(false);
-    }
-  };
-
-  // Survey
-  const handleCreateSurveyProject = async () => {
-    if (
-      !newSurveyProjectForm.namaProject ||
-      !newSurveyProjectForm.namaGedung ||
-      !newSurveyProjectForm.lokasi ||
-      !newSurveyProjectForm.tanggalMulaiProject ||
-      !newSurveyProjectForm.tanggalDeadlineProject ||
-      !newSurveyProjectForm.totalHari ||
-      !newSurveyProjectForm.totalTeknisi ||
-      !newSurveyProjectForm.totalManDays ||
-      !newSurveyProjectForm.tipeTemplate
-    ) {
-      return;
-    }
-    if (
-      !validateDates(
-        newSurveyProjectForm.tanggalMulaiProject,
-        newSurveyProjectForm.tanggalDeadlineProject
-      )
-    ) {
-      return;
-    }
-
-    try {
-      setIsSavingProject(true);
-
-      const payload = {
-        namaProject: newSurveyProjectForm.namaProject,
-        namaGedung: newSurveyProjectForm.namaGedung,
-        lokasi: newSurveyProjectForm.lokasi,
-        tanggalMulaiProject: newSurveyProjectForm.tanggalMulaiProject,
-        tanggalDeadlineProject: newSurveyProjectForm.tanggalDeadlineProject,
-        totalHari: Number(newSurveyProjectForm.totalHari),
-        totalTeknisi: Number(newSurveyProjectForm.totalTeknisi),
-        totalManDays: Number(newSurveyProjectForm.totalManDays),
-        tipeTemplate: newSurveyProjectForm.tipeTemplate,
-        roomDetails: newSurveyProjectForm.roomDetails ?? [],
-      };
-
-      const res = await apiFetch<{ data: DbProjectWithStats }>(
-        "/api/projects/survey",
-        {
-          method: "POST",
-          body: JSON.stringify(payload),
+      } else {
+        try {
+          const blob = await (await fetch(dataUrl)).blob();
+          downloadBlob(blob, imgName);
+        } catch {
+          downloadDataUrl(dataUrl, imgName);
         }
+        alert(
+          "Gambar sudah diunduh. Kirim manual lewat WhatsApp/WhatsApp Web ya."
+        );
+      }
+
+      const xlsxBlob = await buildStyledExcelBlob(
+        techs,
+        projectsData,
+        assignments,
+        currentDate
       );
-
-      const p = (res as any).data ?? res;
-
-      const uiProject: UIProject = {
-        id: p.id,
-        name: p.name,
-        manPower: p.sigma_teknisi ?? 0,
-        jamDatang: p.jam_datang ? String(p.jam_datang).slice(0, 5) : "08:00",
-        jamPulang: p.jam_pulang ? String(p.jam_pulang).slice(0, 5) : "17:00",
-        jobId: p.job_id,
-        duration: p.sigma_hari ?? 0,
-        daysElapsed: p.days_elapsed ?? 0,
-        status: p.status,
-        projectStatus: p.project_status,
-        pendingReason: p.pending_reason ?? "",
-        sigmaHari: p.sigma_hari ?? 0,
-        sigmaTeknisi: p.sigma_teknisi ?? 0,
-        sigmaManDays: String(p.sigma_man_days ?? 0),
-        actualManDays: p.actual_man_days ?? 0,
-        sales: p.sales ?? p.sales_name ?? p.nama_sales ?? "",
-      };
-
-      setProjectsData((prev) => [uiProject, ...prev]);
-      setShowCreateProject(false);
-      setShowProjectSuccess(true);
-
-      setNewSurveyProjectForm({
-        namaProject: "",
-        namaGedung: "",
-        lokasi: "",
-        lantai: "",
-        ruanganPerLantai: "",
-        roomDetails: [],
-        tanggalMulaiProject: "",
-        tanggalDeadlineProject: "",
-        totalHari: "",
-        totalTeknisi: "",
-        totalManDays: "",
-        tipeTemplate: "",
-      });
-      setDateValidationError("");
-      setTipeTemplateError("");
-    } catch (err: any) {
+      const xlsxName = `assign-penjadwalan_${currentDate}.xlsx`;
+      downloadBlob(xlsxBlob, xlsxName);
+    } catch (err) {
       console.error(err);
-      alert(err?.message || "Gagal membuat project survey");
+      alert("Gagal menyiapkan gambar/Excel. Coba lagi.");
     } finally {
-      setIsSavingProject(false);
+      setIsExporting(false);
     }
   };
 
+  /* ---------- Simpan ---------- */
+  const handleSaveAssignment = async () => {
+  const projectIds = projectsData.map((p) => p.id);
+  const payloadAssignments = assignments
+    .filter((a) => a.isSelected || a.isProjectLeader)
+    .map((a) => {
+      const isVehicle = a.technicianId.startsWith("car-");
+      const id = isVehicle
+        ? a.technicianId
+        : (techCodeToUuid[a.technicianId] ?? a.technicianId);
+      return {
+        projectId: a.projectId,
+        technicianId: id,               // UUID teknisi ATAU "car-xx"
+        isSelected: a.isSelected,
+        isProjectLeader: !!a.isProjectLeader,
+      };
+    });
+
+  try {
+    setLoading(true);
+    await apiFetch<{ data: any }>("/api/assignments", {
+      method: "POST",
+      body: JSON.stringify({
+        date: currentDate,
+        projectIds,
+        assignments: payloadAssignments,
+      }),
+    });
+
+    await Promise.all([loadProjects(), loadAssignments(currentDate)]);
+    setShowConfirmation(true);
+  } catch (e: any) {
+    alert(e?.message || "Gagal menyimpan assignment");
+  } finally {
+    setLoading(false);
+  }
+};
+
+
+  /* ---------- Edit Status Project ---------- */
   const handleEditProject = async () => {
     if (!editProjectForm.projectId || !editProjectForm.status) return;
     if (
@@ -988,340 +715,45 @@ export default function AssignScheduling() {
     }
   };
 
-  /* ---------- UI helper ---------- */
-  const getSelectedCount = () =>
-    assignments.filter((a) => a.isSelected || a.isProjectLeader).length;
-  const getTotalAssignments = () =>
-    assignments.filter((a) => a.isSelected || a.isProjectLeader).length;
-
-  const getIdleTechnicians = () => {
-    const assignedTechnicianIds = new Set(
-      assignments.map((a) => a.technicianId)
-    );
-    return techs.filter((tech) => !assignedTechnicianIds.has(tech.id));
-  };
-
-  const getTechnicianStatus = (technicianId: string) => {
-    const techAssignments = assignments.filter(
-      (a) => a.technicianId === technicianId
-    );
-
-    if (techAssignments.length === 0) {
-      return { status: "idle", color: "bg-gray-300 text-gray-700" };
-    }
-    const isWorkingToday = techAssignments.some(
-      (a) => a.isSelected || a.isProjectLeader
-    );
-    if (isWorkingToday) {
-      return { status: "working", color: "bg-blue-200 text-blue-900" };
-    }
-    return { status: "assigned", color: "bg-green-200 text-green-900" };
-  };
-
-  const getProgressStatus = (project: UIProject) => {
-    const sigmaHari = Number(project.sigmaHari || 0);
-    const currentDays = Number(project.daysElapsed || 0);
-    const isPending =
-      project.projectStatus === "pending" || !!project.pendingReason;
-
-    if (isPending) {
-      return {
-        bgColor: "bg-yellow-100",
-        textColor: "text-yellow-700",
-        display: `${currentDays}/${sigmaHari}`,
-      };
-    }
-
-    switch (project.status) {
-      case "completed":
-        return {
-          bgColor: "bg-green-100",
-          textColor: "text-green-700",
-          display: `${currentDays}/${sigmaHari}`,
-        };
-      case "overdue":
-        return {
-          bgColor: "bg-red-100",
-          textColor: "text-red-700",
-          display: `${currentDays}/${sigmaHari}`,
-        };
-      case "ongoing":
-      default:
-        return {
-          bgColor: "bg-gray-100",
-          textColor: "text-gray-700",
-          display: `${currentDays}/${sigmaHari}`,
-        };
-    }
-  };
-
-  const getManDaysDisplay = (project: UIProject) => {
-    const current = Number(project.actualManDays || 0);
-    const target = Number.parseInt(project.sigmaManDays) || 0;
-    return { current, target, display: `${current}/${target}` };
-  };
-
-  const getManDaysStatus = (project: UIProject) => {
-    const current = Number(project.actualManDays || 0);
-    const target = Number.parseInt(project.sigmaManDays) || 0;
-    let bgColor = "bg-gray-100";
-    let textColor = "text-gray-700";
-
-    if (target > 0 && current >= target && current <= target * 1.2) {
-      bgColor = "bg-green-100";
-      textColor = "text-green-700";
-    } else if (target > 0 && current > target * 1.2) {
-      bgColor = "bg-red-100";
-      textColor = "text-red-700";
-    }
-    return { bgColor, textColor };
-  };
-
-  const getSigmaDisplay = (project: UIProject) => {
-    const assignedTechnicians = getProjectAssignmentCount(project.id);
-    const sigmaTeknisi = project.sigmaTeknisi ?? 0;
-    const isOver = assignedTechnicians > sigmaTeknisi;
-    return {
-      current: assignedTechnicians,
-      target: sigmaTeknisi,
-      display: `${assignedTechnicians}/${sigmaTeknisi}`,
-      className: isOver ? "text-red-600 font-semibold" : "text-gray-900",
-    };
-  };
-
-  const getProjectStatusDisplay = (project: UIProject) => {
-    const { projectStatus, pendingReason } = project;
-    let bgColor = "bg-gray-100";
-    let textColor = "text-gray-700";
-    let label = "Belum Diassign";
-
-    switch (projectStatus) {
-      case "ongoing":
-        bgColor = "bg-green-100";
-        textColor = "text-green-700";
-        label = "Berlangsung";
-        break;
-      case "pending":
-        bgColor = "bg-yellow-100";
-        textColor = "text-yellow-700";
-        label = "Pending";
-        break;
-      case "unassigned":
-      default:
-        bgColor = "bg-gray-100";
-        textColor = "text-gray-700";
-        label = "Belum Diassign";
-    }
-    return { bgColor, textColor, label, reason: pendingReason };
-  };
-
-  const truncateText = (text: string, maxLength = 20) =>
-    text.length <= maxLength ? text : text.substring(0, maxLength) + "...";
-
-  const handleStatusDoubleClick = (project: UIProject) => {
-    setEditProjectForm({
-      projectId: project.id,
-      status: project.projectStatus,
-      reason: project.pendingReason || "",
-      isReadOnlyProject: true,
-    });
-    setShowEditProject(true);
-  };
-
   /* ---------- Shortcut “Generate Laporan” ---------- */
   const downloadDocx = (jobId: string) => {
     const url = `/api/laporan/docx?jobId=${encodeURIComponent(jobId)}`;
     window.open(url, "_blank");
   };
-
   const handleProjectNameRightClick = (
     event: React.MouseEvent,
     project: UIProject
   ) => {
     event.preventDefault();
     const now = Date.now();
-    if (now - lastClickTimeRef.current < 300) return;
+    if (now - (lastClickTimeRef.current || 0) < 300) return;
     lastClickTimeRef.current = now;
     if (!project?.id) return;
-
     const rect = (event.target as HTMLElement).getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-
     let x = rect.left + rect.width / 2;
     let y = rect.bottom + 8;
     if (x + 150 > viewportWidth) x = rect.left - 150;
     if (y + 60 > viewportHeight) y = rect.top - 60;
-
     setShortcutPosition({ x, y });
     setSelectedProjectForShortcut(project);
     setShowProjectShortcut(true);
   };
-
   const handleGenerateLaporan = () => {
-    if (selectedProjectForShortcut?.jobId) {
+    if (selectedProjectForShortcut?.jobId)
       downloadDocx(selectedProjectForShortcut.jobId);
-    } else {
-      alert("Job ID tidak ditemukan untuk project ini.");
-    }
+    else alert("Job ID tidak ditemukan untuk project ini.");
     setShowProjectShortcut(false);
   };
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        shortcutRef.current &&
-        !shortcutRef.current.contains(event.target as Node)
-      ) {
-        setShowProjectShortcut(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShowProjectShortcut(false);
-      else if (event.key === "Enter" && showProjectShortcut)
-        handleGenerateLaporan();
-    };
-    if (showProjectShortcut) {
-      document.addEventListener("mousedown", handleClickOutside);
-      document.addEventListener("keydown", handleKeyDown);
-      setTimeout(() => shortcutRef.current?.focus(), 0);
-    }
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [showProjectShortcut]);
-
-  /* ---------- Validasi tanggal ---------- */
-  const validateDates = (startDate: string, deadlineDate: string) => {
-    if (startDate && deadlineDate) {
-      const start = new Date(startDate);
-      const deadline = new Date(deadlineDate);
-      if (deadline < start) {
-        setDateValidationError(
-          "Tanggal deadline harus sama atau setelah tanggal mulai project"
-        );
-        return false;
-      }
-    }
-    setDateValidationError("");
-    return true;
+  /* ---------- Navigasi tanggal ---------- */
+  const handleDateNavigation = async (dir: "prev" | "next") => {
+    const newIso = addDaysToIso(currentDate, dir === "prev" ? -1 : 1);
+    setCurrentDate(newIso);
+    await loadAssignments(newIso);
   };
 
-  // Survey: generate rooms per floor
-  const generateRoomDetails = (floors: number, roomsPerFloor: number) => {
-    const details: Array<{ floor: number; rooms: string[] }> = [];
-    for (let floor = 1; floor <= floors; floor++) {
-      const rooms: string[] = [];
-      for (let room = 1; room <= roomsPerFloor; room++) {
-        rooms.push(`Ruangan #${room}`);
-      }
-      details.push({ floor, rooms });
-    }
-    setCurrentFloorPage(1);
-    return details;
-  };
-
-  useEffect(() => {
-    const f = parseInt(newSurveyProjectForm.lantai || "0", 10);
-    const r = parseInt(newSurveyProjectForm.ruanganPerLantai || "0", 10);
-    if (f > 0 && r > 0) {
-      const newDetails = generateRoomDetails(f, r);
-      setNewSurveyProjectForm((prev) => ({ ...prev, roomDetails: newDetails }));
-    } else if (newSurveyProjectForm.roomDetails.length) {
-      setNewSurveyProjectForm((prev) => ({ ...prev, roomDetails: [] }));
-    }
-  }, [newSurveyProjectForm.lantai, newSurveyProjectForm.ruanganPerLantai]);
-
-  const goToPreviousFloor = () =>
-    setCurrentFloorPage((p) => Math.max(1, p - 1));
-  const goToNextFloor = () =>
-    setCurrentFloorPage((p) =>
-      Math.min(newSurveyProjectForm.roomDetails.length || 1, p + 1)
-    );
-
-  const PER_COL = 5;
-  const details = newProjectForm.paketDetails ?? [];
-
-  const paketGroups = (() => {
-    const groups: {
-      start: number;
-      items: Array<{ rw: string; rt: string }>;
-    }[] = [];
-    for (let start = 0; start < details.length; start += PER_COL) {
-      groups.push({
-        start,
-        items: details.slice(start, start + PER_COL),
-      });
-    }
-    return groups;
-  })();
-
-  const setPaketCount = (count: number) => {
-    const n = Math.max(0, Math.min(30, Math.floor(count || 0)));
-    setNewProjectForm((prev) => {
-      const nextDetails = [...(prev.paketDetails ?? [])];
-      if (n > nextDetails.length) {
-        for (let i = nextDetails.length; i < n; i++)
-          nextDetails.push({ rw: "", rt: "" });
-      } else {
-        nextDetails.length = n;
-      }
-      return { ...prev, paketCount: n, paketDetails: nextDetails };
-    });
-  };
-
-  const updatePaketDetail = (
-    idx: number,
-    field: "rw" | "rt",
-    value: string
-  ) => {
-    setNewProjectForm((prev) => {
-      const next = [...(prev.paketDetails ?? [])];
-      if (!next[idx]) next[idx] = { rw: "", rt: "" };
-      next[idx] = { ...next[idx], [field]: value };
-      return { ...prev, paketDetails: next };
-    });
-  };
-
-  const [paketCountInput, setPaketCountInput] = useState<string>("0");
-  useEffect(() => {
-    setPaketCountInput(
-      (newProjectForm.paketCount ?? 0) > 0
-        ? String(newProjectForm.paketCount)
-        : "0"
-    );
-  }, [newProjectForm.paketCount]);
-
-  const handlePaketInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const raw = e.target.value;
-    if (raw === "") {
-      setPaketCountInput("");
-      setPaketCount(0);
-      return;
-    }
-    if (!/^\d+$/.test(raw)) return;
-    const normalized = String(parseInt(raw, 10));
-    const clamped = Math.min(30, Math.max(0, parseInt(normalized, 10)));
-    setPaketCountInput(normalized);
-    setPaketCount(clamped);
-  };
-
-  type TemplateOption = { value: string; label: string };
-  const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/report-templates", { cache: "no-store" });
-        const json = await res.json();
-        setTemplateOptions(json.items ?? []);
-      } catch {
-        setTemplateOptions([]);
-      }
-    })();
-  }, []);
-
-  /* ---------- Render ---------- */
   return (
     <div className="min-h-screen bg-gray-50">
       <AdminHeader
@@ -1332,1589 +764,116 @@ export default function AssignScheduling() {
           <Button
             onClick={handleSaveAssignment}
             className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2"
-            disabled={loading || getSelectedCount() === 0}
+            disabled={loading || getSelectedCountAll() === 0}
           >
             {loading
               ? "Menyimpan..."
-              : `Simpan Assignment (${getSelectedCount()})`}
+              : `Simpan Assignment (${getSelectedCountAll()})`}
           </Button>
         }
       />
 
       <main className="p-4">
         <div className="max-w-full mx-auto">
-          <div className="mb-4 flex items-center justify-between bg-white p-3 rounded-lg shadow-sm">
-            <div className="flex items-center gap-3">
-              <Checkbox
-                id="select-all"
-                checked={selectAll}
-                onCheckedChange={(v) => handleSelectAll(Boolean(v))}
-                className="h-4 w-4"
-              />
-              <label
-                htmlFor="select-all"
-                className="text-sm font-medium cursor-pointer"
-              >
-                Select All Projects & Technicians
-              </label>
-            </div>
-            <div className="flex items-center gap-3">
-              <Button
-                onClick={() => setShowEditProject(true)}
-                className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 text-sm"
-              >
-                <Edit className="h-4 w-4 mr-2" />
-                Edit Project
-              </Button>
-              <Button
-                onClick={() => setShowCreateProject(true)}
-                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 text-sm"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Buat Project
-              </Button>
+          <Toolbar
+            selectAll={selectAll}
+            onSelectAllChange={handleSelectAll}
+            onEditProjectOpen={() => setShowEditProject(true)}
+            onCreateProjectOpen={() => setShowCreateProject(true)}
+            onShare={() => handleExportTableImage("png")}
+            isExporting={isExporting}
+            onSaveAssignment={handleSaveAssignment}
+            selectedCount={getSelectedCountAll()}
+            loading={loading}
+            currentDateLabel={formatDateDDMMYYYY(currentDate)}
+            onPrevDate={() => handleDateNavigation("prev")}
+            onNextDate={() => handleDateNavigation("next")}
+            totalAssignments={getSelectedCountAll()}
+            /* pager tabel */
+            tablePage={tablePage}
+            tablePageCount={tablePageCount}
+            onPrevTablePage={onPrevTablePage}
+            onNextTablePage={onNextTablePage}
+          />
 
-              {/* Navigasi tanggal */}
-              <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDateNavigation("prev")}
-                  className="h-8 w-8 p-0 hover:bg-gray-200"
-                  aria-label="Sebelumnya"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <div className="flex items-center gap-2 px-2">
-                  <Calendar className="h-4 w-4 text-gray-600" />
-                  <span className="text-sm font-medium text-gray-700 min-w-[96px] text-center">
-                    {formatDateDDMMYYYY(currentDate)}
-                  </span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDateNavigation("next")}
-                  className="h-8 w-8 p-0 hover:bg-gray-200"
-                  aria-label="Berikutnya"
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
+          {tablePage === 1 ? (
+            <ProjectTable
+              tableRef={tableRef}
+              techs={techs}
+              projects={projectsData}
+              assignments={assignments}
+              onCellClick={handleCellClick}
+              onCellDoubleClick={handleCellDoubleClick}
+              onStatusDoubleClick={(project) => {
+                setEditProjectForm({
+                  projectId: project.id,
+                  status: project.projectStatus,
+                  reason: project.pendingReason || "",
+                  isReadOnlyProject: true,
+                });
+                setShowEditProject(true);
+              }}
+              onProjectNameRightClick={handleProjectNameRightClick}
+              getCellAssignment={getCellAssignment}
+              getTechnicianTrackNumber={getTechnicianTrackNumber}
+              getProjectAssignmentCount={getProjectAssignmentCount}
+              getIdleTechnicians={getIdleTechnicians}
+              getTechnicianStatus={getTechnicianStatus}
+            />
+          ) : (
+            <ProjectTableCars
+              tableRef={tableRef}
+              projects={projectsData}
+              assignments={assignments}
+              onCellClick={handleCellClick}
+              onCellDoubleClick={handleCellDoubleClick}
+              onStatusDoubleClick={(project) => {
+                setEditProjectForm({
+                  projectId: project.id,
+                  status: project.projectStatus,
+                  reason: project.pendingReason || "",
+                  isReadOnlyProject: true,
+                });
+                setShowEditProject(true);
+              }}
+              onProjectNameRightClick={handleProjectNameRightClick}
+              getCellAssignment={getCellAssignment}
+              getTechnicianTrackNumber={getTechnicianTrackNumber}
+              getProjectAssignmentCount={getProjectAssignmentCount}
+            />
+          )}
 
-          <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead className="bg-gray-100 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-2 py-2 text-left font-semibold text-gray-900 border-r border-gray-300 w-28">
-                      Nama Proyek
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-10">
-                      <div className="flex flex-col items-center justify-end h-full">
-                        <div className="text-lg font-bold mb-2">Σ</div>
-                        <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">
-                          {getTotalAssignments()}
-                        </div>
-                      </div>
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-16">
-                      Man Days
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-16">
-                      Progress (Hari)
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">
-                      Datang
-                    </th>
-                    <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">
-                      Pulang
-                    </th>
-                    {techs.map((technician) => (
-                      <th
-                        key={technician.id}
-                        className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-6 sticky top-0 bg-gray-100 h-32"
-                        title={technician.name}
-                      >
-                        <div className="flex flex-col items-center justify-end h-full">
-                          <div
-                            className="text-xs font-bold whitespace-nowrap mb-2"
-                            style={{
-                              writingMode: "vertical-lr",
-                              textOrientation: "mixed",
-                              transform: "rotate(180deg)",
-                              height: "70px",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
-                          >
-                            {technician.name}
-                          </div>
-                          <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">
-                            {getTechnicianTrackNumber(technician.id)}
-                          </div>
-                        </div>
-                      </th>
-                    ))}
-                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
-                      Status
-                    </th>
-                    <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
-                      Sales
-                    </th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {projectsData.map((project, projectIndex) => {
-                    const rowBgColor =
-                      projectIndex % 2 === 0 ? "bg-white" : "bg-gray-50";
-                    const progressStatus = getProgressStatus(project);
-                    const sigmaDisplay = getSigmaDisplay(project);
-                    const manDaysDisplay = getManDaysDisplay(project);
-                    const manDaysStatus = getManDaysStatus(project);
-                    const projectStatusDisplay =
-                      getProjectStatusDisplay(project);
-                    const isLockedRow =
-                      project.projectStatus === "pending" ||
-                      project.status === "completed";
-
-                    // ⬇️⬇️ KEY KOMPOSIT – mencegah duplikasi key
-                    const rowKey = `${project.id ?? "noid"}-${
-                      project.jobId ?? "nojob"
-                    }-${projectIndex}`;
-
-                    return (
-                      <tr key={rowKey} className={rowBgColor}>
-                        <td
-                          className={`px-1 py-1 border-r border-gray-200 font-medium ${rowBgColor}`}
-                        >
-                          <div
-                          
-                            className="text-xs font-semibold cursor-pointer hover:bg-blue-50 px-1 py-1 rounded transition-colors"
-                            onContextMenu={(e) =>
-                              handleProjectNameRightClick(e, project)
-                            }
-                            title={
-                              project.jobId
-                                ? "Klik kanan untuk shortcut Generate Laporan (DOCX)"
-                                : "Job ID belum tersedia"
-                            }
-                          >
-                            {project.name}
-                          </div>
-                          <div className="text-[9px] text-gray-500 leading-tight">
-                            {project.jobId}
-                          </div>
-                        </td>
-
-                        <td
-                          className={`px-2 py-1 text-center border-r border-gray-200 font-semibold ${rowBgColor}`}
-                        >
-                          <div
-                            className={`text-xs font-bold ${sigmaDisplay.className}`}
-                          >
-                            {sigmaDisplay.display}
-                          </div>
-                        </td>
-
-                        <td
-                          className={`px-2 py-1 text-center border-r border-gray-200 ${rowBgColor}`}
-                        >
-                          <div
-                            className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${manDaysStatus.bgColor} ${manDaysStatus.textColor}`}
-                          >
-                            <span>{manDaysDisplay.display}</span>
-                          </div>
-                        </td>
-
-                        <td
-                          className={`px-2 py-1 text-center border-r border-gray-200 ${rowBgColor}`}
-                        >
-                          <div
-                            className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${progressStatus.bgColor} ${progressStatus.textColor}`}
-                          >
-                            <span>{progressStatus.display}</span>
-                          </div>
-                        </td>
-
-                        <td
-                          className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBgColor}`}
-                        >
-                          {project.jamDatang}
-                        </td>
-                        <td
-                          className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBgColor}`}
-                        >
-                          {project.jamPulang}
-                        </td>
-
-                        {techs.map((technician) => {
-                          const assignment = getCellAssignment(
-                            project.id,
-                            technician.id
-                          );
-                          const isSelected = assignment?.isSelected === true;
-                          const isProjectLeader =
-                            assignment?.isProjectLeader === true;
-
-                          let cellBgColor = rowBgColor;
-                          let textColor = "text-gray-900";
-                          let displayInitial = "";
-
-                          if (isProjectLeader) {
-                            cellBgColor = "bg-red-500";
-                            textColor = "text-white";
-                            displayInitial =
-                              assignment?.initial || technician.initial;
-                          } else if (isSelected) {
-                            cellBgColor = "bg-blue-200";
-                            textColor = "text-blue-900";
-                            displayInitial =
-                              assignment?.initial || technician.initial;
-                          }
-
-                          const disabledCell = isLockedRow;
-
-                          return (
-                            <td
-                              key={`${project.id}-${technician.id}`}
-                              className={`px-1 py-1 text-center border-r border-gray-200 ${
-                                disabledCell
-                                  ? "cursor-not-allowed opacity-60"
-                                  : "cursor-pointer hover:bg-blue-100"
-                              } transition-colors ${cellBgColor}`}
-                              onClick={() =>
-                                !disabledCell &&
-                                handleCellClick(project.id, technician.id)
-                              }
-                              onDoubleClick={() =>
-                                !disabledCell &&
-                                handleCellDoubleClick(project.id, technician.id)
-                              }
-                              title={
-                                disabledCell
-                                  ? project.projectStatus === "pending"
-                                    ? "Proyek sedang pending"
-                                    : "Proyek telah selesai"
-                                  : isProjectLeader
-                                  ? `${technician.name} (Project Leader) - Double click to remove leader status`
-                                  : isSelected
-                                  ? `${technician.name} (Assigned) - Single click: toggle attendance | Double click: set as leader`
-                                  : `Single click: assign ${technician.name} | Double click: set as project leader`
-                              }
-                            >
-                              <div
-                                className={`h-4 w-4 mx-auto flex items-center justify-center rounded font-bold text-xs ${textColor}`}
-                              >
-                                {displayInitial}
-                              </div>
-                            </td>
-                          );
-                        })}
-
-                        <td
-                          className={`px-1 py-1 text-center border-r border-gray-200 ${rowBgColor}`}
-                        >
-                          <div
-                            className={`px-2 py-1 rounded text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${projectStatusDisplay.bgColor} ${projectStatusDisplay.textColor}`}
-                            title={
-                              project.projectStatus === "pending" &&
-                              project.pendingReason
-                                ? project.pendingReason
-                                : projectStatusDisplay.label
-                            }
-                            onDoubleClick={() =>
-                              handleStatusDoubleClick(project)
-                            }
-                          >
-                            {project.projectStatus === "pending" &&
-                            project.pendingReason
-                              ? truncateText(project.pendingReason)
-                              : projectStatusDisplay.label}
-                          </div>
-                        </td>
-                        <td
-                          className={`px-1 py-1 text-center border-r border-gray-200 ${rowBgColor}`}
-                        >
-                          <div className="px-2 py-1 text-xs font-medium text-gray-700">
-                            {project.sales
-                              ? truncateText(project.sales, 25)
-                              : "-"}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-
-                  {getIdleTechnicians().length > 0 && (
-                    <tr className="bg-blue-50 border-t-2 border-blue-200">
-                      <td className="px-1 py-1 border-r border-gray-200 font-medium bg-blue-50">
-                        <div className="text-xs font-semibold">Di Kantor</div>
-                        <div className="text-[9px] text-gray-500 leading-tight">
-                          Teknisi Idle
-                        </div>
-                      </td>
-
-                      <td className="px-2 py-1 text-center border-r border-gray-200 font-semibold bg-blue-50">
-                        <div className="text-xs font-bold">
-                          {getIdleTechnicians().length}
-                        </div>
-                      </td>
-
-                      <td className="px-2 py-1 text-center border-r border-gray-200 bg-blue-50">
-                        <div className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                          <span>-</span>
-                        </div>
-                      </td>
-
-                      <td className="px-2 py-1 text-center border-r border-gray-200 bg-blue-50">
-                        <div className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                          <span>-</span>
-                        </div>
-                      </td>
-
-                      <td className="px-2 py-1 text-center border-r border-gray-200 text-xs bg-blue-50">
-                        -
-                      </td>
-                      <td className="px-2 py-1 text-center border-r border-gray-200 text-xs bg-blue-50">
-                        -
-                      </td>
-
-                      {techs.map((technician) => {
-                        const techStatus = getTechnicianStatus(technician.id);
-                        const isIdle = techStatus.status === "idle";
-
-                        return (
-                          <td
-                            key={`idle-${technician.id}`}
-                            className="px-1 py-1 text-center border-r border-gray-200 bg-blue-50"
-                          >
-                            <div
-                              className={`h-4 w-4 mx-auto flex items-center justify-center rounded font-bold text-xs ${
-                                isIdle ? "text-gray-700" : ""
-                              }`}
-                            >
-                              {isIdle ? technician.initial : ""}
-                            </div>
-                          </td>
-                        );
-                      })}
-
-                      <td className="px-1 py-1 text-center border-r border-gray-200 bg-blue-50"></td>
-                      <td className="px-1 py-1 text-center border-r border-gray-200 bg-blue-50"></td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="mt-4 bg-white p-3 rounded-lg shadow-sm">
-            <h3 className="text-sm font-semibold mb-2">Assignment Summary</h3>
-            <p className="text-xs text-gray-600">
-              Total assignments selected:{" "}
-              <span className="font-bold text-blue-600">
-                {getSelectedCount()}
-              </span>
-            </p>
-          </div>
+          <AssignmentSummary count={getSelectedCountAll()} />
         </div>
       </main>
 
-      {/* Project Shortcut Popup */}
-      {showProjectShortcut && (
-        <div
-          ref={shortcutRef}
-          className="fixed z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-2 focus:outline-none"
-          style={{
-            left: `${shortcutPosition.x}px`,
-            top: `${shortcutPosition.y}px`,
-            minWidth: "150px",
-          }}
-          tabIndex={-1}
-        >
-          <Button
-            onClick={handleGenerateLaporan}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 px-3"
-            autoFocus
-            disabled={!selectedProjectForShortcut?.jobId}
-            title={
-              selectedProjectForShortcut?.jobId
-                ? `Generate Laporan DOCX untuk Job ${selectedProjectForShortcut.jobId}`
-                : "Job ID tidak tersedia"
-            }
-          >
-            Generate Laporan
-          </Button>
-        </div>
-      )}
+      <ProjectShortcutPopup
+        open={showProjectShortcut}
+        position={shortcutPosition}
+        jobId={selectedProjectForShortcut?.jobId}
+        onGenerate={handleGenerateLaporan}
+        onClose={() => setShowProjectShortcut(false)}
+        containerRef={shortcutRef}
+      />
 
-      {/* Edit Project */}
-      <Dialog open={showEditProject} onOpenChange={setShowEditProject}>
-        <DialogContent className="sm:max-w-[500px]">
-          <DialogHeader>
-            <DialogTitle>Edit Project</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label
-                htmlFor="project-select"
-                className="flex items-center gap-1"
-              >
-                Nama Project<span className="text-red-500">*</span>
-              </Label>
-              <Select
-                value={editProjectForm.projectId}
-                onValueChange={(value) =>
-                  setEditProjectForm((prev) => ({ ...prev, projectId: value }))
-                }
-                disabled={editProjectForm.isReadOnlyProject}
-              >
-                <SelectTrigger
-                  className={
-                    editProjectForm.isReadOnlyProject ? "bg-gray-100" : ""
-                  }
-                >
-                  <SelectValue placeholder="Pilih project yang akan diedit" />
-                </SelectTrigger>
-                <SelectContent>
-                  {projectsData.map((project, projectIndex) => (
-                    <SelectItem
-                      key={`${project.id ?? "noid"}-${
-                        project.jobId ?? "nojob"
-                      }-${projectIndex}`}
-                      value={project.id}
-                    >
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {editProjectForm.isReadOnlyProject && (
-                <div className="text-xs text-gray-500">
-                  Project dipilih otomatis. Gunakan tombol "Edit Project" di
-                  header untuk mengganti project.
-                </div>
-              )}
-            </div>
+      <EditProjectDialog
+        open={showEditProject}
+        onOpenChange={setShowEditProject}
+        projectsData={projectsData}
+        form={editProjectForm}
+        setForm={setEditProjectForm}
+        onSubmit={handleEditProject}
+        loading={loading}
+      />
 
-            <div className="grid gap-2">
-              <Label
-                htmlFor="status-select"
-                className="flex items-center gap-1"
-              >
-                Ganti Status<span className="text-red-500">*</span>
-              </Label>
-              <Select
-                value={editProjectForm.status}
-                onValueChange={(value: ProjectStatus) =>
-                  setEditProjectForm((prev) => ({ ...prev, status: value }))
-                }
-              >
-                <SelectTrigger autoFocus={editProjectForm.isReadOnlyProject}>
-                  <SelectValue placeholder="Pilih status baru" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="unassigned">
-                    Belum Diassign (Abu-abu)
-                  </SelectItem>
-                  <SelectItem value="ongoing">Berlangsung (Hijau)</SelectItem>
-                  <SelectItem value="pending">Pending (Kuning)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {editProjectForm.status === "pending" && (
-              <div className="grid gap-2">
-                <Label
-                  htmlFor="pending-reason"
-                  className="flex items-center gap-1"
-                >
-                  Alasan Pending<span className="text-red-500">*</span>
-                </Label>
-                <Textarea
-                  id="pending-reason"
-                  value={editProjectForm.reason}
-                  onChange={(e) =>
-                    setEditProjectForm((prev) => ({
-                      ...prev,
-                      reason: e.target.value,
-                    }))
-                  }
-                  placeholder="Masukkan alasan mengapa project di-pending..."
-                  className="min-h-[80px] resize-none"
-                  maxLength={300}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") setShowEditProject(false);
-                    if (e.key === "Enter" && e.ctrlKey) handleEditProject();
-                  }}
-                />
-                <div className="text-xs text-gray-500 text-right">
-                  {editProjectForm.reason.length}/300 karakter
-                </div>
-                {editProjectForm.reason.trim().length < 5 &&
-                  editProjectForm.reason.length > 0 && (
-                    <div className="text-xs text-red-500">
-                      Alasan minimal 5 karakter
-                    </div>
-                  )}
-              </div>
-            )}
-          </div>
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowEditProject(false);
-                setEditProjectForm({
-                  projectId: "",
-                  status: "unassigned",
-                  reason: "",
-                  isReadOnlyProject: false,
-                });
-              }}
-            >
-              Batal
-            </Button>
-            <Button
-              onClick={handleEditProject}
-              disabled={
-                !editProjectForm.projectId ||
-                !editProjectForm.status ||
-                (editProjectForm.status === "pending" &&
-                  editProjectForm.reason.trim().length < 5) ||
-                loading
-              }
-              className="bg-orange-600 hover:bg-orange-700"
-            >
-              {loading ? "Menyimpan..." : "Simpan"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Create Project */}
-      <Dialog open={showCreateProject} onOpenChange={setShowCreateProject}>
-        <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <div className="flex items-start justify-between">
-              <div className="flex flex-col gap-4">
-                <DialogTitle>Buat Project Baru</DialogTitle>
-
-                <div className="flex gap-2">
-                  <Button
-                    variant={
-                      projectCategory === "instalasi" ? "default" : "outline"
-                    }
-                    onClick={() => setProjectCategory("instalasi")}
-                    className="font-sans"
-                    size="sm"
-                  >
-                    Instalasi
-                  </Button>
-                  <Button
-                    variant={
-                      projectCategory === "survey" ? "default" : "outline"
-                    }
-                    onClick={() => setProjectCategory("survey")}
-                    className="font-sans"
-                    size="sm"
-                  >
-                    Survey
-                  </Button>
-                </div>
-              </div>
-
-              <div className="flex flex-col items-end gap-2 mr-6">
-                <Button
-                  onClick={() => {
-                    if (projectCategory === "survey") {
-                      handleCreateSurveyProject();
-                      return;
-                    }
-                    handleCreateProject();
-                  }}
-                  disabled={
-                    isSavingProject ||
-                    (projectCategory === "instalasi"
-                      ? !newProjectForm.namaProject ||
-                        !newProjectForm.tanggalMulaiProject ||
-                        !newProjectForm.tanggalDeadlineProject ||
-                        !newProjectForm.sigmaManDays ||
-                        !newProjectForm.sigmaHari ||
-                        !newProjectForm.sigmaTeknisi ||
-                        !newProjectForm.tipeTemplate ||
-                        !!dateValidationError
-                      : !newSurveyProjectForm.namaProject ||
-                        !newSurveyProjectForm.namaGedung ||
-                        !newSurveyProjectForm.lokasi ||
-                        !newSurveyProjectForm.tanggalMulaiProject ||
-                        !newSurveyProjectForm.tanggalDeadlineProject ||
-                        !newSurveyProjectForm.totalManDays ||
-                        !newSurveyProjectForm.totalHari ||
-                        !newSurveyProjectForm.totalTeknisi ||
-                        !newSurveyProjectForm.tipeTemplate ||
-                        !!dateValidationError)
-                  }
-                  className="bg-green-600 hover:bg-green-700"
-                  size="sm"
-                >
-                  {isSavingProject ? "Menyimpan..." : "Buat Project"}
-                </Button>
-              </div>
-            </div>
-          </DialogHeader>
-
-          <div className="grid gap-4 py-2">
-            {/* ===== INSTALASI ===== */}
-            {projectCategory === "instalasi" && (
-              <>
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="namaProject"
-                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-                  >
-                    Nama Project<span className="text-red-500">*</span>
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="namaProject"
-                      type="text"
-                      value={newProjectForm.namaProject}
-                      onChange={(e) =>
-                        setNewProjectForm((prev) => ({
-                          ...prev,
-                          namaProject: e.target.value,
-                        }))
-                      }
-                      onClick={() => setShowSubFields(true)}
-                      placeholder="Format: NamaBarang_NamaInstansi_Lokasi"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="lokasi"
-                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-                  >
-                    Lokasi
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="lokasi"
-                      type="text"
-                      value={newProjectForm.lokasi}
-                      onChange={(e) =>
-                        setNewProjectForm((prev) => ({
-                          ...prev,
-                          lokasi: e.target.value,
-                        }))
-                      }
-                      placeholder="Contoh: Bank Mandiri Darmo"
-                      maxLength={140}
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      Maksimal 140 karakter ({newProjectForm.lokasi.length}/140)
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="paket"
-                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-                  >
-                    Paket <span className="text-red-500">*</span>
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="paket"
-                      type="text"
-                      inputMode="numeric"
-                      pattern="\d*"
-                      value={paketCountInput}
-                      onChange={handlePaketInputChange}
-                      placeholder="Jumlah paket (0–30)"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="border rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-semibold">
-                      Detail Paket (RW / RT)
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {newProjectForm.paketCount} paket
-                    </span>
-                  </div>
-
-                  {newProjectForm.paketCount === 0 ? (
-                    <p className="text-xs text-gray-500">
-                      Atur jumlah paket untuk menampilkan sub-field RW/RT.
-                    </p>
-                  ) : (
-                    <div
-                      className="grid gap-4"
-                      style={{
-                        gridTemplateColumns: `repeat(${paketGroups.length}, minmax(0, 1fr))`,
-                      }}
-                    >
-                      {paketGroups.map((group, colIdx) => (
-                        <div key={colIdx} className="space-y-3">
-                          {group.items.map((p, idxInCol) => {
-                            const absoluteIndex = group.start + idxInCol;
-                            return (
-                              <div
-                                key={absoluteIndex}
-                                className="grid grid-cols-3 gap-2 items-center"
-                              >
-                                <div className="text-xs font-medium text-gray-700">
-                                  Paket #{absoluteIndex + 1}
-                                </div>
-                                <input
-                                  type="text"
-                                  placeholder="RW"
-                                  value={p.rw}
-                                  onChange={(e) =>
-                                    updatePaketDetail(
-                                      absoluteIndex,
-                                      "rw",
-                                      e.target.value
-                                    )
-                                  }
-                                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                                />
-                                <input
-                                  type="text"
-                                  placeholder="RT"
-                                  value={p.rt}
-                                  onChange={(e) =>
-                                    updatePaketDetail(
-                                      absoluteIndex,
-                                      "rt",
-                                      e.target.value
-                                    )
-                                  }
-                                  className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="namaSales"
-                    className="min-w-[140px] md:min-w-[140px]"
-                  >
-                    Nama Sales <span className="text-red-500">*</span>
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="namaSales"
-                      type="text"
-                      value={newProjectForm.namaSales}
-                      onChange={(e) =>
-                        setNewProjectForm((prev) => ({
-                          ...prev,
-                          namaSales: e.target.value,
-                        }))
-                      }
-                      placeholder="Masukkan nama sales"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="namaPresales"
-                    className="min-w-[140px] md:min-w-[140px]"
-                  >
-                    Nama Presales
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="namaPresales"
-                      type="text"
-                      value={newProjectForm.namaPresales}
-                      onChange={(e) =>
-                        setNewProjectForm((prev) => ({
-                          ...prev,
-                          namaPresales: e.target.value,
-                        }))
-                      }
-                      placeholder="Masukkan nama presales"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-4">
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label htmlFor="tanggalSpkUser" className="min-w-[120px]">
-                        Tanggal SPK User
-                      </Label>
-                      <input
-                        id="tanggalSpkUser"
-                        type="date"
-                        value={newProjectForm.tanggalSpkUser}
-                        onChange={(e) =>
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            tanggalSpkUser: e.target.value,
-                          }))
-                        }
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="tanggalMulaiProject"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Tanggal Mulai Project
-                        <span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="tanggalMulaiProject"
-                        type="date"
-                        value={newProjectForm.tanggalMulaiProject}
-                        onChange={(e) => {
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            tanggalMulaiProject: e.target.value,
-                          }));
-                          validateDates(
-                            e.target.value,
-                            newProjectForm.tanggalDeadlineProject
-                          );
-                        }}
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="sigmaManDays"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Man Days<span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="sigmaManDays"
-                        type="number"
-                        min="0"
-                        value={newProjectForm.sigmaManDays}
-                        onChange={(e) =>
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            sigmaManDays: e.target.value,
-                          }))
-                        }
-                        placeholder="Target Man Days"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="sigmaTeknisi"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Total Teknisi<span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="sigmaTeknisi"
-                        type="number"
-                        min="0"
-                        value={newProjectForm.sigmaTeknisi}
-                        onChange={(e) =>
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            sigmaTeknisi: e.target.value,
-                          }))
-                        }
-                        placeholder="Jumlah Teknisi"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="durasi"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Durasi <span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="durasi"
-                        type="number"
-                        min="1"
-                        value={newProjectForm.durasi}
-                        onChange={(e) =>
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            durasi: e.target.value,
-                          }))
-                        }
-                        placeholder="Durasi pengumpulan foto (menit)"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="tanggalTerimaPo"
-                        className="min-w-[120px]"
-                      >
-                        Tanggal Terima PO
-                      </Label>
-                      <input
-                        id="tanggalTerimaPo"
-                        type="date"
-                        value={newProjectForm.tanggalTerimaPo}
-                        onChange={(e) =>
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            tanggalTerimaPo: e.target.value,
-                          }))
-                        }
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label
-                        htmlFor="tanggalDeadlineProject"
-                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
-                      >
-                        Tanggal Deadline Project
-                        <span className="text-red-500">*</span>
-                      </Label>
-                      <div className="flex-1">
-                        <input
-                          id="tanggalDeadlineProject"
-                          type="date"
-                          value={newProjectForm.tanggalDeadlineProject}
-                          onChange={(e) => {
-                            setNewProjectForm((prev) => ({
-                              ...prev,
-                              tanggalDeadlineProject: e.target.value,
-                            }));
-                            validateDates(
-                              newProjectForm.tanggalMulaiProject,
-                              e.target.value
-                            );
-                          }}
-                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            dateValidationError
-                              ? "border-red-500"
-                              : "border-input"
-                          }`}
-                          required
-                        />
-                        {dateValidationError && (
-                          <p className="text-xs text-red-500 mt-1">
-                            {dateValidationError}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="sigmaHari"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Total Hari<span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="sigmaHari"
-                        type="number"
-                        min="0"
-                        value={newProjectForm.sigmaHari}
-                        onChange={(e) =>
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            sigmaHari: e.target.value,
-                          }))
-                        }
-                        placeholder="Durasi Project (Hari)"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label
-                        htmlFor="tipeTemplate"
-                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
-                      >
-                        Tipe Template<span className="text-red-500">*</span>
-                      </Label>
-                      <div className="flex-1">
-                        <select
-                          id="tipeTemplate"
-                          value={newProjectForm.tipeTemplate}
-                          onChange={(e) => {
-                            setNewProjectForm((prev) => ({
-                              ...prev,
-                              tipeTemplate: e.target.value,
-                            }));
-                            if (e.target.value) setTipeTemplateError("");
-                          }}
-                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            tipeTemplateError
-                              ? "border-red-500"
-                              : "border-input"
-                          }`}
-                          required
-                        >
-                          <option value="" disabled>
-                            Pilih Tipe Template
-                          </option>
-                          {templateOptions.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                        {tipeTemplateError && (
-                          <p className="text-xs text-red-500 mt-1">
-                            {tipeTemplateError}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="insentif"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Insentif <span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="insentif"
-                        type="number"
-                        min="1"
-                        value={newProjectForm.insentif}
-                        onChange={(e) =>
-                          setNewProjectForm((prev) => ({
-                            ...prev,
-                            insentif: e.target.value,
-                          }))
-                        }
-                        placeholder="Insentif Per Project"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* ===== SURVEY ===== */}
-            {projectCategory === "survey" && (
-              <>
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="surveyNamaProject"
-                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-                  >
-                    Nama Project<span className="text-red-500">*</span>
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="surveyNamaProject"
-                      type="text"
-                      value={newSurveyProjectForm.namaProject}
-                      onChange={(e) =>
-                        setNewSurveyProjectForm((prev) => ({
-                          ...prev,
-                          namaProject: e.target.value,
-                        }))
-                      }
-                      placeholder="Format: Survey_NamaGedung_Lokasi"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="namaGedung"
-                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-                  >
-                    Nama Gedung<span className="text-red-500">*</span>
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="namaGedung"
-                      type="text"
-                      value={newSurveyProjectForm.namaGedung}
-                      onChange={(e) =>
-                        setNewSurveyProjectForm((prev) => ({
-                          ...prev,
-                          namaGedung: e.target.value,
-                        }))
-                      }
-                      placeholder="Contoh: Gedung Grahadi"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label
-                    htmlFor="surveyLokasi"
-                    className="flex items-center gap-1 min-w-[140px] md:min-w-[140px]"
-                  >
-                    Lokasi<span className="text-red-500">*</span>
-                  </Label>
-                  <div className="flex-1">
-                    <input
-                      id="surveyLokasi"
-                      type="text"
-                      value={newSurveyProjectForm.lokasi}
-                      onChange={(e) =>
-                        setNewSurveyProjectForm((prev) => ({
-                          ...prev,
-                          lokasi: e.target.value,
-                        }))
-                      }
-                      placeholder="Contoh: Jl. Tunjungan Surabaya"
-                      maxLength={140}
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      required
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      Maksimal 140 karakter (
-                      {newSurveyProjectForm.lokasi.length}/140)
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="flex flex-col md:flex-row md:items-center gap-2">
-                    <Label
-                      htmlFor="lantai"
-                      className="flex items-center gap-1 min-w-[120px]"
-                    >
-                      Lantai<span className="text-red-500">*</span>
-                    </Label>
-                    <input
-                      id="lantai"
-                      type="number"
-                      min="1"
-                      value={newSurveyProjectForm.lantai}
-                      onChange={(e) =>
-                        setNewSurveyProjectForm((prev) => ({
-                          ...prev,
-                          lantai: e.target.value,
-                        }))
-                      }
-                      placeholder="Jumlah lantai"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      required
-                    />
-                  </div>
-
-                  <div className="flex flex-col md:flex-row md:items-center gap-2">
-                    <Label
-                      htmlFor="ruanganPerLantai"
-                      className="flex items-center gap-1 min-w-[120px]"
-                    >
-                      Ruangan per Lantai<span className="text-red-500">*</span>
-                    </Label>
-                    <input
-                      id="ruanganPerLantai"
-                      type="number"
-                      min="1"
-                      value={newSurveyProjectForm.ruanganPerLantai}
-                      onChange={(e) =>
-                        setNewSurveyProjectForm((prev) => ({
-                          ...prev,
-                          ruanganPerLantai: e.target.value,
-                        }))
-                      }
-                      placeholder="Ruangan per lantai"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      required
-                    />
-                  </div>
-                </div>
-
-                {newSurveyProjectForm.roomDetails.length > 0 && (
-                  <div className="border rounded-lg p-4 bg-gray-50">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-lg font-medium">
-                          Detail Ruangan (per Lantai)
-                        </h3>
-                        {newSurveyProjectForm.roomDetails.length > 1 && (
-                          <div className="flex items-center gap-1 ml-4">
-                            <button
-                              type="button"
-                              onClick={goToPreviousFloor}
-                              disabled={currentFloorPage === 1}
-                              className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <ChevronLeft className="h-3 w-3" />
-                            </button>
-
-                            <span className="text-xs font-medium text-gray-600 px-1">
-                              {currentFloorPage}/
-                              {newSurveyProjectForm.roomDetails.length}
-                            </span>
-
-                            <button
-                              type="button"
-                              onClick={goToNextFloor}
-                              disabled={
-                                currentFloorPage ===
-                                newSurveyProjectForm.roomDetails.length
-                              }
-                              className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <ChevronRight className="h-3 w-3" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="space-y-6">
-                      {newSurveyProjectForm.roomDetails
-                        .filter((_, index) => index === currentFloorPage - 1)
-                        .map((floor, floorIndex) => {
-                          const actualFloorIndex = currentFloorPage - 1;
-                          return (
-                            <div key={floor.floor} className="space-y-3">
-                              <h5 className="font-medium text-gray-800 border-b pb-1">
-                                Lantai #{floor.floor}
-                              </h5>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                {floor.rooms.map((room, roomIndex) => (
-                                  <div
-                                    key={roomIndex}
-                                    className="flex flex-col gap-1"
-                                  >
-                                    <Label
-                                      htmlFor={`room-${actualFloorIndex}-${roomIndex}`}
-                                      className="text-xs text-gray-600"
-                                    >
-                                      Ruangan #{roomIndex + 1}
-                                    </Label>
-                                    <input
-                                      id={`room-${actualFloorIndex}-${roomIndex}`}
-                                      type="text"
-                                      value={room}
-                                      onChange={(e) => {
-                                        const val = e.target.value;
-                                        setNewSurveyProjectForm((prev) => {
-                                          const updated = [...prev.roomDetails];
-                                          updated[actualFloorIndex].rooms[
-                                            roomIndex
-                                          ] = val;
-                                          return {
-                                            ...prev,
-                                            roomDetails: updated,
-                                          };
-                                        });
-                                      }}
-                                      placeholder={`Nama ruangan ${
-                                        roomIndex + 1
-                                      }`}
-                                      className="flex h-8 w-full rounded-md border border-input bg-white px-2 py-1 text-xs"
-                                    />
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          );
-                        })}
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-4">
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="surveyTanggalMulai"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Tanggal Mulai Project
-                        <span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="surveyTanggalMulai"
-                        type="date"
-                        value={newSurveyProjectForm.tanggalMulaiProject}
-                        onChange={(e) => {
-                          setNewSurveyProjectForm((prev) => ({
-                            ...prev,
-                            tanggalMulaiProject: e.target.value,
-                          }));
-                          validateDates(
-                            e.target.value,
-                            newSurveyProjectForm.tanggalDeadlineProject
-                          );
-                        }}
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="totalHari"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Total Hari<span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="totalHari"
-                        type="number"
-                        min="0"
-                        value={newSurveyProjectForm.totalHari}
-                        onChange={(e) =>
-                          setNewSurveyProjectForm((prev) => ({
-                            ...prev,
-                            totalHari: e.target.value,
-                          }))
-                        }
-                        placeholder="Durasi project (hari)"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="totalManDays"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Total Man Days<span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="totalManDays"
-                        type="number"
-                        min="0"
-                        value={newSurveyProjectForm.totalManDays}
-                        onChange={(e) =>
-                          setNewSurveyProjectForm((prev) => ({
-                            ...prev,
-                            totalManDays: e.target.value,
-                          }))
-                        }
-                        placeholder="Target man days"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label
-                        htmlFor="surveyTanggalDeadline"
-                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
-                      >
-                        Tanggal Deadline Project
-                        <span className="text-red-500">*</span>
-                      </Label>
-                      <div className="flex-1">
-                        <input
-                          id="surveyTanggalDeadline"
-                          type="date"
-                          value={newSurveyProjectForm.tanggalDeadlineProject}
-                          onChange={(e) => {
-                            setNewSurveyProjectForm((prev) => ({
-                              ...prev,
-                              tanggalDeadlineProject: e.target.value,
-                            }));
-                            validateDates(
-                              newSurveyProjectForm.tanggalMulaiProject,
-                              e.target.value
-                            );
-                          }}
-                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            dateValidationError
-                              ? "border-red-500"
-                              : "border-input"
-                          }`}
-                          required
-                        />
-                        {dateValidationError && (
-                          <p className="text-xs text-red-500 mt-1">
-                            {dateValidationError}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-center gap-2">
-                      <Label
-                        htmlFor="totalTeknisi"
-                        className="flex items-center gap-1 min-w-[120px]"
-                      >
-                        Total Teknisi<span className="text-red-500">*</span>
-                      </Label>
-                      <input
-                        id="totalTeknisi"
-                        type="number"
-                        min="1"
-                        value={newSurveyProjectForm.totalTeknisi}
-                        onChange={(e) =>
-                          setNewSurveyProjectForm((prev) => ({
-                            ...prev,
-                            totalTeknisi: e.target.value,
-                          }))
-                        }
-                        placeholder="Jumlah teknisi"
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex flex-col md:flex-row md:items-start gap-2">
-                      <Label
-                        htmlFor="surveyTipeTemplate"
-                        className="flex items-center gap-1 min-w-[120px] md:mt-2"
-                      >
-                        Tipe Template<span className="text-red-500">*</span>
-                      </Label>
-                      <div className="flex-1">
-                        <select
-                          id="surveyTipeTemplate"
-                          value={newSurveyProjectForm.tipeTemplate}
-                          onChange={(e) => {
-                            setNewSurveyProjectForm((prev) => ({
-                              ...prev,
-                              tipeTemplate: e.target.value,
-                            }));
-                            if (e.target.value) setTipeTemplateError("");
-                          }}
-                          className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
-                            tipeTemplateError
-                              ? "border-red-500"
-                              : "border-input"
-                          }`}
-                          required
-                        >
-                          <option value="" disabled>
-                            Pilih Tipe Template
-                          </option>
-                          {templateOptions.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                        {tipeTemplateError && (
-                          <p className="text-xs text-red-500 mt-1">
-                            {tipeTemplateError}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-3">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowCreateProject(false);
-                setNewProjectForm({
-                  namaProject: "",
-                  lokasi: "",
-                  namaSales: "",
-                  namaPresales: "",
-                  tanggalSpkUser: "",
-                  tanggalTerimaPo: "",
-                  tanggalMulaiProject: "",
-                  tanggalDeadlineProject: "",
-                  sigmaManDays: "",
-                  sigmaHari: "",
-                  sigmaTeknisi: "",
-                  tipeTemplate: "",
-                });
-                setShowSubFields(false);
-                setDateValidationError("");
-                setTipeTemplateError("");
-              }}
-            >
-              Batal
-            </Button>
-            <Button
-              onClick={() => {
-                if (projectCategory === "survey") {
-                  handleCreateSurveyProject();
-                } else {
-                  handleCreateProject();
-                }
-              }}
-              disabled={
-                isSavingProject ||
-                (projectCategory === "instalasi"
-                  ? !newProjectForm.namaProject ||
-                    !newProjectForm.tanggalMulaiProject ||
-                    !newProjectForm.tanggalDeadlineProject ||
-                    !newProjectForm.sigmaManDays ||
-                    !newProjectForm.sigmaHari ||
-                    !newProjectForm.sigmaTeknisi ||
-                    !newProjectForm.tipeTemplate ||
-                    !!dateValidationError
-                  : !newSurveyProjectForm.namaProject ||
-                    !newSurveyProjectForm.namaGedung ||
-                    !newSurveyProjectForm.lokasi ||
-                    !newSurveyProjectForm.tanggalMulaiProject ||
-                    !newSurveyProjectForm.tanggalDeadlineProject ||
-                    !newSurveyProjectForm.totalManDays ||
-                    !newSurveyProjectForm.totalHari ||
-                    !newSurveyProjectForm.totalTeknisi ||
-                    !newSurveyProjectForm.tipeTemplate ||
-                    !!dateValidationError)
-              }
-              className="bg-green-600 hover:bg-green-700"
-            >
-              {isSavingProject ? "Menyimpan..." : "Buat Project"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <CreateProjectDialog
+        open={showCreateProject}
+        onOpenChange={setShowCreateProject}
+        onCreated={(p) => {
+          setProjectsData((prev) => [p, ...prev]);
+          setShowProjectSuccess(true);
+        }}
+      />
 
       {/* Notifs */}
       {showProjectSuccess && (
@@ -2949,8 +908,8 @@ export default function AssignScheduling() {
                 Assignment Berhasil Disimpan!
               </h3>
               <p className="text-lg text-gray-600 mb-6">
-                {getSelectedCount()} assignment teknisi telah berhasil disimpan
-                ke sistem.
+                {getSelectedCountAll()} assignment (teknisi & kendaraan) telah
+                disimpan.
               </p>
               <Button
                 onClick={() => setShowConfirmation(false)}
