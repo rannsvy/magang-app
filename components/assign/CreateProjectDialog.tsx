@@ -19,6 +19,10 @@ import {
 import { formatDateDDMMYYYY } from "./helpers";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { apiFetch } from "@/lib/apiFetch";
+import {
+  ExternalIdPicker,
+  type ExternalSelected,
+} from "@/components/external-id-picker";
 
 type Props = {
   open: boolean;
@@ -85,6 +89,10 @@ export default function CreateProjectDialog({
       }
     })();
   }, []);
+
+  // === NEW: pilihan ID Paket/NPKT yang dipilih user
+  const [externalSelected, setExternalSelected] =
+    useState<ExternalSelected>(null);
 
   const validateDates = (start: string, deadline: string) => {
     if (start && deadline) {
@@ -179,6 +187,7 @@ export default function CreateProjectDialog({
   };
 
   const resetAll = () => {
+    setExternalSelected(null);
     setProjectCategory(null);
     setDateErr("");
     setTmplErr("");
@@ -289,6 +298,11 @@ export default function CreateProjectDialog({
             rw: p.rw || null,
             rt: p.rt || null,
           })) ?? [],
+
+        // NEW: kirim salah satu sesuai pilihan user
+        idPaket:
+          externalSelected?.type === "paket" ? externalSelected.id : null,
+        idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
       };
 
       const res = await apiFetch<{ data: DbProjectWithStats }>(
@@ -345,6 +359,11 @@ export default function CreateProjectDialog({
         totalManDays: Number(newSurveyProjectForm.totalManDays),
         tipeTemplate: newSurveyProjectForm.tipeTemplate,
         roomDetails: newSurveyProjectForm.roomDetails ?? [],
+
+        // NEW: ikutkan juga (server boleh abaikan bila route survey tak memproses)
+        idPaket:
+          externalSelected?.type === "paket" ? externalSelected.id : null,
+        idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
       };
 
       const res = await apiFetch<{ data: DbProjectWithStats }>(
@@ -485,6 +504,15 @@ export default function CreateProjectDialog({
                 </p>
               </div>
             </div>
+
+            {/* NEW: Picker ID Paket / ID NPKT */}
+            <ExternalIdPicker
+              value={externalSelected}
+              onChange={setExternalSelected}
+              defaultType="paket"
+              tglAwal="2025-03-01"
+              tglAkhir="2025-09-01"
+            />
 
             {/* Paket */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
@@ -918,6 +946,15 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
+            {/* NEW: Picker ID Paket / ID NPKT (survey juga bisa simpan) */}
+            <ExternalIdPicker
+              value={externalSelected}
+              onChange={setExternalSelected}
+              defaultType="paket"
+              tglAwal="2025-03-01"
+              tglAkhir="2025-09-01"
+            />
+
             {/* Floor detail */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="flex flex-col md:flex-row md:items-center gap-2">
@@ -1215,7 +1252,6 @@ export default function CreateProjectDialog({
             </div>
           </div>
         )}
-
       </DialogContent>
     </Dialog>
   );

@@ -30,8 +30,12 @@ type Job = {
   sales_name?: string | null;
 
   /** Kendaraan */
-  vehicle_name?: string | null; // single (mis. "Panther (L 1880 ZB)")
-  vehicle_names?: string[]; // multiple (mis. ["Panther (L 1880 ZB)","Grandmax (L 9636 BF)"])
+  vehicle_name?: string | null; // mis. "Panther (L 1880 ZB)"
+  vehicle_names?: string[]; // mis. ["Panther (L 1880 ZB)","Grandmax (L 9636 BF)"]
+
+  /** Progress hitungan item */
+  progressDone?: number | null; // contoh: 1
+  progressTotal?: number | null; // contoh: 50
 };
 
 const supabase = createClient(
@@ -46,6 +50,11 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
     clearTimeout(t);
     t = setTimeout(() => fn(...args), ms);
   };
+}
+
+function toNum(v: any): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 /** ===================== Page ===================== **/
@@ -83,18 +92,37 @@ export default function TechnicianDashboard() {
   const completedPostedRef = useRef<Set<string>>(new Set());
 
   /** ==== Progress helper (ambil dari /api/job-photos/[jobId]) ==== */
-  async function getJobProgress(
-    jobId: string
-  ): Promise<{ percent: number; isPending: boolean }> {
+  async function getJobProgress(jobId: string): Promise<{
+    percent: number;
+    isPending: boolean;
+    done?: number;
+    total?: number;
+  }> {
     try {
       const res = await fetch(`/api/job-photos/${encodeURIComponent(jobId)}`, {
         cache: "no-store",
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "progress fetch failed");
-      const percent = Number(json?.progress?.percent ?? 0);
-      const isPending = (json?.status as string) === "pending";
-      return { percent, isPending };
+
+      // Ambil percent
+      const percent = toNum(json?.progress?.percent) ?? 0;
+
+      // Status pending/active
+      const isPending = String(json?.status || "") === "pending";
+
+      // Robust ambil done/total dari beberapa kemungkinan field:
+      // - progress.done / progress.total (baru)
+      // - progress.complete / progress.total (sebelumnya)
+      // - uploaded / total (top-level, legacy)
+      const done =
+        toNum(json?.progress?.done) ??
+        toNum(json?.progress?.complete) ??
+        toNum(json?.uploaded);
+
+      const total = toNum(json?.progress?.total) ?? toNum(json?.total);
+
+      return { percent, isPending, done, total };
     } catch {
       return { percent: 0, isPending: false };
     }
@@ -103,18 +131,24 @@ export default function TechnicianDashboard() {
   async function attachProgress(items: Job[]): Promise<Job[]> {
     const enriched = await Promise.all(
       items.map(async (j) => {
-        const { percent, isPending } = await getJobProgress(j.job_id);
+        const { percent, isPending, done, total } = await getJobProgress(
+          j.job_id
+        );
+
         const status: Job["status"] =
           percent >= 100
             ? "completed"
             : percent > 0
             ? "in-progress"
             : "not-started";
+
         return {
           ...j,
           progress: percent,
           isPending,
           status: isPending ? "in-progress" : status,
+          progressDone: typeof done === "number" ? done : null,
+          progressTotal: typeof total === "number" ? total : null,
         };
       })
     );
@@ -289,7 +323,7 @@ export default function TechnicianDashboard() {
     photosChannelRef.current = ch;
   }
 
-  /** ==== Re-subscribe (project_survey_rooms) agar filter Survey realtime ==== */
+  /** ==== Re-subscribe (project_survey_rooms) ==== */
   function resubscribeSurveyRooms(projectIds: string[]) {
     if (surveyRoomsChannelRef.current) {
       supabase.removeChannel(surveyRoomsChannelRef.current);
@@ -330,15 +364,32 @@ export default function TechnicianDashboard() {
 
   /** ==== UI helpers ==== */
   const getStatusDisplay = (job: Job) => {
+    const hasCount =
+      typeof job.progressDone === "number" &&
+      typeof job.progressTotal === "number";
+
+    const countText = hasCount
+      ? `${job.progressDone}/${job.progressTotal}`
+      : null;
+
     if (job.isPending) {
-      return { text: "Pending", color: "bg-amber-100 text-amber-700" };
+      return {
+        text: "Pending",
+        color: "bg-amber-100 text-amber-700",
+        countText,
+      };
     }
     if ((job.progress ?? 0) >= 100) {
-      return { text: "Selesai", color: "bg-green-100 text-green-700" };
+      return {
+        text: "Selesai",
+        color: "bg-green-100 text-green-700",
+        countText,
+      };
     }
     return {
       text: `${Math.max(0, Math.min(100, Math.round(job.progress ?? 0)))}%`,
       color: "bg-blue-100 text-blue-700",
+      countText,
     };
   };
 
@@ -362,7 +413,7 @@ export default function TechnicianDashboard() {
   const handleNextPage = () =>
     setCurrentPage((p) => Math.min(totalPages, p + 1));
 
-  /** ==== Cleanup channels saat unmount ==== */
+  /** ==== Cleanup ==== */
   useEffect(() => {
     return () => {
       if (projectsChannelRef.current)
@@ -377,7 +428,6 @@ export default function TechnicianDashboard() {
   /** ===================== Render ===================== **/
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header + segmented filter (UI code 1) */}
       <TechnicianHeader
         title="Reaport"
         showFilter
@@ -457,17 +507,34 @@ export default function TechnicianDashboard() {
                           </div>
 
                           <div className="flex flex-col items-end gap-0.5">
-                            <div
-                              className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
-                            >
-                              {badge.text}
+                            {/* Badge persentase + Rasio 1/50 */}
+                            <div className="flex items-center gap-1">
+                              <div
+                                className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
+                                title={
+                                  badge.countText
+                                    ? `Progress ${badge.countText}`
+                                    : undefined
+                                }
+                              >
+                                {badge.text}
+                              </div>
+
+                              {badge.countText && (
+                                <div
+                                  className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
+                                  aria-label="rasio progress"
+                                  title={`Progress ${badge.countText}`}
+                                >
+                                  {badge.countText}
+                                </div>
+                              )}
                             </div>
 
                             <div className="text-[10px] text-gray-500 font-mono leading-none">
                               {job.job_id}
                             </div>
 
-                            {/* UI terbaru: SPV / Sales */}
                             {(job.supervisor_name || job.sales_name) && (
                               <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
                                 <div>
@@ -479,13 +546,7 @@ export default function TechnicianDashboard() {
                               </div>
                             )}
 
-                            {/* Kendaraan:
-                                - Single: "Kendaraan : - Panther (L 1880 ZB)"
-                                - Multiple: 
-                                  Kendaraan :
-                                  - Panther (L 1880 ZB)
-                                  - Grandmax (L 9636 BF)
-                              */}
+                            {/* Kendaraan */}
                             <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
                               {vehicleList.length === 0 ? (
                                 <div>Kendaraan : -</div>
@@ -534,7 +595,6 @@ export default function TechnicianDashboard() {
         </div>
       </main>
 
-      {/* Prompt PWA */}
       <PWAInstallPrompt />
     </div>
   );
