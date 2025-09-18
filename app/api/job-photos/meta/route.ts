@@ -1,4 +1,3 @@
-// app/api/job-photos/meta/route.ts
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServers";
 
@@ -6,7 +5,6 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 function parseMeter(input: unknown): number | null | undefined {
-  // undefined => jangan sentuh kolom di DB
   if (input === undefined) return undefined;
   if (input === null) return null;
   if (typeof input === "number") return Number.isFinite(input) ? input : null;
@@ -23,6 +21,7 @@ export async function POST(req: Request) {
 
     const jobId = body?.jobId as string | undefined;
     const categoryId = body?.categoryId as string | number | undefined;
+
     if (!jobId || categoryId === undefined) {
       return NextResponse.json(
         { error: "jobId & categoryId required" },
@@ -36,8 +35,8 @@ export async function POST(req: Request) {
       updated_at: new Date().toISOString(),
     };
 
-    // serialNumber: terima string/number/null
-    if (body.hasOwnProperty("serialNumber")) {
+    // serial number
+    if (Object.prototype.hasOwnProperty.call(body, "serialNumber")) {
       const v = body.serialNumber;
       payload.serial_number =
         v === null || (typeof v === "string" && v.trim() === "")
@@ -45,17 +44,70 @@ export async function POST(req: Request) {
           : String(v).trim();
     }
 
-    // meter (DALAM METER): terima number/string/null
-    if (body.hasOwnProperty("meter")) {
+    // meter / cable_meter
+    if (Object.prototype.hasOwnProperty.call(body, "meter")) {
       const m = parseMeter(body.meter);
-      if (m !== undefined) payload.cable_meter = m; // null => clear, number => set
+      if (m !== undefined) payload.cable_meter = m;
     }
 
-    if (body.hasOwnProperty("ocrStatus")) {
-      payload.ocr_status = String(body.ocrStatus);
+    // ocr_status
+    if (Object.prototype.hasOwnProperty.call(body, "ocrStatus")) {
+      const s = body.ocrStatus;
+      if (typeof s === "string") {
+        payload.ocr_status = s;
+      } else if (s && typeof s === "object") {
+        payload.ocr_status = JSON.stringify(s);
+      } else if (s === null) {
+        payload.ocr_status = null;
+      }
+    }
+
+    // selected_photo_id – bisa dari field langsung, atau dari ocrStatus.selectedPhotoId
+    let selectedPhotoId: string | null | undefined = undefined;
+
+    if (Object.prototype.hasOwnProperty.call(body, "selectedPhotoId")) {
+      selectedPhotoId =
+        body.selectedPhotoId === null
+          ? null
+          : String(body.selectedPhotoId || "").trim() || null;
+    }
+
+    if (
+      selectedPhotoId === undefined &&
+      body?.ocrStatus &&
+      typeof body.ocrStatus === "object" &&
+      body.ocrStatus.selectedPhotoId
+    ) {
+      selectedPhotoId = String(body.ocrStatus.selectedPhotoId).trim() || null;
     }
 
     const supabase = supabaseServer();
+
+    // validasi selectedPhotoId milik job/category yang sama
+    if (selectedPhotoId) {
+      const { data: entry, error: e1 } = await supabase
+        .from("job_photo_entries")
+        .select("id")
+        .eq("job_id", jobId)
+        .eq("category_id", String(categoryId))
+        .eq("id", selectedPhotoId)
+        .maybeSingle();
+
+      if (e1) {
+        return NextResponse.json(
+          { error: `Validasi selectedPhotoId gagal: ${e1.message}` },
+          { status: 400 }
+        );
+      }
+      if (!entry) {
+        return NextResponse.json(
+          { error: "selectedPhotoId tidak cocok dengan job/category" },
+          { status: 400 }
+        );
+      }
+      payload.selected_photo_id = selectedPhotoId;
+    }
+
     const { error } = await supabase
       .from("job_photos")
       .upsert(payload, { onConflict: "job_id,category_id" });

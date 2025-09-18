@@ -1,6 +1,7 @@
 // app/api/job-photos/upload/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // Wajib: service role (server only)
+import crypto from "crypto";
 
 export const runtime = "nodejs";
 
@@ -74,6 +75,9 @@ export async function POST(req: Request) {
     let categoryId = "";
     let serialNumber: string | null = null;
     let meterStr: string | null = null;
+    let tokenRaw: string | null = null;
+    let tokenNum: number | null = null;
+
     let photoUrl = "";
     let thumbUrl = "";
     const ts = Date.now();
@@ -88,6 +92,8 @@ export async function POST(req: Request) {
       // opsional
       serialNumber = form.get("serialNumber")?.toString() ?? null;
       meterStr = form.get("meter")?.toString() ?? null;
+      tokenRaw = form.get("token")?.toString() ?? null;
+      tokenNum = tokenRaw ? Number(tokenRaw) : null;
 
       const photo = form.get("photo") as File | null;
       const thumb = form.get("thumb") as File | null;
@@ -140,6 +146,8 @@ export async function POST(req: Request) {
       // opsional
       serialNumber = body.serialNumber != null ? String(body.serialNumber) : null;
       meterStr = body.meter != null ? String(body.meter) : null;
+      tokenRaw = body.token != null ? String(body.token) : null;
+      tokenNum = tokenRaw ? Number(tokenRaw) : null;
 
       if (!jobId || !categoryId || !dataUrl || !thumbDataUrl) {
         return NextResponse.json(
@@ -175,7 +183,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error:
-            "Unsupported Content-Type. Kirim sebagai multipart/form-data (photo, thumb, jobId, categoryId[, meter, serialNumber]) atau JSON {jobId, categoryId, dataUrl, thumbDataUrl[, meter, serialNumber]}",
+            "Unsupported Content-Type. Kirim sebagai multipart/form-data (photo, thumb, jobId, categoryId[, meter, serialNumber, token]) atau JSON {jobId, categoryId, dataUrl, thumbDataUrl[, meter, serialNumber, token]}",
           peek,
         },
         { status: 415 }
@@ -188,7 +196,30 @@ export async function POST(req: Request) {
         ? Number(meterStr)
         : null;
 
-    // Upsert metadata
+    // 1) Simpan ke tabel RIWAYAT (job_photo_entries) — non-fatal bila tabel/kolom belum ada
+    const entryId = crypto.randomUUID();
+    try {
+      const { error: histErr } = await supabaseAdmin
+        .from("job_photo_entries")
+        .insert({
+          id: entryId,
+          job_id: jobId,
+          category_id: categoryId,
+          url: photoUrl,
+          thumb_url: thumbUrl,
+          created_at: new Date().toISOString(),
+          sharpness: null, // bisa dihitung di server jika ingin
+          token: tokenNum,
+        });
+      if (histErr) {
+        // Tidak fatal—lanjutkan ke snapshot
+        // console.warn("[upload] job_photo_entries insert warn:", histErr.message);
+      }
+    } catch {
+      // tabel belum ada / RLS — abaikan demi kompatibilitas
+    }
+
+    // 2) Upsert snapshot terbaru ke job_photos
     const payload: any = {
       job_id: jobId,
       category_id: String(categoryId),
@@ -199,19 +230,42 @@ export async function POST(req: Request) {
     if (serialNumber) payload.serial_number = serialNumber;
     if (Number.isFinite(meterNum as number)) payload.cable_meter = meterNum;
 
-    const { error: upErr } = await supabaseAdmin
-      .from("job_photos")
-      .upsert(payload, { onConflict: "job_id,category_id" })
-      .select("job_id")
-      .maybeSingle();
-    if (upErr) throw upErr;
+    // Coba sertakan selected_photo_id, fallback jika kolom belum ada
+    let upsertOk = false;
+    try {
+      payload.selected_photo_id = entryId;
+      const { error: upErr1 } = await supabaseAdmin
+        .from("job_photos")
+        .upsert(payload, { onConflict: "job_id,category_id" })
+        .select("selected_photo_id")
+        .maybeSingle();
+      if (upErr1) throw upErr1;
+      upsertOk = true;
+    } catch {
+      const { selected_photo_id, ...fallbackPayload } = payload;
+      const { error: upErr2 } = await supabaseAdmin
+        .from("job_photos")
+        .upsert(fallbackPayload, { onConflict: "job_id,category_id" })
+        .select("job_id")
+        .maybeSingle();
+      if (upErr2) throw upErr2;
+      upsertOk = true;
+    }
 
-    // Respons ramah SW (ACK di service worker cek ok/photoUrl/thumbUrl)
+    if (!upsertOk) {
+      return NextResponse.json(
+        { error: "Failed to save snapshot" },
+        { status: 500 }
+      );
+    }
+
+    // Respons ramah SW (ACK)
     return NextResponse.json({
       ok: true,
       photoUrl,
       thumbUrl,
-      categoryId,
+      entryId,                 // id riwayat yang baru
+      categoryId: String(categoryId),
       serialNumber: serialNumber ?? null,
       meter: meterNum,
     });
