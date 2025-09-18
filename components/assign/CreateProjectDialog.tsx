@@ -705,22 +705,6 @@ export default function CreateProjectDialog({
                   />
                 </div>
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="sigmaManDays" className="min-w-[120px]">
-                    Man Days <span className="text-red-500">*</span>
-                  </Label>
-                    <input
-                      id="sigmaManDays"
-                      type="number"
-                      min="0"
-                      value={newProjectForm.sigmaManDays}
-                      readOnly
-                      placeholder="Otomatis"
-                      aria-readonly="true"
-                      className="flex h-10 w-full rounded-md border border-input bg-gray-50 px-3 py-2 text-sm
-                                cursor-default hover:cursor-not-allowed select-none focus:outline-none focus:ring-0"
-                    />
-                </div>
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaTeknisi" className="min-w-[120px]">
                     Total Teknisi <span className="text-red-500">*</span>
                   </Label>
@@ -736,6 +720,26 @@ export default function CreateProjectDialog({
                       })
                     }
                     placeholder="Jumlah Teknisi"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    required
+                  />
+                </div>
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label htmlFor="sigmaHari" className="min-w-[120px]">
+                    Total Hari <span className="text-red-500">*</span>
+                  </Label>
+                  <input
+                    id="sigmaHari"
+                    type="number"
+                    min="0"
+                    value={newProjectForm.sigmaHari}
+                    onChange={(e) =>
+                      setNewProjectForm({
+                        ...newProjectForm,
+                        sigmaHari: e.target.value,
+                      })
+                    }
+                    placeholder="Durasi Project (Hari)"
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     required
                   />
@@ -814,24 +818,20 @@ export default function CreateProjectDialog({
                   </div>
                 </div>
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="sigmaHari" className="min-w-[120px]">
-                    Total Hari <span className="text-red-500">*</span>
+                  <Label htmlFor="sigmaManDays" className="min-w-[120px]">
+                    Man Days <span className="text-red-500">*</span>
                   </Label>
-                  <input
-                    id="sigmaHari"
-                    type="number"
-                    min="0"
-                    value={newProjectForm.sigmaHari}
-                    onChange={(e) =>
-                      setNewProjectForm({
-                        ...newProjectForm,
-                        sigmaHari: e.target.value,
-                      })
-                    }
-                    placeholder="Durasi Project (Hari)"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
+                    <input
+                      id="sigmaManDays"
+                      type="number"
+                      min="0"
+                      value={newProjectForm.sigmaManDays}
+                      readOnly
+                      placeholder="Otomatis"
+                      aria-readonly="true"
+                      className="flex h-10 w-full rounded-md border border-input bg-gray-50 px-3 py-2 text-sm
+                                cursor-default hover:cursor-not-allowed select-none focus:outline-none focus:ring-0"
+                    />
                 </div>
                 <div className="flex flex-col md:flex-row md:items-start gap-2">
                   <Label

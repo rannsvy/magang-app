@@ -48,6 +48,57 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
   };
 }
 
+/* ===== Countdown (UI only) ===== */
+function useCountdown(startSeconds: number) {
+  const [secs, setSecs] = useState<number>(startSeconds);
+
+  // reset saat startSeconds berubah (kelak saat diintegrasikan dari form)
+  useEffect(() => {
+    setSecs(startSeconds);
+  }, [startSeconds]);
+
+  useEffect(() => {
+    if (secs <= 0) return;
+    const id = setInterval(() => {
+      setSecs((s) => (s > 0 ? s - 1 : 0));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [secs]);
+
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+
+  const hh = String(h).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+
+  return { secs, hh, mm, ss };
+}
+
+function CountdownPill({ minutes = 120 }: { minutes?: number }) {
+  const total = Math.max(0, Math.floor(minutes * 60)); // menit -> detik
+  const { secs, hh, mm, ss } = useCountdown(total);
+
+  // warna mendekati habis (<5 menit merah), jika 0 -> abu
+  const cls =
+    secs === 0
+      ? "bg-gray-200 text-gray-600"
+      : secs <= 300
+      ? "bg-red-100 text-red-700"
+      : "bg-slate-900 text-white";
+
+  return (
+    <div
+      title="Countdown pengerjaan"
+      className={`px-2 py-1 rounded-full text-xs font-mono whitespace-nowrap ${cls}`}
+    >
+      {hh}:{mm}:{ss}
+    </div>
+  );
+}
+
+
 /** ===================== Page ===================== **/
 export default function TechnicianDashboard() {
   const router = useRouter();
@@ -457,11 +508,16 @@ export default function TechnicianDashboard() {
                           </div>
 
                           <div className="flex flex-col items-end gap-0.5">
+                          <div className="flex items-center gap-1">
                             <div
                               className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
                             >
                               {badge.text}
                             </div>
+
+                            {/* Countdown 2 jam (UI dummy). Nanti ganti minutes dari data project. */}
+                            <CountdownPill minutes={120} />
+                          </div>
 
                             <div className="text-[10px] text-gray-500 font-mono leading-none">
                               {job.job_id}
