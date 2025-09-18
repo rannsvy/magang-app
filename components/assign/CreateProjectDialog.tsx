@@ -1216,7 +1216,6 @@ export default function CreateProjectDialog({
           </div>
         )}
 
-        {/* FOOTER tombol dihapus untuk menghindari duplikasi */}
       </DialogContent>
     </Dialog>
   );

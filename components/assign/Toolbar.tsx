@@ -1,4 +1,5 @@
 "use client";
+import React from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -10,9 +11,9 @@ import {
   Share,
   LayoutGrid,
 } from "lucide-react";
-import React from "react";
 
 type Props = {
+  /* === Konfigurasi dari code 1 (dipertahankan) === */
   selectAll: boolean;
   onSelectAllChange: (v: boolean) => void;
   onEditProjectOpen: () => void;
@@ -20,40 +21,45 @@ type Props = {
   onShare: () => void;
   isExporting: boolean;
 
-  onSaveAssignment: () => void;
-  selectedCount: number;
-  loading: boolean;
+  onSaveAssignment: () => void; // (tidak dipakai di UI saat ini, tetapi tetap ada)
+  selectedCount: number; // (dipertahankan)
+  loading: boolean; // (dipertahankan)
 
   currentDateLabel: string;
   onPrevDate: () => void;
   onNextDate: () => void;
   totalAssignments: number;
 
-  // Pager tampilan tabel (1 = ProjectTable, 2 = ProjectTableCars)
-  tablePage: number;
-  tablePageCount?: number; // default 2
-  onPrevTablePage: () => void;
-  onNextTablePage: () => void;
+  /* === Tambahan dari code 2 (opsional agar kompatibel) === */
+  /** 1 = ProjectTable, 2 = ProjectTableCars */
+  tablePage?: number;
+  /** default 2 */
+  tablePageCount?: number;
+  onPrevTablePage?: () => void;
+  onNextTablePage?: () => void;
 };
 
 export default function Toolbar({
+  /* === props code 1 === */
   selectAll,
   onSelectAllChange,
   onEditProjectOpen,
   onCreateProjectOpen,
   onShare,
   isExporting,
-  onSaveAssignment, // (tidak dipakai di toolbar, tapi biarkan di props jika dibutuhkan nanti)
-  selectedCount,    // idem
-  loading,          // idem
+  onSaveAssignment, // dipertahankan untuk kompatibilitas
+  selectedCount, // dipertahankan
+  loading, // dipertahankan
   currentDateLabel,
   onPrevDate,
   onNextDate,
   totalAssignments,
-  tablePage,
+
+  /* === props tambahan code 2 (default agar tidak breaking) === */
+  tablePage = 1,
   tablePageCount = 2,
-  onPrevTablePage,
-  onNextTablePage,
+  onPrevTablePage = () => {},
+  onNextTablePage = () => {},
 }: Props) {
   const tableLabel = tablePage === 1 ? "Tabel: Project" : "Tabel: Kendaraan";
 
@@ -77,7 +83,7 @@ export default function Toolbar({
 
       {/* Kanan */}
       <div className="flex items-center gap-3">
-        {/* PAGER TABEL — diletakkan di kiri tombol Edit Project */}
+        {/* Pager TABEL */}
         <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
           <Button
             variant="ghost"
@@ -92,7 +98,9 @@ export default function Toolbar({
           </Button>
           <div className="flex items-center gap-2 px-2 min-w-[140px] justify-center">
             <LayoutGrid className="h-4 w-4 text-gray-600" />
-            <span className="text-sm font-medium text-gray-700">{tableLabel}</span>
+            <span className="text-sm font-medium text-gray-700">
+              {tableLabel}
+            </span>
           </div>
           <Button
             variant="ghost"
@@ -131,7 +139,7 @@ export default function Toolbar({
           {isExporting ? "Menyiapkan..." : "Share"}
         </Button>
 
-        {/* Pager tanggal */}
+        {/* Pager TANGGAL */}
         <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
           <Button
             variant="ghost"

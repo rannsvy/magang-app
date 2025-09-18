@@ -1,6 +1,7 @@
+// components/assign/ProjectTableCars.tsx
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   UIProject,
   UITechnician,
@@ -14,51 +15,8 @@ import {
   getProjectStatusDisplay,
 } from "@/components/assign/helpers";
 
-/* ================== DATA KENDARAAN (30 item) ================== */
-const VEHICLES: { name: string; plate: string }[] = [
-  { name: " Avanza", plate: "L 1992 KK" },
-  { name: "Brio", plate: "B 1321 XY" },
-  { name: "Ertiga", plate: "D 8875 ZQ" },
-  { name: "Xpander", plate: "H 2456 AN" },
-  { name: "Terios", plate: "N 7719 JP" },
-  { name: "Creta", plate: "W 3008 QN" },
-  { name: "Sonet", plate: "F 9912 RT" },
-  { name: "Fortuner", plate: "E 5432 LM" },
-  { name: "CR-V", plate: "AB 1830 CD" },
-  { name: "Livina", plate: "AE 6021 VK" },
-  { name: "Almaz", plate: "AD 7044 QS" },
-  { name: "CX-5", plate: "K 2711 UF" },
-  { name: "Raize", plate: "S 8320 AZ" },
-  { name: "Sigra", plate: "AG 4507 DT" },
-  { name: "HR-V", plate: "B 8899 GH" },
-  { name: "Pajero", plate: "L 1203 MN" },
-  { name: "Innova", plate: "H 5522 RP" },
-  { name: "Seltos", plate: "N 7654 YB" },
-  { name: "Stargazer", plate: "W 1145 CE" },
-  { name: "Calya", plate: "F 3391 PX" },
-  { name: "XL7", plate: "E 6610 JT" },
-  { name: "BR-V", plate: "AB 9042 LA" },
-  { name: "DFSK Glory", plate: "AE 2213 NB" },
-  { name: "X-Trail", plate: "AD 7788 CK" },
-  { name: "Forester", plate: "K 5501 VW" },
-  { name: "Yaris", plate: "S 9900 OP" },
-  { name: "Jazz", plate: "AG 1122 QL" },
-  { name: "Zenix 2", plate: "B 4120 ZS" },
-  { name: "MG ZS", plate: "L 6608 TR" },
-  { name: "Omoda", plate: "H 3479 UA" },
-];
-
-// inisial: 1 huruf pertama (diambil dari kata terakhir yang berhuruf)
-// contoh: "Toyota Avanza" -> "A"
-function vehicleInitial(name: string) {
-  const raw = String(name || "").trim();
-  if (!raw) return "?";
-  const tokens = raw.split(/\s+/);
-  let token = tokens[tokens.length - 1];
-  if (!/[A-Za-z\u00C0-\u024F]/.test(token)) token = tokens[0];
-  const ch = (token.match(/[A-Za-z\u00C0-\u024F]/) || [token[0] || "?"])[0];
-  return (ch || "?").toUpperCase();
-}
+/** Per-vehicle shape untuk UI */
+type VehicleUI = { id: string; model: string; plate: string; inisial: string };
 
 type Props = {
   projects: UIProject[];
@@ -73,11 +31,19 @@ type Props = {
     projectId: string,
     technicianId: string
   ) => CellAssignment | undefined;
-  getTechnicianTrackNumber: (technicianId: string) => number; // tidak ditampilkan, tapi biarkan tipe kompatibel
+  getTechnicianTrackNumber: (technicianId: string) => number;
   getProjectAssignmentCount: (projectId: string) => number;
 
   tableRef?: React.RefObject<HTMLTableElement>;
 };
+
+/** Ambil satu huruf inisial dari model/plate */
+function vehicleInitialFrom(text?: string) {
+  const raw = String(text || "").trim();
+  if (!raw) return "?";
+  const m = raw.match(/[A-Za-z\u00C0-\u024F]/);
+  return (m?.[0] || raw[0] || "?").toUpperCase();
+}
 
 export default function ProjectTableCars({
   projects,
@@ -91,20 +57,60 @@ export default function ProjectTableCars({
   getProjectAssignmentCount,
   tableRef,
 }: Props) {
-  // tampilkan SEMUA 30 kendaraan sebagai "teknisi"
+  // ===== Ambil kendaraan dari DB lewat endpoint /api/vehicles =====
+  const [vehicles, setVehicles] = useState<VehicleUI[]>([]);
+  const [vehLoading, setVehLoading] = useState(true);
+  const [vehError, setVehError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/vehicles", { cache: "no-store" });
+        if (!res.ok) throw new Error(await res.text());
+
+        // API bisa kirim {vehicles:[...]} atau {data:[...]}
+        const json: any = await res.json();
+        const arr: any[] = Array.isArray(json?.vehicles)
+          ? json.vehicles
+          : Array.isArray(json?.data)
+          ? json.data
+          : [];
+
+        if (!active) return;
+
+        const normalized: VehicleUI[] = arr.map((v: any) => {
+          const id = String(v.id ?? v.vehicle_code ?? v.code ?? "");
+          const model = String(v.model ?? v.tipe ?? v.name ?? "").trim();
+          const plate = String(v.plate ?? v.no_polisi ?? "");
+          const inisial = String(
+            v.inisial ?? vehicleInitialFrom(model || plate)
+          ).toUpperCase();
+          return { id, model, plate, inisial };
+        });
+
+        setVehicles(normalized);
+      } catch (e: any) {
+        if (active) setVehError(e?.message ?? "Gagal memuat kendaraan");
+      } finally {
+        if (active) setVehLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // tampilkan semua kendaraan sebagai "teknisi" (kolom matriks)
   const allTechs: UITechnician[] = useMemo(
     () =>
-      VEHICLES.map((v, i) => ({
-        id: `car-${String(i + 1).padStart(2, "0")}`,
-        name: v.name,
-        inisial: vehicleInitial(v.name),
+      vehicles.map((v) => ({
+        id: v.id, // contoh: "car-01"
+        name: v.model, // gunakan MODEL untuk label kolom
+        inisial: v.inisial,
       })),
-    []
+    [vehicles]
   );
-
-  const totalAssignments = assignments.filter(
-    (a) => a.isSelected || a.isProjectLeader
-  ).length;
 
   return (
     <div className="bg-white rounded-lg shadow-sm overflow-hidden">
@@ -135,54 +141,45 @@ export default function ProjectTableCars({
                 Pulang
               </th>
 
-              {/* === HEADER KENDARAAN: nama + no. polisi (dua baris, vertical & italic) === */}
-              {allTechs.map((t, i) => {
-                const plate = VEHICLES[i]?.plate ?? "";
-                return (
-                  <th
-                    key={t.id}
-                    className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-8 sticky top-0 bg-gray-100 h-36"
-                    title={`${t.name} — ${plate}`}
-                  >
-                    <div className="flex flex-col items-center justify-end h-full">
+              {/* === HEADER KENDARAAN dari DB === */}
+              {vehLoading && (
+                <th className="px-2 py-2 text-center font-semibold text-gray-500 border-r border-gray-300">
+                  Memuat kendaraan...
+                </th>
+              )}
 
-                    {/* No. Polisi (vertical, gaya sama, sedikit lebih kecil) */}
-                      <div
-                        className="text-[10px] italic whitespace-nowrap"
-                        style={{
-                          writingMode: "vertical-lr",
-                          textOrientation: "mixed",
-                          transform: "rotate(180deg)",
-                          height: "52px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          lineHeight: 1.1,
-                        }}
-                      >
-                        {plate}
+              {!vehLoading &&
+                allTechs.map((t, i) => {
+                  const v = vehicles[i];
+                  const plate = v?.plate ?? "";
+                  return (
+                    <th
+                      key={t.id}
+                      className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-8 sticky top-0 bg-gray-100 h-36"
+                      title={`${t.name} — ${plate}`}
+                    >
+                      <div className="flex flex-col items-center justify-center h-full">
+                        {/* No. Polisi */}
+                        <div
+                          className="text-[10px] italic"
+                          style={{
+                            writingMode: "vertical-lr",
+                            textOrientation: "mixed",
+                            transform: "rotate(180deg)",
+                            height: "52px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            lineHeight: 1.1,
+                          }}
+                        >
+                          {t.name}
+                          {plate}
+                        </div>
                       </div>
-
-                       {/* Nama kendaraan (vertical)*/}
-                      <div
-                        className="text-[10px] font-bold whitespace-nowrap mb-1"
-                        style={{
-                          writingMode: "vertical-lr",
-                          textOrientation: "mixed",
-                          transform: "rotate(180deg)",
-                          height: "84px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          lineHeight: 1.1,
-                        }}
-                      >
-                        {t.name}
-                       </div>
-                    </div>
-                  </th>
-                );
-              })}
+                    </th>
+                  );
+                })}
 
               <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
                 Status
@@ -194,6 +191,17 @@ export default function ProjectTableCars({
           </thead>
 
           <tbody>
+            {vehError && (
+              <tr>
+                <td
+                  colSpan={8 + allTechs.length}
+                  className="px-3 py-2 text-red-600"
+                >
+                  Gagal memuat kendaraan: {vehError}
+                </td>
+              </tr>
+            )}
+
             {projects.map((project, idx) => {
               const rowBg = idx % 2 === 0 ? "bg-white" : "bg-gray-50";
               const progress = getProgressStatus(project);
@@ -368,4 +376,33 @@ export default function ProjectTableCars({
       </div>
     </div>
   );
+}
+
+/* ========== Helper untuk Select All di halaman kendaraan (opsional) ========== */
+/* Jika file ini perlu mengekspor helper, salin fungsi berikut ke tempat
+   yang memanggilnya (mis. AssignScheduling) atau sesuaikan impor sesuai strukturmu. */
+
+export async function fetchVehiclesCompat(): Promise<VehicleUI[]> {
+  try {
+    const res = await fetch("/api/vehicles", { cache: "no-store" });
+    if (!res.ok) throw new Error(await res.text());
+    const json: any = await res.json();
+    const arr: any[] = Array.isArray(json?.vehicles)
+      ? json.vehicles
+      : Array.isArray(json?.data)
+      ? json.data
+      : [];
+    return arr.map((v: any) => {
+      const id = String(v.id ?? v.vehicle_code ?? v.code ?? "");
+      const model = String(v.model ?? v.tipe ?? v.name ?? "").trim();
+      const plate = String(v.plate ?? v.no_polisi ?? "");
+      const inisial = String(
+        v.inisial ?? vehicleInitialFrom(model || plate)
+      ).toUpperCase();
+      return { id, model, plate, inisial } as VehicleUI;
+    });
+  } catch (e) {
+    console.error("fetchVehiclesCompat failed:", e);
+    return [];
+  }
 }

@@ -6,7 +6,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { TechnicianHeader } from "@/components/technician-header";
 
@@ -38,7 +44,9 @@ function parseVehicleName(name: string): Vehicle {
 
   let plate = "";
   if (tokens.length >= 3) {
-    const maybePlate = `${tokens[tokens.length - 3]} ${tokens[tokens.length - 2]} ${tokens[tokens.length - 1]}`;
+    const maybePlate = `${tokens[tokens.length - 3]} ${
+      tokens[tokens.length - 2]
+    } ${tokens[tokens.length - 1]}`;
     if (platePattern.test(maybePlate)) {
       plate = maybePlate;
     }
@@ -101,7 +109,15 @@ function buildHeaderMessage(params: {
   locationType: "External" | "Internal";
   reportDate: string; // YYYY-MM-DD
 }) {
-  const { technicianName, jobId, brand, type, plate, locationType, reportDate } = params;
+  const {
+    technicianName,
+    jobId,
+    brand,
+    type,
+    plate,
+    locationType,
+    reportDate,
+  } = params;
   return (
     `Halo Admin, saya ${technicianName} dengan ID pekerjaan ${jobId} melaporkan adanya kerusakan pada kendaraan.\n\n` +
     `Detail Kendaraan:\n` +
@@ -142,8 +158,8 @@ function composeFinalMessage(header: string, notes: string) {
 
 function compactForWhatsApp(text: string) {
   return text
-    .replace(/\r\n/g, "\n")     // normalisasi EOL
-    .replace(/\n{2,}/g, "\n")   // lipat >1 newline jadi 1
+    .replace(/\r\n/g, "\n") // normalisasi EOL
+    .replace(/\n{2,}/g, "\n") // lipat >1 newline jadi 1
     .replace(/[ \t]+\n/g, "\n") // hilangkan spasi sebelum newline
     .trim();
 }
@@ -163,7 +179,9 @@ export default function DamageComplainPage() {
   const [plate, setPlate] = useState("");
 
   // Damage info
-  const [locationType, setLocationType] = useState<"" | "External" | "Internal">("");
+  const [locationType, setLocationType] = useState<
+    "" | "External" | "Internal"
+  >("");
   const [reportDate, setReportDate] = useState(todayISO());
 
   // Reason text handling (user-only)
@@ -174,7 +192,8 @@ export default function DamageComplainPage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const storedName = localStorage.getItem("technicianName") || "Ahmad Teknisi";
+    const storedName =
+      localStorage.getItem("technicianName") || "Ahmad Teknisi";
     setTechnicianName(storedName);
 
     const raw = localStorage.getItem("technicianVehicles");
@@ -184,7 +203,9 @@ export default function DamageComplainPage() {
     } catch {
       parsed = null;
     }
-    const norm = parsed ? normalizeVehicles(parsed) : normalizeVehicles(["TOYOTA AVANZA L 1992 KK"]); // fallback example
+    const norm = parsed
+      ? normalizeVehicles(parsed)
+      : normalizeVehicles(["TOYOTA AVANZA L 1992 KK"]); // fallback example
     setVehicles(norm);
   }, []);
 
@@ -197,8 +218,15 @@ export default function DamageComplainPage() {
       setPlate(v.plate);
     } else {
       if (brand && !vehicles.some((v) => v.brand === brand)) setBrand("");
-      if (type && !vehicles.some((v) => v.brand === brand && v.type === type)) setType("");
-      if (plate && !vehicles.some((v) => v.brand === brand && v.type === type && v.plate === plate)) setPlate("");
+      if (type && !vehicles.some((v) => v.brand === brand && v.type === type))
+        setType("");
+      if (
+        plate &&
+        !vehicles.some(
+          (v) => v.brand === brand && v.type === type && v.plate === plate
+        )
+      )
+        setPlate("");
     }
   }, [vehicles]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -209,7 +237,11 @@ export default function DamageComplainPage() {
   }, [vehicles]);
 
   const typeOptions = useMemo(() => {
-    const set = new Set(vehicles.filter((v) => (brand ? v.brand === brand : true)).map((v) => v.type));
+    const set = new Set(
+      vehicles
+        .filter((v) => (brand ? v.brand === brand : true))
+        .map((v) => v.type)
+    );
     return Array.from(set);
   }, [vehicles, brand]);
 
@@ -218,13 +250,14 @@ export default function DamageComplainPage() {
       vehicles
         .filter((v) => (brand ? v.brand === brand : true))
         .filter((v) => (type ? v.type === type : true))
-        .map((v) => v.plate),
+        .map((v) => v.plate)
     );
     return Array.from(set);
   }, [vehicles, brand, type]);
 
   const isSingleVehicle = vehicles.length === 1;
-  const readyForTemplate = !!brand && !!type && !!plate && !!locationType && !!reportDate;
+  const readyForTemplate =
+    !!brand && !!type && !!plate && !!locationType && !!reportDate;
 
   // Build header and display text (what user sees)
   const header = readyForTemplate
@@ -240,7 +273,7 @@ export default function DamageComplainPage() {
     : "";
 
   // Text yang tampil di textarea: header + notes (cleaned) jika siap template
-    const displayText = readyForTemplate
+  const displayText = readyForTemplate
     ? `${header}${notes ? " " + notes : " "}` // tampil rapat: header + satu spasi + notes
     : notes;
 
@@ -273,25 +306,37 @@ export default function DamageComplainPage() {
   }
 
   // ===== Single "Send" handler: WA + Gmail + Outlook + mailto (no duplicate text) =====
-    function handleSendAll() {
+  function handleSendAll() {
     if (!isFormValid) return;
 
     const messageForEmail = composeFinalMessage(header, notes);
     const messageForWhatsApp = compactForWhatsApp(messageForEmail); // <= pakai versi compact utk WA
 
-    const subject = encodeURIComponent(`Pelaporan Kerusakan Kendaraan - ${jobId}`);
+    const subject = encodeURIComponent(
+      `Pelaporan Kerusakan Kendaraan - ${jobId}`
+    );
     const body = encodeURIComponent(messageForEmail);
 
-    const waUrl = `https://wa.me/${adminWhatsAppNumber}?text=${encodeURIComponent(messageForWhatsApp)}`;
-    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(adminEmail)}&su=${subject}&body=${body}`;
-    const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(adminEmail)}&subject=${subject}&body=${body}`;
-    const mailtoUrl = `mailto:${encodeURIComponent(adminEmail)}?subject=${subject}&body=${body}`;
+    const waUrl = `https://wa.me/${adminWhatsAppNumber}?text=${encodeURIComponent(
+      messageForWhatsApp
+    )}`;
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
+      adminEmail
+    )}&su=${subject}&body=${body}`;
+    const outlookUrl = `https://outlook.office.com/mail/deeplink/compose?to=${encodeURIComponent(
+      adminEmail
+    )}&subject=${subject}&body=${body}`;
+    const mailtoUrl = `mailto:${encodeURIComponent(
+      adminEmail
+    )}?subject=${subject}&body=${body}`;
 
     openInNewTab(waUrl);
     openInNewTab(gmailUrl);
     openInNewTab(outlookUrl);
-    setTimeout(() => { window.location.href = mailtoUrl; }, 350);
-    }
+    setTimeout(() => {
+      window.location.href = mailtoUrl;
+    }, 350);
+  }
 
   // Textarea onChange: kalau template ready, simpan hanya isi setelah marker; kalau belum, simpan raw
   function handleTextareaChange(v: string) {
@@ -305,7 +350,11 @@ export default function DamageComplainPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <TechnicianHeader title="Lapor Kerusakan" showBackButton={true} backUrl="/user/dashboard" />
+      <TechnicianHeader
+        title="Lapor Kerusakan"
+        showBackButton={true}
+        backUrl="/user/dashboard"
+      />
 
       <main className="p-4">
         <div className="max-w-md mx-auto">
@@ -338,9 +387,19 @@ export default function DamageComplainPage() {
                 {isSingleVehicle || typeOptions.length <= 1 ? (
                   <Input value={type} readOnly placeholder="Tipe otomatis" />
                 ) : (
-                  <Select value={type} onValueChange={(val) => setType(val)} disabled={!brand}>
+                  <Select
+                    value={type}
+                    onValueChange={(val) => setType(val)}
+                    disabled={!brand}
+                  >
                     <SelectTrigger>
-                      <SelectValue placeholder={brand ? "Pilih tipe kendaraan" : "Pilih merk terlebih dahulu"} />
+                      <SelectValue
+                        placeholder={
+                          brand
+                            ? "Pilih tipe kendaraan"
+                            : "Pilih merk terlebih dahulu"
+                        }
+                      />
                     </SelectTrigger>
                     <SelectContent>
                       {typeOptions.map((t) => (
@@ -357,12 +416,24 @@ export default function DamageComplainPage() {
               <div className="space-y-2">
                 <Label>No Polisi</Label>
                 {isSingleVehicle || plateOptions.length <= 1 ? (
-                  <Input value={plate} readOnly placeholder="No Polisi otomatis" />
+                  <Input
+                    value={plate}
+                    readOnly
+                    placeholder="No Polisi otomatis"
+                  />
                 ) : (
-                  <Select value={plate} onValueChange={(val) => setPlate(val)} disabled={!brand || !type}>
+                  <Select
+                    value={plate}
+                    onValueChange={(val) => setPlate(val)}
+                    disabled={!brand || !type}
+                  >
                     <SelectTrigger>
                       <SelectValue
-                        placeholder={brand && type ? "Pilih No Polisi" : "Pilih Merk & Tipe terlebih dahulu"}
+                        placeholder={
+                          brand && type
+                            ? "Pilih No Polisi"
+                            : "Pilih Merk & Tipe terlebih dahulu"
+                        }
                       />
                     </SelectTrigger>
                     <SelectContent>
@@ -379,7 +450,12 @@ export default function DamageComplainPage() {
               {/* 4. Letak Kerusakan */}
               <div className="space-y-2">
                 <Label>Letak Kerusakan</Label>
-                <Select value={locationType} onValueChange={(val: "External" | "Internal") => setLocationType(val)}>
+                <Select
+                  value={locationType}
+                  onValueChange={(val: "External" | "Internal") =>
+                    setLocationType(val)
+                  }
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Pilih letak (External/Internal)" />
                   </SelectTrigger>
@@ -393,7 +469,11 @@ export default function DamageComplainPage() {
               {/* 5. Tanggal Lapor */}
               <div className="space-y-2">
                 <Label>Tanggal Lapor</Label>
-                <Input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} />
+                <Input
+                  type="date"
+                  value={reportDate}
+                  onChange={(e) => setReportDate(e.target.value)}
+                />
               </div>
 
               {/* 6. Alasan (template otomatis jika 1-5 lengkap) */}
@@ -407,7 +487,8 @@ export default function DamageComplainPage() {
                 />
                 {!forceShowTemplate && (
                   <p className="text-xs text-gray-500">
-                    Template akan muncul otomatis setelah Merk, Tipe, No Polisi, Letak, dan Tanggal terisi.
+                    Template akan muncul otomatis setelah Merk, Tipe, No Polisi,
+                    Letak, dan Tanggal terisi.
                   </p>
                 )}
               </div>

@@ -20,11 +20,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { Edit, Plus } from "lucide-react";
+import { Edit, Plus, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/apiFetch";
 
 /* ================== Feature Flags ================== */
-const USE_VEHICLE_MOCK = true;
+const USE_VEHICLE_MOCK = false; // <- pakai DB kendaraan
 
 /* ================== Roles ================== */
 type RoleFilter =
@@ -60,7 +60,9 @@ const ROLE_OPTIONS: Array<{ value: RoleFilter; label: string }> = [
 type StatusType = "Di_Kantor" | "ditugaskan" | "selesai";
 
 function normalizeTechStatus(raw: any): StatusType {
-  const v = String(raw ?? "").toLowerCase().trim();
+  const v = String(raw ?? "")
+    .toLowerCase()
+    .trim();
   if (!v) return "Di_Kantor";
   if (v.includes("selesai") || v.includes("done") || v.includes("complete"))
     return "selesai";
@@ -119,12 +121,12 @@ type UserRow = {
 };
 
 type VehicleRow = {
-  id: string;
+  id: string; // bisa id uuid atau vehicle_code
   merk: string;
   tipe: string;
   no_polisi: string;
-  pajak_periode_ini?: string; // YYYY-MM-DD
-  pajak_periode_berikutnya?: string; // YYYY-MM-DD
+  pajak_periode_ini?: string; // tax_paid_date (YYYY-MM-DD)
+  pajak_periode_berikutnya?: string; // tax_due_date (YYYY-MM-DD)
   status_pajak: "Aktif" | "Mati";
 };
 
@@ -140,27 +142,35 @@ type FormUser = {
 };
 
 type FormVehicle = {
-  id?: string;
+  id?: string; // kode atau uuid
   merk: string;
   tipe: string;
   no_polisi: string;
-  pajak_periode_ini: string;
-  pajak_periode_berikutnya: string;
+  pajak_periode_ini: string; // tax_paid_date
+  pajak_periode_berikutnya: string; // tax_due_date
   status_pajak: "Aktif" | "Mati";
 };
 
 /* ================== Helpers ================== */
 const lo = (v: unknown) => (v ?? "").toString().toLowerCase();
 
+/** Status pajak: MATI jika paid > due, atau jika hari ini > due */
 function computeStatusPajak(
-  _periodeIni?: string,
-  periodeNext?: string
+  taxPaidDate?: string,
+  taxDueDate?: string
 ): "Aktif" | "Mati" {
-  if (!periodeNext) return "Mati";
+  if (!taxDueDate) return "Mati";
+  const due = new Date(taxDueDate);
+
+  if (taxPaidDate) {
+    const paid = new Date(taxPaidDate);
+    if (isFinite(paid.getTime()) && isFinite(due.getTime()) && paid > due) {
+      return "Mati";
+    }
+  }
   const today = new Date();
-  const next = new Date(periodeNext);
-  const cutoff = new Date(next.getFullYear(), next.getMonth(), next.getDate());
-  return today < cutoff ? "Aktif" : "Mati";
+  if (isFinite(due.getTime()) && today > due) return "Mati";
+  return "Aktif";
 }
 
 function toUserRow(x: any, fallbackRole: RoleFilter): UserRow {
@@ -193,82 +203,24 @@ function toUserRow(x: any, fallbackRole: RoleFilter): UserRow {
 }
 
 function toVehicleRow(x: any): VehicleRow {
-  const pIni = (x.pajak_periode_ini ?? x.tax_current)?.toString().slice(0, 10);
-  const pNext = (x.pajak_periode_berikutnya ?? x.tax_next)
+  // dukung nama field dari API dan fallback lama
+  const paid = (x.tax_paid_date ?? x.pajak_periode_ini ?? x.tax_current)
     ?.toString()
     .slice(0, 10);
+  const due = (x.tax_due_date ?? x.pajak_periode_berikutnya ?? x.tax_next)
+    ?.toString()
+    .slice(0, 10);
+
   return {
-    id: String(x.id ?? x.vehicle_id ?? ""),
+    id: String(x.id ?? x.vehicle_id ?? x.vehicle_code ?? x.plate ?? ""),
     merk: x.merk ?? x.brand ?? "",
     tipe: x.tipe ?? x.model ?? "",
     no_polisi: x.no_polisi ?? x.plate ?? "",
-    pajak_periode_ini: pIni,
-    pajak_periode_berikutnya: pNext,
+    pajak_periode_ini: paid,
+    pajak_periode_berikutnya: due,
     status_pajak:
-      (x.status_pajak as "Aktif" | "Mati") || computeStatusPajak(pIni, pNext),
+      (x.status_pajak as "Aktif" | "Mati") ?? computeStatusPajak(paid, due),
   };
-}
-
-/* ================== Vehicle Mock ================== */
-function addDays(base: Date, days: number) {
-  const d = new Date(base);
-  d.setDate(d.getDate() + days);
-  return d;
-}
-function toISO(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
-const VEHICLE_SEED: Array<{ merk: string; tipe: string; no_polisi: string }> = [
-  { merk: "Toyota", tipe: "Avanza", no_polisi: "L 1992 KK" },
-  { merk: "Honda", tipe: "Brio", no_polisi: "B 1321 XY" },
-  { merk: "Suzuki", tipe: "Ertiga", no_polisi: "D 8875 ZQ" },
-  { merk: "Mitsubishi", tipe: "Xpander", no_polisi: "H 2456 AN" },
-  { merk: "Daihatsu", tipe: "Terios", no_polisi: "N 7719 JP" },
-  { merk: "Hyundai", tipe: "Creta", no_polisi: "W 3008 QN" },
-  { merk: "Kia", tipe: "Sonet", no_polisi: "F 9912 RT" },
-  { merk: "Toyota", tipe: "Fortuner", no_polisi: "E 5432 LM" },
-  { merk: "Honda", tipe: "CR-V", no_polisi: "AB 1830 CD" },
-  { merk: "Nissan", tipe: "Livina", no_polisi: "AE 6021 VK" },
-  { merk: "Wuling", tipe: "Almaz", no_polisi: "AD 7044 QS" },
-  { merk: "Mazda", tipe: "CX-5", no_polisi: "K 2711 UF" },
-  { merk: "Toyota", tipe: "Raize", no_polisi: "S 8320 AZ" },
-  { merk: "Daihatsu", tipe: "Sigra", no_polisi: "AG 4507 DT" },
-  { merk: "Honda", tipe: "HR-V", no_polisi: "B 8899 GH" },
-  { merk: "Mitsubishi", tipe: "Pajero", no_polisi: "L 1203 MN" },
-  { merk: "Toyota", tipe: "Innova", no_polisi: "H 5522 RP" },
-  { merk: "Kia", tipe: "Seltos", no_polisi: "N 7654 YB" },
-  { merk: "Hyundai", tipe: "Stargazer", no_polisi: "W 1145 CE" },
-  { merk: "Toyota", tipe: "Calya", no_polisi: "F 3391 PX" },
-  { merk: "Suzuki", tipe: "XL7", no_polisi: "E 6610 JT" },
-  { merk: "Honda", tipe: "BR-V", no_polisi: "AB 9042 LA" },
-  { merk: "DFSK", tipe: "Glory", no_polisi: "AE 2213 NB" },
-  { merk: "Nissan", tipe: "X-Trail", no_polisi: "AD 7788 CK" },
-  { merk: "Subaru", tipe: "Forester", no_polisi: "K 5501 VW" },
-  { merk: "Toyota", tipe: "Yaris", no_polisi: "S 9900 OP" },
-  { merk: "Honda", tipe: "Jazz", no_polisi: "AG 1122 QL" },
-  { merk: "Toyota", tipe: "Zenix 2", no_polisi: "B 4120 ZS" },
-  { merk: "MG", tipe: "ZS", no_polisi: "L 6608 TR" },
-  { merk: "Chery", tipe: "Omoda", no_polisi: "H 3479 UA" },
-];
-
-function buildMockVehicles(): VehicleRow[] {
-  const today = new Date();
-  return VEHICLE_SEED.map((s, idx) => {
-    const periode_ini = idx % 2 === 0 ? addDays(today, -180) : addDays(today, -400);
-    const periode_next = idx % 2 === 0 ? addDays(today, 170) : addDays(today, -1);
-    const pIni = toISO(periode_ini);
-    const pNext = toISO(periode_next);
-    return {
-      id: s.no_polisi.replace(/\s/g, ""),
-      merk: s.merk,
-      tipe: s.tipe,
-      no_polisi: s.no_polisi,
-      pajak_periode_ini: pIni,
-      pajak_periode_berikutnya: pNext,
-      status_pajak: computeStatusPajak(pIni, pNext),
-    };
-  });
 }
 
 /* ================== Page ================== */
@@ -317,22 +269,27 @@ export default function ManageUsersVehiclesPage() {
       try {
         setLoading(true);
         setPage(1);
+
         if (roleFilter === "kendaraan") {
-          if (USE_VEHICLE_MOCK) {
-            const list = buildMockVehicles();
-            setVehicles(list);
-            setUsers([]);
-          } else {
-            const r = await apiFetch("/api/cars", { cache: "no-store" });
-            const arr = Array.isArray(r?.data)
-              ? r.data
-              : Array.isArray(r?.items)
-              ? r.items
-              : [];
-            setVehicles(arr.map(toVehicleRow));
-            setUsers([]);
-          }
+          // ambil dari API vehicles (sudah bentuk data: VehicleRow[])
+          const r = await apiFetch("/api/vehicles", { cache: "no-store" });
+          const arr = Array.isArray(r?.data)
+            ? r.data
+            : Array.isArray(r?.items)
+            ? r.items
+            : [];
+          setVehicles((arr as any[]).map((x: any) => toVehicleRow(x)));
+          setUsers([]);
+        } else if (roleFilter === "teknisi") {
+          // teknisi (integrasi code 2)
+          const techRes = await apiFetch("/api/technicians", {
+            cache: "no-store",
+          });
+          const list = Array.isArray(techRes?.data) ? techRes.data : [];
+          setUsers(list.map((x: any) => toUserRow(x, "teknisi")));
+          setVehicles([]);
         } else {
+          // role lain / all
           const endpoints: string[] =
             roleFilter === "all"
               ? [
@@ -341,8 +298,6 @@ export default function ManageUsersVehiclesPage() {
                   "/api/users?role=teknisi",
                   "/api/technicians",
                 ]
-              : roleFilter === "teknisi"
-              ? ["/api/users?role=teknisi", "/api/technicians"]
               : [`/api/users?role=${roleFilter}`];
 
           let fetched: any[] = [];
@@ -362,7 +317,16 @@ export default function ManageUsersVehiclesPage() {
               // try next
             }
           }
-          setUsers((fetched || []).map((x) => toUserRow(x, roleFilter)));
+          // jika fallback terakhir adalah /api/technicians, map sebagai teknisi
+          const last = endpoints[endpoints.length - 1];
+          const fbRole = last.includes("/api/technicians")
+            ? "teknisi"
+            : roleFilter;
+          setUsers(
+            ((fetched || []) as any[]).map((x: any) =>
+              toUserRow(x, fbRole as RoleFilter)
+            )
+          );
           setVehicles([]);
         }
       } catch (e) {
@@ -472,84 +436,106 @@ export default function ManageUsersVehiclesPage() {
   }
 
   async function submitUserForm() {
-    const payload: any = {
+    // integrasi teknisi (code 2) tetap dipertahankan
+    const isTechnician = userForm.role === "teknisi";
+
+    const payloadTech: any = {
+      nama_panggilan: userForm.nama_panggilan || null,
+      nama_lengkap: userForm.nama_lengkap || null,
+      email: userForm.email || null,
+      phone: userForm.phone || null,
+      is_active: userForm.is_active === "true",
+      inisial: userForm.inisial
+        ? userForm.inisial.toUpperCase().slice(0, 2)
+        : null,
+    };
+
+    const payloadUser: any = {
       nama_panggilan: userForm.nama_panggilan || null,
       nama_lengkap: userForm.nama_lengkap || null,
       email: userForm.email || null,
       phone: userForm.phone || null,
       is_active: userForm.is_active === "true",
       role_key: userForm.role,
+      ...(userForm.role === "teknisi" && userForm.inisial
+        ? { inisial: userForm.inisial.toUpperCase().slice(0, 2) }
+        : {}),
     };
-    if (userForm.role === "teknisi" && userForm.inisial)
-      payload.inisial = userForm.inisial.toUpperCase().slice(0, 2);
 
     try {
       if (userModalMode === "create") {
-        await apiFetch("/api/users", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
+        if (isTechnician) {
+          await apiFetch("/api/technicians", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payloadTech),
+          });
+        } else {
+          await apiFetch("/api/users", {
+            method: "POST",
+            body: JSON.stringify(payloadUser),
+          });
+        }
       } else {
-        await apiFetch(`/api/users/${userForm.id}`, {
-          method: "PUT",
-          body: JSON.stringify(payload),
-        });
+        if (isTechnician) {
+          await apiFetch(`/api/technicians/${userForm.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payloadTech),
+          });
+        } else {
+          await apiFetch(`/api/users/${userForm.id}`, {
+            method: "PUT",
+            body: JSON.stringify(payloadUser),
+          });
+        }
       }
       setUserModalOpen(false);
       setRoleFilter((r) => r); // refresh
     } catch (e: any) {
       console.error(e);
-      alert(e?.message || "Gagal menyimpan user");
+      alert(e?.message || "Gagal menyimpan data");
+    }
+  }
+
+  async function deleteTechnician(id: string, displayName: string) {
+    if (
+      !confirm(
+        `Hapus teknisi ${displayName}? Tindakan ini tidak dapat dibatalkan.`
+      )
+    )
+      return;
+    try {
+      await apiFetch(`/api/technicians?id=${id}`, { method: "DELETE" });
+      setRoleFilter((r) => r); // refresh list teknisi
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message || "Gagal menghapus teknisi");
     }
   }
 
   async function submitVehicleForm() {
-    const autoStatus = computeStatusPajak(
-      vehForm.pajak_periode_ini,
-      vehForm.pajak_periode_berikutnya
-    );
-
-    if (USE_VEHICLE_MOCK) {
-      const newItem: VehicleRow = {
-        id:
-          vehForm.id ||
-          vehForm.no_polisi.replace(/\s/g, "") ||
-          `${vehForm.merk}-${vehForm.tipe}`.replace(/\s/g, ""),
-        merk: vehForm.merk,
-        tipe: vehForm.tipe,
-        no_polisi: vehForm.no_polisi,
-        pajak_periode_ini: vehForm.pajak_periode_ini || "",
-        pajak_periode_berikutnya: vehForm.pajak_periode_berikutnya || "",
-        status_pajak: vehForm.status_pajak || autoStatus,
-      };
-      setVehicles((prev) => {
-        const idx = prev.findIndex((x) => x.id === newItem.id);
-        if (idx === -1) return [newItem, ...prev];
-        const copy = [...prev];
-        copy[idx] = newItem;
-        return copy;
-      });
-      setVehModalOpen(false);
-      return;
-    }
-
-    const payload: any = {
-      merk: vehForm.merk,
-      tipe: vehForm.tipe,
-      no_polisi: vehForm.no_polisi,
-      pajak_periode_ini: vehForm.pajak_periode_ini || null,
-      pajak_periode_berikutnya: vehForm.pajak_periode_berikutnya || null,
-      status_pajak: vehForm.status_pajak || autoStatus,
+    // payload mengikuti kolom DB
+    const payload = {
+      name:
+        `${vehForm.merk ?? ""} ${vehForm.tipe ?? ""}`.trim() ||
+        vehForm.no_polisi,
+      brand: vehForm.merk || null,
+      model: vehForm.tipe || null,
+      plate: vehForm.no_polisi,
+      tax_paid_date: vehForm.pajak_periode_ini || null,
+      tax_due_date: vehForm.pajak_periode_berikutnya || null,
+      active: true,
     };
 
     try {
       if (vehModalMode === "create") {
-        await apiFetch("/api/cars", {
+        await apiFetch("/api/vehicles", {
           method: "POST",
           body: JSON.stringify(payload),
         });
       } else {
-        await apiFetch(`/api/cars/${vehForm.id}`, {
+        await apiFetch(`/api/vehicles/${vehForm.id}`, {
           method: "PUT",
           body: JSON.stringify(payload),
         });
@@ -642,6 +628,7 @@ export default function ManageUsersVehiclesPage() {
           <Button
             onClick={openCreateForRole}
             className="bg-blue-600 hover:bg-indigo-700 text-white whitespace-nowrap"
+            disabled={loading}
           >
             <Plus className="h-4 w-4 mr-2" />
             {addLabel}
@@ -669,6 +656,10 @@ export default function ManageUsersVehiclesPage() {
               perPage={perPage}
               onPageChange={setPage}
               onEdit={openEditUser}
+              showDelete={roleFilter === "teknisi"}
+              onDelete={(u) =>
+                deleteTechnician(u.id, u.nama_panggilan || u.nama_lengkap || "")
+              }
             />
           )}
         </div>
@@ -810,98 +801,98 @@ export default function ManageUsersVehiclesPage() {
             </DialogTitle>
           </DialogHeader>
 
-        <div className="grid gap-3">
-          <div className="flex flex-col md:flex-row md:items-center gap-2">
-            <Label className="md:w-48">Merk</Label>
-            <Input
-              value={vehForm.merk}
-              onChange={(e) =>
-                setVehForm({ ...vehForm, merk: e.target.value })
-              }
-              placeholder="Toyota, Honda, dll"
-            />
-          </div>
-          <div className="flex flex-col md:flex-row md:items-center gap-2">
-            <Label className="md:w-48">Tipe</Label>
-            <Input
-              value={vehForm.tipe}
-              onChange={(e) =>
-                setVehForm({ ...vehForm, tipe: e.target.value })
-              }
-              placeholder="Avanza, Brio, dsb."
-            />
-          </div>
-          <div className="flex flex-col md:flex-row md:items-center gap-2">
-            <Label className="md:w-48">No Polisi</Label>
-            <Input
-              value={vehForm.no_polisi}
-              onChange={(e) =>
-                setVehForm({ ...vehForm, no_polisi: e.target.value })
-              }
-              placeholder="L 1992 KK"
-            />
-          </div>
-          <div className="flex flex-col md:flex-row md:items-center gap-2">
-            <Label className="md:w-48">Pajak (Periode Ini)</Label>
-            <Input
-              type="date"
-              value={vehForm.pajak_periode_ini}
-              onChange={(e) =>
-                setVehForm({
-                  ...vehForm,
-                  pajak_periode_ini: e.target.value,
-                  status_pajak: computeStatusPajak(
-                    e.target.value,
-                    vehForm.pajak_periode_berikutnya
-                  ),
-                })
-              }
-            />
-          </div>
-          <div className="flex flex-col md:flex-row md:items-center gap-2">
-            <Label className="md:w-48">Pajak (Periode Berikutnya)</Label>
-            <Input
-              type="date"
-              value={vehForm.pajak_periode_berikutnya}
-              onChange={(e) =>
-                setVehForm({
-                  ...vehForm,
-                  pajak_periode_berikutnya: e.target.value,
-                  status_pajak: computeStatusPajak(
-                    vehForm.pajak_periode_ini,
-                    e.target.value
-                  ),
-                })
-              }
-            />
-          </div>
-          <div className="flex flex-col md:flex-row md:items-center gap-2">
-            <Label className="md:w-48">Status Pajak</Label>
-            <Select
-              value={vehForm.status_pajak}
-              onValueChange={(v: "Aktif" | "Mati") =>
-                setVehForm((p) => ({ ...p, status_pajak: v }))
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Aktif">Aktif</SelectItem>
-                <SelectItem value="Mati">Mati</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          <div className="grid gap-3">
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <Label className="md:w-48">Merk</Label>
+              <Input
+                value={vehForm.merk}
+                onChange={(e) =>
+                  setVehForm({ ...vehForm, merk: e.target.value })
+                }
+                placeholder="Toyota, Honda, dll"
+              />
+            </div>
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <Label className="md:w-48">Tipe</Label>
+              <Input
+                value={vehForm.tipe}
+                onChange={(e) =>
+                  setVehForm({ ...vehForm, tipe: e.target.value })
+                }
+                placeholder="Avanza, Brio, dsb."
+              />
+            </div>
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <Label className="md:w-48">No Polisi</Label>
+              <Input
+                value={vehForm.no_polisi}
+                onChange={(e) =>
+                  setVehForm({ ...vehForm, no_polisi: e.target.value })
+                }
+                placeholder="L 1992 KK"
+              />
+            </div>
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <Label className="md:w-48">Pajak (Periode Ini)</Label>
+              <Input
+                type="date"
+                value={vehForm.pajak_periode_ini}
+                onChange={(e) =>
+                  setVehForm({
+                    ...vehForm,
+                    pajak_periode_ini: e.target.value, // tax_paid_date
+                    status_pajak: computeStatusPajak(
+                      e.target.value,
+                      vehForm.pajak_periode_berikutnya
+                    ),
+                  })
+                }
+              />
+            </div>
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <Label className="md:w-48">Pajak (Periode Berikutnya)</Label>
+              <Input
+                type="date"
+                value={vehForm.pajak_periode_berikutnya}
+                onChange={(e) =>
+                  setVehForm({
+                    ...vehForm,
+                    pajak_periode_berikutnya: e.target.value, // tax_due_date
+                    status_pajak: computeStatusPajak(
+                      vehForm.pajak_periode_ini,
+                      e.target.value
+                    ),
+                  })
+                }
+              />
+            </div>
+            <div className="flex flex-col md:flex-row md:items-center gap-2">
+              <Label className="md:w-48">Status Pajak</Label>
+              <Select
+                value={vehForm.status_pajak}
+                onValueChange={(v: "Aktif" | "Mati") =>
+                  setVehForm((p) => ({ ...p, status_pajak: v }))
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Aktif">Aktif</SelectItem>
+                  <SelectItem value="Mati">Mati</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={() => setVehModalOpen(false)}>
-              Batal
-            </Button>
-            <Button onClick={submitVehicleForm}>
-              {vehModalMode === "create" ? "Simpan" : "Update"}
-            </Button>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setVehModalOpen(false)}>
+                Batal
+              </Button>
+              <Button onClick={submitVehicleForm}>
+                {vehModalMode === "create" ? "Simpan" : "Update"}
+              </Button>
+            </div>
           </div>
-        </div>
         </DialogContent>
       </Dialog>
     </div>
@@ -916,8 +907,19 @@ function UserTable(props: {
   perPage: number;
   onPageChange: (p: number) => void;
   onEdit: (u: UserRow) => void;
+  showDelete?: boolean;
+  onDelete?: (u: UserRow) => void;
 }) {
-  const { rows, total, page, perPage, onPageChange, onEdit } = props;
+  const {
+    rows,
+    total,
+    page,
+    perPage,
+    onPageChange,
+    onEdit,
+    showDelete,
+    onDelete,
+  } = props;
   return (
     <>
       <table className="w-full text-sm">
@@ -962,9 +964,25 @@ function UserTable(props: {
                   )}
                 </td>
                 <td className="p-3 text-right">
-                  <Button variant="outline" size="sm" onClick={() => onEdit(u)}>
-                    <Edit className="h-4 w-4 mr-1" />
-                  </Button>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onEdit(u)}
+                    >
+                      <Edit className="h-4 w-4 mr-1" />
+                    </Button>
+                    {showDelete && onDelete && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onDelete(u)}
+                        className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <Trash2 className="h-4 w-4 mr-1" />
+                      </Button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))
@@ -1019,7 +1037,7 @@ function VehicleTable(props: {
                 <td className="p-3">
                   {v.status_pajak === "Aktif" ? (
                     <Badge
-                      variant="outline" // variant ini tidak memberi bg
+                      variant="outline"
                       className="bg-emerald-500 text-white hover:bg-emerald-600 border-transparent"
                     >
                       Aktif

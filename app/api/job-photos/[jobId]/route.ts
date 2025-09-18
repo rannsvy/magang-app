@@ -1,6 +1,6 @@
 // /app/api/job-photos/[jobId]/route.ts
 import { NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabaseServers"; // ← sesuaikan jika path Anda berbeda
+import { supabaseServer } from "@/lib/supabaseServers"; // sesuaikan path jika berbeda
 import { PHOTO_TEMPLATE } from "@/lib/photoTemplate";
 
 export const revalidate = 0;
@@ -35,13 +35,14 @@ type ApiItem = {
   meter: number | null; // hanya untuk type "photo+cable"
 };
 
+// ⬇️ Perubahan utama: params adalah Promise → wajib di-await
 export async function GET(
   _req: Request,
-  { params }: { params: { jobId: string } }
+  { params }: { params: Promise<{ jobId: string }> }
 ) {
   try {
-    const raw = params?.jobId ?? "";
-    const jobId = decodeURIComponent(raw);
+    const { jobId: raw } = await params;             // ✅ await di sini
+    const jobId = decodeURIComponent(raw ?? "");
     if (!jobId) {
       return NextResponse.json({ error: "jobId required" }, { status: 400 });
     }
@@ -80,7 +81,7 @@ export async function GET(
     // Urutkan template berdasar "sort" (jika ada)
     const template: TemplateItem[] = (PHOTO_TEMPLATE as TemplateItem[])
       .slice()
-      .sort((a, b) => (Number(a.sort ?? 0) - Number(b.sort ?? 0)));
+      .sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
 
     // Bangun daftar item untuk UI
     const items: ApiItem[] = template.map((tpl) => {
@@ -112,26 +113,23 @@ export async function GET(
       const hasImg = Boolean(it.photoThumb || it.photo);
       if (!hasImg) return false;
       if (it.requiresSerialNumber && !it.serialNumber) return false;
-      // Catatan: untuk "photo+cable" tidak diwajibkan meter agar dinyatakan lengkap,
-      // kecuali Anda memang ingin mewajibkannya.
+      // Untuk "photo+cable" tidak diwajibkan meter agar dianggap lengkap.
       return true;
     }).length;
 
     const uploaded = complete; // alias untuk kompatibilitas frontend (X/Y)
     const percent = total ? Math.round((uploaded / total) * 100) : 0;
 
-    // Respons lengkap (kompatibel dengan frontend X/Y yang mencari progress.uploaded atau root uploaded)
+    // Respons lengkap
     return NextResponse.json({
       items,
       status: isPending ? "pending" : "active",
-      // bidang utama untuk tampilan X/Y yang sederhana
       uploaded,
       total,
-      // bidang progres terstruktur
       progress: {
         total,
-        complete, // tetap disediakan sebagai sinonim
-        uploaded, // alias agar mudah dipakai
+        complete,
+        uploaded,
         percent,
       },
     });

@@ -8,7 +8,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ArrowLeft, Menu, LogOut, UserCircle, AlertCircle, AlertTriangle } from "lucide-react";
+import {
+  ArrowLeft,
+  Menu,
+  LogOut,
+  UserCircle,
+  AlertCircle,
+  AlertTriangle,
+} from "lucide-react";
 
 interface TechnicianHeaderProps {
   title: string;
@@ -45,9 +52,9 @@ export function TechnicianHeader({
     router.push("/user/complain");
   };
 
-  const handleDamageComplainClick = ()=> {
-    router.push ("/user/damageComplain")
-  }
+  const handleDamageComplainClick = () => {
+    router.push("/user/damageComplain");
+  };
 
   return (
     <header className="bg-white shadow-sm border-b">
