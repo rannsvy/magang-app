@@ -9,6 +9,15 @@ import {
   getProjectStatusDisplay,
 } from "./helpers";
 
+/* shadcn/ui context-menu */
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+} from "@/components/ui/context-menu";
+
 type Props = {
   tableRef: React.RefObject<HTMLTableElement>;
   techs: UITechnician[];
@@ -33,7 +42,35 @@ type Props = {
     status: string;
     color: string;
   };
+
+  /* NEW: supervisor integration */
+  currentDate: string;
+  supervisors: Array<{
+    id: string;
+    name: string;
+    nickname: string;
+    role?: string;
+  }>;
+  onSupervisorAssigned?: () => void;
 };
+
+async function setSupervisor(
+  date: string,
+  projectId: string,
+  supervisorId: string
+) {
+  const res = await fetch("/api/assignments", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      date,
+      assignments: [], // tidak mengubah teknisi
+      supervisors: [{ projectId, supervisorId }],
+    }),
+  });
+  const j = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(j?.error || "Gagal menyimpan supervisor");
+}
 
 export default function ProjectTable({
   tableRef,
@@ -49,6 +86,9 @@ export default function ProjectTable({
   getProjectAssignmentCount,
   getIdleTechnicians,
   getTechnicianStatus,
+  currentDate,
+  supervisors,
+  onSupervisorAssigned,
 }: Props) {
   const totalAssignments = assignments.filter(
     (a) => a.isSelected || a.isProjectLeader
@@ -223,7 +263,7 @@ export default function ProjectTable({
 
                     const disabledCell = isLockedRow;
 
-                    return (
+                    const coreTd = (
                       <td
                         key={`${project.id}-${t.id}`}
                         className={`px-1 py-1 text-center border-r border-gray-200 ${
@@ -243,7 +283,7 @@ export default function ProjectTable({
                               ? "Proyek sedang pending"
                               : "Proyek telah selesai"
                             : isLead
-                            ? `${t.name} (Project Leader) - Double click to remove leader status`
+                            ? `${t.name} (Project Leader) — Klik kanan untuk pilih Supervisor`
                             : isSel
                             ? `${t.name} (Assigned) - Single click: toggle attendance | Double click: set as leader`
                             : `Single click: assign ${t.name} | Double click: set as project leader`
@@ -255,6 +295,47 @@ export default function ProjectTable({
                           {disp}
                         </div>
                       </td>
+                    );
+
+                    if (!isLead) return coreTd;
+
+                    // Jika LEADER → bungkus dengan ContextMenu untuk pilih Supervisor
+                    return (
+                      <ContextMenu key={`${project.id}-${t.id}`}>
+                        <ContextMenuTrigger asChild>
+                          {coreTd}
+                        </ContextMenuTrigger>
+                        <ContextMenuContent>
+                          <ContextMenuItem disabled>
+                            Set Supervisor • {project.name}
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                          {supervisors.length === 0 && (
+                            <ContextMenuItem disabled>
+                              Tidak ada data supervisor
+                            </ContextMenuItem>
+                          )}
+                          {supervisors.map((s) => (
+                            <ContextMenuItem
+                              key={s.id}
+                              onClick={async () => {
+                                try {
+                                  await setSupervisor(
+                                    currentDate,
+                                    project.id,
+                                    s.id
+                                  );
+                                  onSupervisorAssigned?.();
+                                } catch (e: any) {
+                                  alert(e?.message || "Gagal set supervisor");
+                                }
+                              }}
+                            >
+                              {s.nickname} {s.role ? `— ${s.role}` : ""}
+                            </ContextMenuItem>
+                          ))}
+                        </ContextMenuContent>
+                      </ContextMenu>
                     );
                   })}
 
