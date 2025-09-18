@@ -151,30 +151,58 @@ export default function ProjectTableCars({
               {!vehLoading &&
                 allTechs.map((t, i) => {
                   const v = vehicles[i];
-                  const plate = v?.plate ?? "";
+                  const plate = (v?.plate ?? "").trim().replace(/\s+/g, " ");
+                  const model = (t.name || "").trim();
+
+                  // ==== Tambahkan heuristik panjang ====
+                  const isLongModel  = model.length >= 14;  // Triton 2.5L DC HDX, L300 FB R 4X2 MT
+                  const isLongPlate  = plate.length >= 11;
+                  const isCrowded    = isLongModel || isLongPlate;
+
+                  // Lebarkan kolom & tambah tinggi blok jika panjang
+                  const colWidthCls  = isCrowded ? "w-8" : "w-8";       // <= UBAH bagian width kolom di sini
+                  const blockHeight  = isCrowded ? "68px" : "59px";      // <= UBAH tinggi tiap blok vertikal di sini
+                  const textSizeCls  = isCrowded ? "text-[9px]" : "text-[10px]";
+
                   return (
                     <th
                       key={t.id}
-                      className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-8 sticky top-0 bg-gray-100 h-36"
-                      title={`${t.name} — ${plate}`}
+                      className={`px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 sticky top-0 bg-gray-100 h-36 ${colWidthCls}`}
+                      title={`${model} — ${plate}`}
                     >
-                      <div className="flex flex-col items-center justify-center h-full">
-                        {/* No. Polisi */}
+                      <div className="flex flex-col items-center justify-center h-full gap-1">
+                        {/* PLAT (di atas) */}
                         <div
-                          className="text-[10px] italic"
+                          className={`${textSizeCls} font-semibold whitespace-nowrap`}
                           style={{
                             writingMode: "vertical-lr",
                             textOrientation: "mixed",
                             transform: "rotate(180deg)",
-                            height: "52px",
+                            height: blockHeight,             // <= PLAT juga diberi ruang yang sama
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
                             lineHeight: 1.1,
                           }}
                         >
-                          {t.name}
-                          {plate}
+                          {plate || "-"}
+                        </div>
+
+                        {/* MODEL (di bawah) */}
+                        <div
+                          className={`${textSizeCls} whitespace-nowrap`}
+                          style={{
+                            writingMode: "vertical-lr",
+                            textOrientation: "mixed",
+                            transform: "rotate(180deg)",
+                            height: blockHeight,             // <= INI yang memastikan nama panjang tidak terpotong
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            lineHeight: 1.1,
+                          }}
+                        >
+                          {model || "-"}
                         </div>
                       </div>
                     </th>

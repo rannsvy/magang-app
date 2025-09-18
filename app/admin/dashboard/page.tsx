@@ -1,7 +1,7 @@
 // app/admin/dashboard/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { AdminHeader } from "@/components/admin-header";
 import {
@@ -11,6 +11,7 @@ import {
   Users,
   CalendarCheck,
   History,
+  Server,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
@@ -21,13 +22,61 @@ type Stats = {
   reportsCount: number;
 };
 
+type SystemMetrics = {
+  totalRamBytes: number;     // total RAM VM (bytes)
+  usedRamBytes: number;      // RAM terpakai (bytes)
+  totalStorageBytes: number; // total storage root (bytes)
+  usedStorageBytes: number;  // storage terpakai (bytes)
+};
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+/* ================== MOCK SYSTEM METRICS (tanpa API) ================== */
+function useMockSystemMetrics() {
+  const [sys, setSys] = useState<SystemMetrics | null>(null);
+
+  const GB = (n: number) => n * 1024 ** 3;
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+  useEffect(() => {
+    const totalRamBytes = GB(4);       // 4 GB
+    const totalStorageBytes = GB(256); // 256 GB
+
+    // start dari angka yang terlihat realistis
+    let ramPct = 0.48 + Math.random() * 0.18;       // ~48–66%
+    let storagePct = 0.30 + Math.random() * 0.22;   // ~30–52%
+
+    const emit = () => {
+      setSys({
+        totalRamBytes,
+        usedRamBytes: Math.round(totalRamBytes * ramPct),
+        totalStorageBytes,
+        usedStorageBytes: Math.round(totalStorageBytes * storagePct),
+      });
+    };
+
+    emit(); // initial render
+
+    // random-walk agar terasa "live"
+    const id = setInterval(() => {
+      ramPct = clamp(ramPct + (Math.random() - 0.5) * 0.10, 0.10, 0.97);       // ±5% step
+      storagePct = clamp(storagePct + (Math.random() - 0.5) * 0.04, 0.05, 0.95); // ±2% step
+      emit();
+    }, 3000);
+
+    return () => clearInterval(id);
+  }, []);
+
+  return sys;
+}
+
 export default function AdminDashboard() {
   const router = useRouter();
+
+  // ====== Dashboard Stats ======
   const [stats, setStats] = useState<Stats>({
     completedCount: 0,
     ongoingCount: 0,
@@ -57,7 +106,7 @@ export default function AdminDashboard() {
     loadStats();
   }, []);
 
-  // Realtime: perubahan di projects / generated_reports -> refresh angka
+  // Realtime refresh angka
   useEffect(() => {
     let t: any;
     const refresh = () => {
@@ -72,7 +121,6 @@ export default function AdminDashboard() {
         { event: "*", schema: "public", table: "projects" },
         refresh
       )
-      // jika tabel generated_reports belum ada, channel tetap aman (tak ada event)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "generated_reports" },
@@ -86,6 +134,28 @@ export default function AdminDashboard() {
     };
   }, []);
 
+  // ====== System Metrics (RAM/Storage) — MOCK ======
+  const sys = useMockSystemMetrics();
+
+  // Helpers
+  const toGB = (bytes: number) => bytes / (1024 ** 3);
+  const formatGB = (bytes: number) => `${toGB(bytes).toFixed(1)} GB`;
+
+  const ramPct = useMemo(() => {
+    if (!sys) return 0;
+    if (sys.totalRamBytes <= 0) return 0;
+    return Math.min(100, Math.max(0, (sys.usedRamBytes / sys.totalRamBytes) * 100));
+  }, [sys]);
+
+  const storagePct = useMemo(() => {
+    if (!sys) return 0;
+    if (sys.totalStorageBytes <= 0) return 0;
+    return Math.min(100, Math.max(0, (sys.usedStorageBytes / sys.totalStorageBytes) * 100));
+  }, [sys]);
+
+  const barClass = (pct: number) =>
+    pct >= 90 ? "bg-red-500" : "bg-blue-500";
+
   return (
     <div className="min-h-screen bg-gray-50">
       <AdminHeader title="Dashboard Admin" />
@@ -93,7 +163,8 @@ export default function AdminDashboard() {
       <main className="p-4">
         <div className="max-w-10xl mx-auto">
           {/* Statistics Section */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            {/* Pekerjaan Selesai */}
             <Card className="hover:shadow-lg transition-shadow">
               <CardContent className="p-8">
                 <div className="flex items-center">
@@ -115,6 +186,7 @@ export default function AdminDashboard() {
               </CardContent>
             </Card>
 
+            {/* Sedang Berlangsung */}
             <Card className="hover:shadow-lg transition-shadow">
               <CardContent className="p-8">
                 <div className="flex items-center">
@@ -133,6 +205,7 @@ export default function AdminDashboard() {
               </CardContent>
             </Card>
 
+            {/* Laporan Dibuat */}
             <Card className="hover:shadow-lg transition-shadow">
               <CardContent className="p-8">
                 <div className="flex items-center">
@@ -146,6 +219,44 @@ export default function AdminDashboard() {
                     <p className="text-4xl font-bold text-gray-900">
                       {loading ? "…" : stats.reportsCount}
                     </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="hover:shadow-lg transition-shadow">
+              <CardContent className="p-8">
+                <div className="flex flex-col items-center gap-6">
+                  {/* Status RAM (centered) */}
+                  <div className="w-full max-w-xs text-center">
+                    <p className="text-[13px] font-medium text-gray-600">Status RAM</p>
+                    <p className="text-[13px] text-gray-700">
+                      {sys
+                        ? `${formatGB(sys.usedRamBytes)} / ${formatGB(sys.totalRamBytes)}`
+                        : "…"}
+                    </p>
+                    <div className="mt-2 h-2 w-full rounded-full bg-gray-200 overflow-hidden mx-auto">
+                      <div
+                        className={`h-full ${barClass(ramPct)} transition-all`}
+                        style={{ width: `${ramPct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Status Storage (centered) */}
+                  <div className="w-full max-w-xs text-center">
+                    <p className="text-[13px] font-medium text-gray-600">Status Storage</p>
+                    <p className="text-[13px] text-gray-700">
+                      {sys
+                        ? `${formatGB(sys.usedStorageBytes)} / ${formatGB(sys.totalStorageBytes)}`
+                        : "…"}
+                    </p>
+                    <div className="mt-2 h-2 w-full rounded-full bg-gray-200 overflow-hidden mx-auto">
+                      <div
+                        className={`h-full ${barClass(storagePct)} transition-all`}
+                        style={{ width: `${storagePct}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
               </CardContent>
@@ -240,7 +351,6 @@ export default function AdminDashboard() {
           </div>
         </div>
       </main>
-
     </div>
   );
 }

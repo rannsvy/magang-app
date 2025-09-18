@@ -17,6 +17,7 @@ import {
   TemplateOption,
 } from "./types";
 import { formatDateDDMMYYYY } from "./helpers";
+import { calcManDaysInstalasi, calcManDaysSurvey } from "./helpers";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { apiFetch } from "@/lib/apiFetch";
 
@@ -73,6 +74,18 @@ export default function CreateProjectDialog({
       totalManDays: "",
       tipeTemplate: "",
     });
+
+  // Otomatis Man Days: Instalasi
+  useEffect(() => {
+    const md = calcManDaysInstalasi(newProjectForm.sigmaHari, newProjectForm.sigmaTeknisi);
+    setNewProjectForm(prev => ({ ...prev, sigmaManDays: md ? String(md) : "" }));
+  }, [newProjectForm.sigmaHari, newProjectForm.sigmaTeknisi]);
+
+  // Otomatis Man Days: Survey
+  useEffect(() => {
+    const md = calcManDaysSurvey(newSurveyProjectForm.totalHari, newSurveyProjectForm.totalTeknisi);
+    setNewSurveyProjectForm(prev => ({ ...prev, totalManDays: md ? String(md) : "" }));
+  }, [newSurveyProjectForm.totalHari, newSurveyProjectForm.totalTeknisi]);
 
   useEffect(() => {
     (async () => {
@@ -237,33 +250,50 @@ export default function CreateProjectDialog({
     sales: p.sales ?? p.sales_name ?? p.nama_sales ?? "",
   });
 
+  // ================== submitInstalasi (FINAL) ==================
   const submitInstalasi = async () => {
+    // Validasi minimal field wajib (tanpa mengandalkan sigmaManDays dari state)
     if (
       !newProjectForm.namaProject ||
       !newProjectForm.tanggalMulaiProject ||
       !newProjectForm.tanggalDeadlineProject ||
-      !newProjectForm.sigmaManDays ||
       !newProjectForm.sigmaHari ||
       !newProjectForm.sigmaTeknisi
-    )
+    ) {
       return;
+    }
 
     if (!newProjectForm.tipeTemplate) {
       setTmplErr("Harap pilih tipe template");
       return;
     }
+
     if (
       !validateDates(
         newProjectForm.tanggalMulaiProject,
         newProjectForm.tanggalDeadlineProject
       )
-    )
+    ) {
       return;
+    }
+
+    // ===== Recompute Man Days (defensive) =====
+    const md = calcManDaysInstalasi(
+      newProjectForm.sigmaHari,
+      newProjectForm.sigmaTeknisi
+    );
+    if (md <= 0) return;
+
+    // (Opsional) sinkronkan UI sebelum kirim
+    if (String(md) !== newProjectForm.sigmaManDays) {
+      setNewProjectForm((prev) => ({ ...prev, sigmaManDays: String(md) }));
+    }
 
     setTmplErr("");
 
     try {
       setIsSaving(true);
+
       const payload = {
         namaProject: newProjectForm.namaProject || null,
         lokasi: newProjectForm.lokasi || null,
@@ -273,7 +303,7 @@ export default function CreateProjectDialog({
         tanggalTerimaPo: newProjectForm.tanggalTerimaPo || null,
         tanggalMulaiProject: newProjectForm.tanggalMulaiProject,
         tanggalDeadlineProject: newProjectForm.tanggalDeadlineProject,
-        sigmaManDays: Number(newProjectForm.sigmaManDays),
+        sigmaManDays: md, // <<< gunakan hasil kalkulasi
         sigmaHari: Number(newProjectForm.sigmaHari),
         sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
         templateKey: newProjectForm.tipeTemplate,
@@ -298,6 +328,7 @@ export default function CreateProjectDialog({
           body: JSON.stringify(payload),
         }
       );
+
       const p = (res as any).data ?? res;
       onCreated(buildUIProject(p));
       onOpenChange(false);
@@ -310,7 +341,9 @@ export default function CreateProjectDialog({
     }
   };
 
+  // ================== submitSurvey (FINAL) ==================
   const submitSurvey = async () => {
+    // Validasi minimal field wajib (tanpa mengandalkan totalManDays dari state)
     if (
       !newSurveyProjectForm.namaProject ||
       !newSurveyProjectForm.namaGedung ||
@@ -319,21 +352,38 @@ export default function CreateProjectDialog({
       !newSurveyProjectForm.tanggalDeadlineProject ||
       !newSurveyProjectForm.totalHari ||
       !newSurveyProjectForm.totalTeknisi ||
-      !newSurveyProjectForm.totalManDays ||
       !newSurveyProjectForm.tipeTemplate
-    )
+    ) {
       return;
+    }
 
     if (
       !validateDates(
         newSurveyProjectForm.tanggalMulaiProject,
         newSurveyProjectForm.tanggalDeadlineProject
       )
-    )
+    ) {
       return;
+    }
+
+    // ===== Recompute Man Days (defensive) =====
+    const md = calcManDaysSurvey(
+      newSurveyProjectForm.totalHari,
+      newSurveyProjectForm.totalTeknisi
+    );
+    if (md <= 0) return;
+
+    // (Opsional) sinkronkan UI sebelum kirim
+    if (String(md) !== newSurveyProjectForm.totalManDays) {
+      setNewSurveyProjectForm((prev) => ({
+        ...prev,
+        totalManDays: String(md),
+      }));
+    }
 
     try {
       setIsSaving(true);
+
       const payload = {
         namaProject: newSurveyProjectForm.namaProject,
         namaGedung: newSurveyProjectForm.namaGedung,
@@ -342,7 +392,7 @@ export default function CreateProjectDialog({
         tanggalDeadlineProject: newSurveyProjectForm.tanggalDeadlineProject,
         totalHari: Number(newSurveyProjectForm.totalHari),
         totalTeknisi: Number(newSurveyProjectForm.totalTeknisi),
-        totalManDays: Number(newSurveyProjectForm.totalManDays),
+        totalManDays: md, // <<< gunakan hasil kalkulasi
         tipeTemplate: newSurveyProjectForm.tipeTemplate,
         roomDetails: newSurveyProjectForm.roomDetails ?? [],
       };
@@ -379,7 +429,7 @@ export default function CreateProjectDialog({
         !!newSurveyProjectForm.lokasi &&
         !!newSurveyProjectForm.tanggalMulaiProject &&
         !!newSurveyProjectForm.tanggalDeadlineProject &&
-        !!newSurveyProjectForm.totalManDays &&
+        calcManDaysSurvey(newSurveyProjectForm.totalHari, newSurveyProjectForm.totalTeknisi) > 0 &&
         !!newSurveyProjectForm.totalHari &&
         !!newSurveyProjectForm.totalTeknisi &&
         !!newSurveyProjectForm.tipeTemplate &&
@@ -387,7 +437,7 @@ export default function CreateProjectDialog({
       : !!newProjectForm.namaProject &&
         !!newProjectForm.tanggalMulaiProject &&
         !!newProjectForm.tanggalDeadlineProject &&
-        !!newProjectForm.sigmaManDays &&
+        calcManDaysInstalasi(newProjectForm.sigmaHari, newProjectForm.sigmaTeknisi) > 0 &&
         !!newProjectForm.sigmaHari &&
         !!newProjectForm.sigmaTeknisi &&
         !!newProjectForm.tipeTemplate &&
@@ -658,21 +708,17 @@ export default function CreateProjectDialog({
                   <Label htmlFor="sigmaManDays" className="min-w-[120px]">
                     Man Days <span className="text-red-500">*</span>
                   </Label>
-                  <input
-                    id="sigmaManDays"
-                    type="number"
-                    min="0"
-                    value={newProjectForm.sigmaManDays}
-                    onChange={(e) =>
-                      setNewProjectForm({
-                        ...newProjectForm,
-                        sigmaManDays: e.target.value,
-                      })
-                    }
-                    placeholder="Target Man Days"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
+                    <input
+                      id="sigmaManDays"
+                      type="number"
+                      min="0"
+                      value={newProjectForm.sigmaManDays}
+                      readOnly
+                      placeholder="Otomatis"
+                      aria-readonly="true"
+                      className="flex h-10 w-full rounded-md border border-input bg-gray-50 px-3 py-2 text-sm
+                                cursor-default hover:cursor-not-allowed select-none focus:outline-none focus:ring-0"
+                    />
                 </div>
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaTeknisi" className="min-w-[120px]">
@@ -1102,21 +1148,17 @@ export default function CreateProjectDialog({
                   <Label htmlFor="totalManDays" className="min-w-[120px]">
                     Total Man Days <span className="text-red-500">*</span>
                   </Label>
-                  <input
-                    id="totalManDays"
-                    type="number"
-                    min="0"
-                    value={newSurveyProjectForm.totalManDays}
-                    onChange={(e) =>
-                      setNewSurveyProjectForm({
-                        ...newSurveyProjectForm,
-                        totalManDays: e.target.value,
-                      })
-                    }
-                    placeholder="Target man days"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
+                    <input
+                      id="totalManDays"
+                      type="number"
+                      min="0"
+                      value={newSurveyProjectForm.totalManDays}
+                      readOnly
+                      placeholder="Otomatis"
+                      aria-readonly="true"
+                      className="flex h-10 w-full rounded-md border border-input bg-gray-50 px-3 py-2 text-sm
+                                cursor-default hover:cursor-not-allowed select-none focus:outline-none focus:ring-0"
+                    />
                 </div>
               </div>
 
