@@ -1,321 +1,287 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import Tesseract from "tesseract.js";
 
-export type OCRPhase = "idle" | "barcode" | "ocr" | "done" | "error";
+export type OcrStatus = "idle" | "barcode" | "ocr" | "done" | "error";
+
 export interface OcrInfo {
-  status: OCRPhase;
+  status: OcrStatus;
   progress: number;
   error?: string;
 }
-export type OcrProgress = (info: OcrInfo) => void;
 
-/* ================= Normalisasi & seleksi ================= */
+export interface RecognizeOptions {
+  onProgress?: (info: OcrInfo) => void;
+  enableBarcode?: boolean;
+  abortSignal?: AbortSignal;
+}
 
+/* ================= Helpers (mengikuti logika di file kamu) ================= */
+
+// Normalisasi salah OCR umum pada SN (lebih “smart”, termasuk Q→0 saat diikuti digit)
 export function normalizeSN(val: string) {
   let out = (val || "").trim().toUpperCase();
 
-  // potong di pemisah umum (revisi/suffix)
-  out = out.split(/[\/\\\s]/)[0] || out;
+  // Q→0 jika diikuti digit (kasus: HFEQ9F3HKDT -> HFE09F3HKDT)
+  out = out.replace(/Q(?=\d)/g, "0");
 
-  out = out.replace(/\s+/g, "");
-  out = out
-    .replace(/Q(?=\d)/g, "0")
-    .replace(/(?<=\d)O(?=\d)/g, "0")
-    .replace(/O(?=\d)/g, "0")
-    .replace(/(?<=\d)[IL](?=\d)/g, "1")
-    .replace(/(?<=\d)B(?=\d)/g, "8")
-    .replace(/(?<=\d)S(?=\d)/g, "5");
+  // O→0 kalau diapit digit atau diikuti digit/akhir
+  out = out.replace(/(?<=\d)O(?=\d)/g, "0").replace(/O(?=\d)/g, "0");
 
-  return out.replace(/[^A-Z0-9\-]/g, "");
+  // I/l → 1 di sekitar digit
+  out = out.replace(/(?<=\d)[IL](?=\d)/g, "1");
+
+  // B→8, S→5 hanya jika diapit digit
+  out = out.replace(/(?<=\d)B(?=\d)/g, "8");
+  out = out.replace(/(?<=\d)S(?=\d)/g, "5");
+
+  // Buang simbol aneh (tetap izinkan dash)
+  out = out.replace(/[^\w\-]/g, "");
+
+  return out;
 }
 
-const COMMON_WORD =
-  /^(MODEL|HIKVISION|DAHUA|NETWORK|CAMERA|SERIES|SKYHAWK|BULLET|ULTRA|SMART|ANPR|MP|CE|FCC)$/i;
+// Pola label & nilai (sama seperti di kode kamu)
+const labelPattern = /\b(?:S\/?N|Serial(?:\s*No\.?| Number)?)\b/i;
+const valuePattern = /[:#\-]?\s*([A-Z0-9\-]{5,})/i;
 
-function scoreCandidate(raw: string, nearLabel = false) {
-  const s = normalizeSN(raw);
-  if (!s) return -1;
-  if (COMMON_WORD.test(s)) return -1;
-
-  // hindari EAN/UPC all digits 12–14
-  if (/^\d{12,14}$/.test(s)) return -2;
-
-  let score = 0;
-  const L = s.length;
-  if (L >= 8 && L <= 20) score += 6;
-  else if (L >= 6) score += 3;
-
-  if (/[A-Z]/.test(s) && /\d/.test(s)) score += 6;
-  else if (/\d/.test(s)) score += 2;
-
-  if (nearLabel) score += 6;
-  return score;
-}
-
-function selectBestSN(raw: string): string | null {
-  const left = raw.split("/")[0];
-  const alnum = normalizeSN(left).replace(/[^A-Z0-9\-]/g, "");
-
-  // jika 9+ dan kombinasi huruf+angka → ok
-  if (alnum.length >= 9 && /[A-Z]/.test(alnum) && /\d/.test(alnum))
-    return alnum;
-  // m8: minimal 8 kar. kombinasi
-  const m8 = alnum.match(/(?=[A-Z0-9\-]*[A-Z])(?=[A-Z0-9\-]*\d)[A-Z0-9\-]{8,}/);
-  if (m8) return m8[0];
-  // pure digit panjang (12+) — biasanya barcode, tapi masih kita ijinkan kalau ini yang tersisa
-  if (/^\d{12,}$/.test(alnum)) return alnum;
-  return alnum.length >= 8 ? alnum.slice(0, 8) : null;
-}
-
-/* ================= Ekstraksi dari hasil OCR ================= */
-
-function extractSN(
+/** Versi "single" persis seperti fungsi extractSN kamu (mengembalikan satu string atau ""). */
+export function extractSNSingle(
   ocrText: string,
   words?: Array<{ text: string }>,
   lines?: Array<{ text: string }>
 ) {
-  const labelRe = /\b(?:S\/?N|SERIAL(?:\s*NO\.?|(?:\s*NUMBER)?))\b/i;
-  const candidates: Array<{ tok: string; near: boolean }> = [];
-
-  // 1) Prioritas: baris yang mengandung label + baris berikutnya
-  const linesArr = (ocrText || "").replace(/\r/g, "").split("\n");
-  for (let i = 0; i < linesArr.length; i++) {
-    const L = linesArr[i].trim();
-    if (labelRe.test(L)) {
-      const right = L.replace(labelRe, "");
-      const m = right.match(/[A-Z0-9\-\/]{4,}/i);
-      if (m) candidates.push({ tok: m[0], near: true });
-      const next = (linesArr[i + 1] || "").trim();
-      const m2 = next.match(/^[\s:]*([A-Z0-9\-\/]{4,})/i);
-      if (m2) candidates.push({ tok: m2[1], near: true });
+  // 1) Baris yang mengandung label
+  for (const l of lines || []) {
+    if (labelPattern.test(l.text)) {
+      const m = l.text.match(
+        new RegExp(labelPattern.source + valuePattern.source, "i")
+      );
+      if (m?.[1]) return normalizeSN(m[1]);
     }
   }
 
-  // 2) Token setelah kata “SN” pada level words (tambahan)
-  if (words?.length) {
+  // 2) Token setelah label
+  if (words && words.length) {
     for (let i = 0; i < words.length; i++) {
-      if (labelRe.test(words[i].text)) {
-        const tok = [words[i + 1]?.text ?? "", words[i + 2]?.text ?? ""].join(
-          " "
-        );
-        const sn = selectBestSN(tok);
-        if (sn) candidates.push({ tok: sn, near: true });
+      if (labelPattern.test(words[i].text)) {
+        const nextTokens = [
+          words[i + 1]?.text,
+          words[i + 2]?.text,
+          words[i + 3]?.text,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const m = nextTokens.match(valuePattern);
+        if (m?.[1]) return normalizeSN(m[1]);
       }
     }
   }
 
-  // 3) Fallback: token panjang global (hindari kata umum)
-  const T = (ocrText || "").toUpperCase();
-  const glob = T.match(/[A-Z0-9][A-Z0-9\-\/]{6,}/g) || [];
-  for (const g of glob) {
-    if (!COMMON_WORD.test(g)) candidates.push({ tok: g, near: false });
+  // 3) Regex global di seluruh teks
+  const mAll = ocrText.match(
+    new RegExp(labelPattern.source + valuePattern.source, "i")
+  );
+  if (mAll?.[1]) return normalizeSN(mAll[1]);
+
+  // 4) Fallback: deretan alnum panjang di baris label
+  const lineSN = (
+    ocrText.split(/\r?\n/).find((l) => labelPattern.test(l)) || ""
+  ).replace(labelPattern, "");
+  const mLoose = lineSN.match(/[A-Z0-9\-]{6,}/i);
+  if (mLoose?.[0]) return normalizeSN(mLoose[0]);
+
+  // 5) Fallback terakhir: angka panjang (bila label tak terbaca)
+  const mDigits = ocrText.match(/\b\d{10,}\b/);
+  if (mDigits?.[0]) return normalizeSN(mDigits[0]);
+
+  return "";
+}
+
+/** Versi "multi" yang memungut semua kandidat dengan urutan dari logika yang sama. */
+function extractSNCandidates(
+  ocrText: string,
+  words?: Array<{ text: string }>,
+  lines?: Array<{ text: string }>
+): string[] {
+  const c: string[] = [];
+
+  // 1) baris yang mengandung label
+  for (const l of lines || []) {
+    if (!labelPattern.test(l.text)) continue;
+    const m = l.text.match(
+      new RegExp(labelPattern.source + valuePattern.source, "i")
+    );
+    if (m?.[1]) c.push(normalizeSN(m[1]));
   }
 
-  // 4) Skor & pilih
-  let best = "";
-  let bestScore = -1;
-  for (const c of candidates) {
-    const sc = scoreCandidate(c.tok, c.near);
-    if (sc > bestScore) {
-      bestScore = sc;
-      best = c.tok;
+  // 2) token setelah label (1..3 token)
+  if (words && words.length) {
+    for (let i = 0; i < words.length; i++) {
+      if (!labelPattern.test(words[i].text)) continue;
+      const nextTokens = [
+        words[i + 1]?.text,
+        words[i + 2]?.text,
+        words[i + 3]?.text,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const m = nextTokens.match(valuePattern);
+      if (m?.[1]) c.push(normalizeSN(m[1]));
     }
   }
-  if (!best) return "";
 
-  const final = selectBestSN(best);
-  return final ?? "";
+  // 3) regex global
+  const mAll = ocrText.match(
+    new RegExp(labelPattern.source + valuePattern.source, "i")
+  );
+  if (mAll?.[1]) c.push(normalizeSN(mAll[1]));
+
+  // 4) fallback: alnum panjang di baris label
+  const lineSN = (
+    ocrText.split(/\r?\n/).find((l) => labelPattern.test(l)) || ""
+  ).replace(labelPattern, "");
+  const mLoose = lineSN.match(/[A-Z0-9\-]{6,}/i);
+  if (mLoose?.[0]) c.push(normalizeSN(mLoose[0]));
+
+  // 5) fallback terakhir: angka panjang jika label tak terbaca
+  if (!c.length) {
+    const mDigits = ocrText.match(/\b\d{10,}\b/);
+    if (mDigits?.[0]) c.push(normalizeSN(mDigits[0]));
+  }
+
+  // dedup + panjang minimal
+  return Array.from(new Set(c)).filter((s) => s.length >= 6);
 }
 
-/* ================= Gambar utils ================= */
+/* ================= Barcode helper ================= */
 
-async function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result as string);
-    fr.readAsDataURL(blob);
+async function loadImg(source: Blob | string): Promise<HTMLImageElement> {
+  return await new Promise((resolve, reject) => {
+    const im = new Image();
+    (im as any).decoding = "async";
+    im.crossOrigin = "anonymous";
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("load image failed"));
+    im.src = typeof source === "string" ? source : URL.createObjectURL(source);
   });
 }
 
-async function scaleUpDataUrl(dataUrl: string, factor = 2.5): Promise<string> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement("canvas");
-      c.width = Math.round(img.naturalWidth * factor);
-      c.height = Math.round(img.naturalHeight * factor);
-      const ctx = c.getContext("2d")!;
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(img, 0, 0, c.width, c.height);
-      resolve(c.toDataURL("image/png"));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
-}
-
-async function rotateDataUrl(dataUrl: string, deg: number): Promise<string> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const rad = (deg * Math.PI) / 180;
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      const c = document.createElement("canvas");
-      const ctx = c.getContext("2d")!;
-      if (deg % 180 === 0) {
-        c.width = w;
-        c.height = h;
-      } else {
-        c.width = h;
-        c.height = w;
-      }
-      ctx.translate(c.width / 2, c.height / 2);
-      ctx.rotate(rad);
-      ctx.drawImage(img, -w / 2, -h / 2);
-      resolve(c.toDataURL("image/png"));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
-}
-
-/* ================= Barcode (fallback) ================= */
-
-async function tryDecodeBarcodeFromDataUrl(
-  dataUrl: string
+async function tryDecodeBarcodeFromImage(
+  img: HTMLImageElement
 ): Promise<string | null> {
   try {
-    if (typeof window === "undefined") return null;
     const { BrowserMultiFormatReader } = await import("@zxing/browser");
-    const imgEl = new Image();
-    imgEl.src = dataUrl;
-    await new Promise<void>((res, rej) => {
-      imgEl.onload = () => res();
-      imgEl.onerror = () => rej(new Error("img load"));
-    });
-    // @ts-ignore
-    const result = await new BrowserMultiFormatReader().decodeFromImageElement(
-      imgEl as HTMLImageElement
-    );
+    const reader = new BrowserMultiFormatReader();
+    const result = await reader.decodeFromImageElement(img);
     const txt = (result as any)?.getText?.() ?? "";
-    const norm = normalizeSN(txt);
-
-    // ⛔️ Abaikan EAN/UPC 12–14 digit (biasanya barcode produk, bukan SN)
-    if (/^\d{12,14}$/.test(norm)) return null;
-
-    return selectBestSN(norm);
+    return txt ? normalizeSN(txt) : null;
   } catch {
     return null;
   }
 }
 
-/* ================= PUBLIC API ================= */
+/* ================= Tesseract helper ================= */
 
-export async function recognizeSerialNumber(
-  imageSource: Blob | string,
-  opts?: {
-    onProgress?: OcrProgress;
-    enableBarcode?: boolean;
-    mode?: "fast" | "deep";
-  }
-): Promise<string | null> {
-  const onProgress = opts?.onProgress;
-  const enableBarcode = opts?.enableBarcode ?? true;
-  const mode = opts?.mode ?? "deep";
-  try {
-    onProgress?.({ status: "barcode", progress: 0 });
-    const dataUrl =
-      typeof imageSource === "string"
-        ? imageSource
-        : await blobToDataUrl(imageSource);
+type Word = { text: string };
+type Line = { text: string };
 
-    // 1) Barcode dulu (tetap cepat), tapi sekarang EAN/UPC akan diabaikan
-    if (enableBarcode) {
-      const bc = await tryDecodeBarcodeFromDataUrl(dataUrl);
-      if (bc) {
-        onProgress?.({ status: "done", progress: 100 });
-        return bc;
-      }
-    }
+let _Tesseract: any;
+async function getTesseract() {
+  if (_Tesseract) return _Tesseract;
+  _Tesseract = (await import("tesseract.js")).default;
+  return _Tesseract;
+}
 
-    // 2) OCR
-    const scaled = await scaleUpDataUrl(dataUrl, 2.5);
-    const anglesFast = [0] as const;
-    const anglesDeep = [90, 180, 270] as const;
-    const psmsFast = [6] as const;
-    const psmsDeep = [7] as const;
-
-    onProgress?.({ status: "ocr", progress: 10 });
-
-    const tryPSM = async (psm: 6 | 7, angs: readonly number[]) => {
-      for (const ang of angs) {
-        const du = ang === 0 ? scaled : await rotateDataUrl(scaled, ang);
-        // @ts-ignore
-        const result = await Tesseract.recognize(du, "eng", {
-          // @ts-ignore
-          logger: (m) =>
-            m?.status === "recognizing text" &&
-            m?.progress != null &&
-            onProgress?.({
-              status: "ocr",
-              progress: Math.min(99, Math.round(10 + m.progress * 80)),
-            }),
-          // @ts-ignore
-          tessedit_pageseg_mode: String(psm),
-          preserve_interword_spaces: "1",
+async function runTesseract(
+  image: Blob | string,
+  psm: number,
+  onProgress?: (i: OcrInfo) => void
+) {
+  const Tesseract = await getTesseract();
+  const result = await Tesseract.recognize(image, "eng", {
+    // @ts-ignore
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-/#",
+    // @ts-ignore
+    user_defined_dpi: "300",
+    // @ts-ignore
+    tessedit_pageseg_mode: psm,
+    logger: (m: any) => {
+      if (m?.status === "recognizing text" && typeof m.progress === "number") {
+        onProgress?.({
+          status: "ocr",
+          progress: Math.max(1, Math.round(m.progress * 100)),
         });
-        const text = (result.data?.text ?? "").trim();
-        // @ts-ignore
-        const words = (result.data?.words ?? []) as Array<{ text: string }>;
-        // @ts-ignore
-        const lines = (result.data?.lines ?? []) as Array<{ text: string }>;
-        const sn = extractSN(text, words, lines);
-        if (sn && sn.length >= 6) return sn;
       }
-      return null;
-    };
+    },
+  });
 
-    // FAST path
-    const fast = await tryPSM(6, anglesFast);
-    if (fast) {
-      onProgress?.({ status: "done", progress: 100 });
-      return fast;
-    }
-    if (mode === "fast") {
-      onProgress?.({
-        status: "error",
-        progress: 0,
-        error: "SN tidak terdeteksi.",
-      });
-      return null;
-    }
+  const text = (result.data?.text ?? "").trim();
+  const words = ((result.data as any)?.words ?? []) as Word[];
+  const lines = ((result.data as any)?.lines ?? []) as Line[];
+  return { text, words, lines };
+}
 
-    // DEEP path
-    const deep1 = await tryPSM(7, anglesFast);
-    if (deep1) {
-      onProgress?.({ status: "done", progress: 100 });
-      return deep1;
-    }
-    const deep2 = await tryPSM(6, anglesDeep);
-    if (deep2) {
-      onProgress?.({ status: "done", progress: 100 });
-      return deep2;
-    }
+/* ================= Public API ================= */
 
-    onProgress?.({
-      status: "error",
-      progress: 0,
-      error: "SN tidak terdeteksi.",
-    });
-    return null;
-  } catch (e: any) {
-    onProgress?.({
-      status: "error",
-      progress: 0,
-      error: e?.message || "Gagal memproses OCR.",
-    });
-    return null;
+/**
+ * Baca barcode dulu, lalu OCR penuh mengikuti logika file kamu.
+ * Mengembalikan kandidat untuk dipilih teknisi.
+ */
+export async function recognizeSerialNumberWithCandidates(
+  source: Blob | string,
+  opts: RecognizeOptions = {}
+): Promise<{ best: string | null; candidates: string[] }> {
+  const { onProgress, enableBarcode = true, abortSignal } = opts;
+
+  const pool: string[] = [];
+  let best: string | null = null;
+
+  // 1) Barcode (opsional)
+  if (enableBarcode) {
+    onProgress?.({ status: "barcode", progress: 0 });
+    try {
+      const img = await loadImg(source);
+      const bc = await tryDecodeBarcodeFromImage(img);
+      if (bc) {
+        pool.push(bc);
+        best = best || bc;
+      }
+    } catch {
+      /* ignore */
+    }
   }
+
+  // 2) OCR penuh (PSM 6 → fallback 7) lalu ekstraksi label-only
+  const psmList = [6, 7];
+  for (let i = 0; i < psmList.length; i++) {
+    const { text, words, lines } = await runTesseract(
+      source,
+      psmList[i],
+      onProgress
+    );
+    if (abortSignal?.aborted) throw new Error("aborted");
+
+    const list = extractSNCandidates(text, words as any, lines as any);
+    pool.push(...list);
+
+    // bila sudah ada kandidat dari label, cukup
+    if (list.length) break;
+  }
+
+  // dedup
+  const candidates = Array.from(new Set(pool.map(normalizeSN))).filter(
+    (s) => s.length >= 6
+  );
+  if (!best && candidates.length) best = candidates[0];
+
+  onProgress?.({ status: "done", progress: 100 });
+  return { best, candidates };
+}
+
+/** Kompat: hanya satu hasil utama (opsional). */
+export async function recognizeSerialNumber(
+  source: Blob | string,
+  opts: RecognizeOptions = {}
+): Promise<string | null> {
+  const { best } = await recognizeSerialNumberWithCandidates(source, opts);
+  return best ?? null;
 }

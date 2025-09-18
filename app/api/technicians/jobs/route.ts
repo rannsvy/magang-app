@@ -28,7 +28,6 @@ const isUuid = (v?: string | null) =>
     v || ""
   );
 
-// WIB "YYYY-MM-DD"
 function todayWIB() {
   const ms = Date.now() + 7 * 60 * 60 * 1000;
   return new Date(ms).toISOString().slice(0, 10);
@@ -151,8 +150,41 @@ export async function GET(req: NextRequest) {
         const label = vehicleLabel(v);
         if (!label) continue;
         const arr = vehicleNamesByProject.get(pid) ?? [];
-        if (!arr.includes(label)) arr.push(label); // hindari duplikat
+        if (!arr.includes(label)) arr.push(label);
         vehicleNamesByProject.set(pid, arr);
+      }
+    }
+
+    // ====== AMBIL NAMA SUPERVISOR DARI BARIS LEADER (project_assignments) ======
+    const supervisorNameByProject = new Map<string, string>();
+    if (projectIds.length) {
+      const { data: spvRows, error: spvErr } = await supabase
+        .from("project_assignments")
+        .select(
+          `
+          project_id,
+          supervisor_name,
+          supervisors:supervisor_id ( nickname, full_name )
+        `
+        )
+        .eq("work_date", workDate)
+        .is("removed_at", null)
+        .eq("is_leader", true)
+        .in("project_id", projectIds);
+
+      if (spvErr) throw spvErr;
+
+      for (const r of spvRows ?? []) {
+        const sRaw: any = (r as any).supervisors;
+        const s = Array.isArray(sRaw) ? sRaw[0] : sRaw;
+        const nameFromJoin: string | null =
+          (s?.nickname as string) ?? (s?.full_name as string) ?? null;
+
+        const finalName = (r as any).supervisor_name ?? nameFromJoin ?? null;
+
+        if (finalName) {
+          supervisorNameByProject.set(String((r as any).project_id), finalName);
+        }
       }
     }
 
@@ -183,10 +215,16 @@ export async function GET(req: NextRequest) {
 
       const isSurvey = surveySet.has(String(p.id));
 
+      // PRIORITAS: nama supervisor dari baris LEADER (PA) untuk tanggal kerja ini
+      const spvFromPA = supervisorNameByProject.get(String(p.id)) ?? null;
+
+      // fallback tetap boleh dari kolom project (jika ada)
       const supervisor_name: string | null =
+        spvFromPA ??
         (p.supervisor_name as string | null) ??
         (p.spv_name as string | null) ??
         null;
+
       const sales_name: string | null =
         (p.sales_name as string | null) ??
         (p.sales as string | null) ??
@@ -208,7 +246,7 @@ export async function GET(req: NextRequest) {
         building_name: isSurvey ? String(p.name ?? "Gedung") : null,
         supervisor_name,
         sales_name,
-        vehicle_name, // => "Panther (L 1880 ZB), Grandmax (L 9636 BF)"
+        vehicle_name,
         vehicle_names: vehArr,
       };
     });

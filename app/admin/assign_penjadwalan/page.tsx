@@ -1,3 +1,4 @@
+// assign_penjadwalan/page.tsx
 "use client";
 
 import type React from "react";
@@ -47,6 +48,12 @@ const sbAdmin = createClient(
 );
 
 type VehicleUI = { id: string; model: string; plate: string; inisial: string };
+type SupervisorLite = {
+  id: string;
+  name: string;
+  nickname: string;
+  role?: string;
+};
 
 export default function AssignScheduling() {
   const tableRef = useRef<HTMLTableElement>(null);
@@ -93,10 +100,33 @@ export default function AssignScheduling() {
   const onNextTablePage = () =>
     setTablePage((p) => Math.min(tablePageCount, p + 1));
 
+  /* ===== NEW: supervisors ===== */
+  const [supervisors, setSupervisors] = useState<SupervisorLite[]>([]);
+  async function loadSupervisors() {
+    try {
+      const res = await fetch("/api/supervisors?includeTechnicians=0", {
+        cache: "no-store",
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j?.error || "Gagal memuat supervisors");
+      const items =
+        (j.items ?? []).map((s: any) => ({
+          id: s.id,
+          name: s.full_name,
+          nickname: s.nickname,
+          role: s.role,
+        })) ?? [];
+      setSupervisors(items);
+    } catch (e) {
+      console.error(e);
+      setSupervisors([]);
+    }
+  }
+
   /* ---------- Load awal ---------- */
   useEffect(() => {
     (async () => {
-      await Promise.all([loadTechnicians(), loadProjects()]);
+      await Promise.all([loadTechnicians(), loadProjects(), loadSupervisors()]);
       await loadAssignments(currentDate);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -266,27 +296,27 @@ export default function AssignScheduling() {
   }
 
   async function loadAssignments(isoDate: string) {
-  try {
-    const res = await apiFetch<any>(`/api/assignments?date=${isoDate}`, {
-      cache: "no-store",
-    });
-    const rows = unwrap<any[]>(res) ?? [];
-    const shaped: CellAssignment[] = rows.map((r: any) => ({
-      projectId: String(r.projectId ?? r.project_id),
-      technicianId: String(
-        r.technicianId ?? r.technician_id ?? r.vehicleCode ?? r.vehicle_code
-      ),
-      isSelected: true,
-      inisial: String(r.inisial ?? r.initial ?? "?").toUpperCase(),
-      isProjectLeader: Boolean(r.isProjectLeader ?? r.is_leader ?? false),
-    }));
+    try {
+      const res = await apiFetch<any>(`/api/assignments?date=${isoDate}`, {
+        cache: "no-store",
+      });
+      const rows = unwrap<any[]>(res) ?? [];
+      const shaped: CellAssignment[] = rows.map((r: any) => ({
+        projectId: String(r.projectId ?? r.project_id),
+        technicianId: String(
+          r.technicianId ?? r.technician_id ?? r.vehicleCode ?? r.vehicle_code
+        ),
+        isSelected: true,
+        inisial: String(r.inisial ?? r.initial ?? "?").toUpperCase(),
+        isProjectLeader: Boolean(r.isProjectLeader ?? r.is_leader ?? false),
+      }));
 
-    setAssignments(shaped);
-  } catch (e) {
-    console.error("loadAssignments failed:", e);
-    setAssignments([]);
+      setAssignments(shaped);
+    } catch (e) {
+      console.error("loadAssignments failed:", e);
+      setAssignments([]);
+    }
   }
-}
 
   /* ---------- Helpers dari state ---------- */
   const getCellAssignment = (projectId: string, technicianId: string) =>
@@ -645,42 +675,41 @@ export default function AssignScheduling() {
 
   /* ---------- Simpan ---------- */
   const handleSaveAssignment = async () => {
-  const projectIds = projectsData.map((p) => p.id);
-  const payloadAssignments = assignments
-    .filter((a) => a.isSelected || a.isProjectLeader)
-    .map((a) => {
-      const isVehicle = a.technicianId.startsWith("car-");
-      const id = isVehicle
-        ? a.technicianId
-        : (techCodeToUuid[a.technicianId] ?? a.technicianId);
-      return {
-        projectId: a.projectId,
-        technicianId: id,               // UUID teknisi ATAU "car-xx"
-        isSelected: a.isSelected,
-        isProjectLeader: !!a.isProjectLeader,
-      };
-    });
+    const projectIds = projectsData.map((p) => p.id);
+    const payloadAssignments = assignments
+      .filter((a) => a.isSelected || a.isProjectLeader)
+      .map((a) => {
+        const isVehicle = a.technicianId.startsWith("car-");
+        const id = isVehicle
+          ? a.technicianId
+          : techCodeToUuid[a.technicianId] ?? a.technicianId;
+        return {
+          projectId: a.projectId,
+          technicianId: id, // UUID teknisi ATAU "car-xx"
+          isSelected: a.isSelected,
+          isProjectLeader: !!a.isProjectLeader,
+        };
+      });
 
-  try {
-    setLoading(true);
-    await apiFetch<{ data: any }>("/api/assignments", {
-      method: "POST",
-      body: JSON.stringify({
-        date: currentDate,
-        projectIds,
-        assignments: payloadAssignments,
-      }),
-    });
+    try {
+      setLoading(true);
+      await apiFetch<{ data: any }>("/api/assignments", {
+        method: "POST",
+        body: JSON.stringify({
+          date: currentDate,
+          projectIds,
+          assignments: payloadAssignments,
+        }),
+      });
 
-    await Promise.all([loadProjects(), loadAssignments(currentDate)]);
-    setShowConfirmation(true);
-  } catch (e: any) {
-    alert(e?.message || "Gagal menyimpan assignment");
-  } finally {
-    setLoading(false);
-  }
-};
-
+      await Promise.all([loadProjects(), loadAssignments(currentDate)]);
+      setShowConfirmation(true);
+    } catch (e: any) {
+      alert(e?.message || "Gagal menyimpan assignment");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   /* ---------- Edit Status Project ---------- */
   const handleEditProject = async () => {
@@ -827,6 +856,12 @@ export default function AssignScheduling() {
               getProjectAssignmentCount={getProjectAssignmentCount}
               getIdleTechnicians={getIdleTechnicians}
               getTechnicianStatus={getTechnicianStatus}
+              /* NEW props */
+              currentDate={currentDate}
+              supervisors={supervisors}
+              onSupervisorAssigned={async () => {
+                await loadAssignments(currentDate); // refresh setelah set supervisor
+              }}
             />
           ) : (
             <ProjectTableCars

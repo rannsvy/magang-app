@@ -1,6 +1,8 @@
 // app/api/job-photos/upload/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // WAJIB: service role key (server)
+import crypto from "crypto";
+
 export const runtime = "nodejs";
 
 const BUCKET = "job-photos";
@@ -37,9 +39,12 @@ export async function POST(req: Request) {
     const thumb = form.get("thumb") as File | null;
     const jobId = String(form.get("jobId") || "");
     const categoryId = String(form.get("categoryId") || "");
-
     const meterStr = form.get("meter")?.toString();
     const serialNumber = form.get("serialNumber")?.toString();
+
+    // Optional token (kalau dikirim oleh client)
+    const tokenRaw = form.get("token")?.toString();
+    const tokenNum = tokenRaw ? Number(tokenRaw) : null;
 
     if (!photo || !thumb || !jobId || !categoryId) {
       return NextResponse.json(
@@ -84,13 +89,37 @@ export async function POST(req: Request) {
       .from(BUCKET)
       .getPublicUrl(thumbPath);
 
-    // Siapkan metadata untuk tabel job_photos
+    // Siapkan metadata
     const meterNum =
       meterStr != null && meterStr !== "" ? Number(meterStr) : null;
 
+    // 1) Simpan ke tabel RIWAYAT (job_photo_entries) — tidak wajib ada (fallback jika tidak ada)
+    const entryId = crypto.randomUUID();
+    try {
+      const { error: histErr } = await supabaseAdmin
+        .from("job_photo_entries")
+        .insert({
+          id: entryId,
+          job_id: jobId,
+          category_id: categoryId,
+          url: fullPub.publicUrl,
+          thumb_url: thumbPub.publicUrl,
+          created_at: new Date().toISOString(),
+          sharpness: null, // bisa dihitung di server jika ingin
+          token: tokenNum,
+        });
+      if (histErr) {
+        // Tidak fatal—lanjutkan ke snapshot
+        // console.warn("[upload] job_photo_entries insert warn:", histErr.message);
+      }
+    } catch {
+      // tabel belum ada / RLS — abaikan demi kompatibilitas
+    }
+
+    // 2) Upsert snapshot terbaru ke job_photos
     const payload: any = {
-      job_id: jobId, // pastikan tipe kolom sesuai (uuid/text)
-      category_id: categoryId, // pastikan tipe kolom sesuai
+      job_id: jobId,
+      category_id: categoryId,
       url: fullPub.publicUrl,
       thumb_url: thumbPub.publicUrl,
       updated_at: new Date().toISOString(),
@@ -98,17 +127,42 @@ export async function POST(req: Request) {
     if (serialNumber) payload.serial_number = serialNumber;
     if (Number.isFinite(meterNum)) payload.cable_meter = meterNum;
 
-    const { error: upErr } = await supabaseAdmin
-      .from("job_photos")
-      .upsert(payload, { onConflict: "job_id,category_id" })
-      .select("job_id")
-      .maybeSingle();
-    if (upErr) throw upErr;
+    // Jika belum ada selected_photo_id di snapshot, set ke entryId yang baru
+    // (akan diabaikan bila kolom tidak ada—Supabase akan error; kita tangkap & re-upsert tanpa kolom tsb)
+    let upsertOk = false;
+    try {
+      payload.selected_photo_id = entryId;
+      const { error: upErr1 } = await supabaseAdmin
+        .from("job_photos")
+        .upsert(payload, { onConflict: "job_id,category_id" })
+        .select("selected_photo_id")
+        .maybeSingle();
+      if (upErr1) throw upErr1;
+      upsertOk = true;
+    } catch {
+      // Coba ulang tanpa selected_photo_id (untuk skema lama)
+      const { selected_photo_id, ...fallbackPayload } = payload;
+      const { error: upErr2 } = await supabaseAdmin
+        .from("job_photos")
+        .upsert(fallbackPayload, { onConflict: "job_id,category_id" })
+        .select("job_id")
+        .maybeSingle();
+      if (upErr2) throw upErr2;
+      upsertOk = true;
+    }
+
+    if (!upsertOk) {
+      return NextResponse.json(
+        { error: "Failed to save snapshot" },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json({
       ok: true,
       photoUrl: fullPub.publicUrl,
       thumbUrl: thumbPub.publicUrl,
+      entryId, // id riwayat yang baru
     });
   } catch (e: any) {
     console.error("[job-photos/upload] ERROR:", e);

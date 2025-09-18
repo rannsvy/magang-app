@@ -1,4 +1,4 @@
-// app/admin/generate-laporan/page.tsx
+// app/admin/generate_laporan/page.tsx
 "use client";
 
 import type React from "react";
@@ -65,7 +65,7 @@ interface PhotoCategory {
   snKey?: string | null;
   cableM?: number;
   serialNumber?: string | null;
-  measures?: (number | null)[]; // <-- panjang/measure per foto (index sejajar dgn photos)
+  measures?: (number | null)[];
 }
 interface ReportPreview {
   jobName: string;
@@ -96,6 +96,13 @@ type TechItem = {
   photoThumb?: string | null;
   serialNumber?: string | null;
   meter?: number | string | null;
+  photos?: Array<{
+    id: string;
+    thumb: string | null;
+    url: string | null;
+    createdAt?: string;
+  }>;
+  selectedPhotoId?: string | null;
 };
 
 /* ====== Survey types ====== */
@@ -116,9 +123,6 @@ interface SurveyMetaRow {
 /* ===== Helpers ===== */
 const isCableName = (s: string) =>
   /(kabel|cable|wire|utp|coax|fiber|fibre)/i.test(s);
-const isCableCategory = (c?: PhotoCategory | null) =>
-  !!c &&
-  (typeof c.cableM === "number" || isCableName(c.name) || isCableName(c.id));
 
 const toNumber = (v: unknown): number | undefined => {
   if (v === null || v === undefined) return undefined;
@@ -155,7 +159,12 @@ const formatMeter = (m: number) => {
 const getActiveMeasure = (c?: PhotoCategory) =>
   c?.measures?.[c.currentIndex] ?? c?.cableM;
 
-/** ambil dari /api/job-photos (fallback instalasi/teknisi) */
+/** =========================
+ *  Fallback instalasi/teknisi
+ *  —> SEKARANG AMBIL SEMUA FOTO + POSISIKAN currentIndex BERDASARKAN selectedPhotoId
+ *  Ini yang bikin realtime berubah ketika "Set sebagai Utama" ditekan oleh teknisi.
+ *  ========================= */
+/** Fallback instalasi/teknisi — HANYA foto Utama (hemat bandwidth) */
 async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
   categories: PhotoCategory[];
   serialsByName: Record<string, string>;
@@ -167,26 +176,74 @@ async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
   if (!res.ok)
     throw new Error(data?.error || `Gagal mengambil foto untuk job ${jobId}`);
 
-  const items: TechItem[] = (data.items ?? []).filter(
-    (it: TechItem) => it.photoThumb || it.photo
-  );
+  type TechItemLocal = {
+    id: string | number;
+    name: string;
+    requiresSerialNumber: boolean;
+    photo?: string | null; // legacy (single)
+    photoThumb?: string | null; // legacy (single)
+    serialNumber?: string | null;
+    meter?: number | string | null;
+    photos?: Array<{
+      id: string;
+      thumb: string | null;
+      url: string | null;
+      createdAt?: string;
+    }>;
+    selectedPhotoId?: string | null;
+  };
 
-  const categories: PhotoCategory[] = items.map((it) => ({
-    id: String(it.id),
-    name: it.name,
-    photos: [String(it.photoThumb || it.photo)],
-    currentIndex: 0,
-    snKey: undefined,
-    cableM: toNumber(it.meter),
-    serialNumber: it.serialNumber ? String(it.serialNumber) : null,
-  }));
+  const items: TechItemLocal[] = data.items ?? [];
 
+  const categories: PhotoCategory[] = items
+    // pastikan minimal ada 1 foto yg bisa ditampilkan
+    .filter((it) => (it.photos?.length ?? 0) > 0 || it.photoThumb || it.photo)
+    .map((it) => {
+      let photos: string[] = [];
+      let currentIndex = 0;
+
+      if (it.photos?.length) {
+        // === MODE BARU: pilih hanya foto Utama ===
+        let idx = 0;
+        if (it.selectedPhotoId) {
+          const found = it.photos.findIndex((p) => p.id === it.selectedPhotoId);
+          if (found >= 0) idx = found;
+        }
+        const sel = it.photos[idx] || it.photos[0];
+        const selDisplay = sel?.thumb || sel?.url || "";
+        photos = selDisplay ? [String(selDisplay)] : [];
+        currentIndex = 0; // karena hanya 1 foto
+      } else if (it.photoThumb || it.photo) {
+        // === LEGACY: tetap 1 foto (memang single) ===
+        photos = [String(it.photoThumb || it.photo)];
+        currentIndex = 0;
+      }
+
+      return {
+        id: String(it.id),
+        name: it.name,
+        photos, // HANYA 1: foto utama
+        currentIndex: 0, // selalu 0 karena single
+        cableM: ((): number | undefined => {
+          if (it.meter === null || it.meter === undefined) return undefined;
+          const n =
+            typeof it.meter === "string"
+              ? Number(it.meter.replace(",", ".").trim())
+              : Number(it.meter);
+          return Number.isFinite(n) ? n : undefined;
+        })(),
+        serialNumber: it.serialNumber ? String(it.serialNumber) : null,
+      };
+    });
+
+  // Map label SN by name (tetap sama)
   const serialsByName: Record<string, string> = {};
   for (const it of items) {
     if (it.requiresSerialNumber && it.serialNumber) {
       serialsByName[it.name] = String(it.serialNumber);
     }
   }
+
   return { categories, serialsByName };
 }
 
@@ -443,8 +500,7 @@ export default function GenerateLaporanPage() {
       if (found)
         setFormData((prev) => ({ ...prev, projectName: found.id, jobId: "" }));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams, projectGroups.length]);
+  }, [searchParams, projectGroups.length, formData.projectName]);
 
   // Cleanup hover timeout
   useEffect(
@@ -497,7 +553,9 @@ export default function GenerateLaporanPage() {
       let serialsByName: Record<string, string> = {};
       try {
         categories = await loadSurveyCategories(selectedJob.project_id);
-      } catch {}
+      } catch {
+        // ignore
+      }
 
       // Fallback ke API teknisi
       if (!categories.length) {
@@ -505,10 +563,13 @@ export default function GenerateLaporanPage() {
           const fromTech = await loadPhotosFromTechnicianApi(jobId);
           categories = fromTech.categories;
           serialsByName = fromTech.serialsByName;
-        } catch {}
+        } catch {
+          // ignore
+        }
       }
 
       // merge meta supabase (hanya relevan untuk fallback teknisi)
+      // catatan: SN & cable_meter per kategori akan ter-update realtime via subscribe.
       if (categories.length && !categories[0].name.includes(" — ")) {
         const { metersByCat, snByCat } = await fetchPhotoMeta(jobId);
         categories = categories.map((c) => ({
@@ -520,8 +581,7 @@ export default function GenerateLaporanPage() {
 
       const jobName = selectedJob?.name || selectedJob?.id || "";
       const location = selectedJob?.lokasi || "";
-      const completedDate =
-        fmtDate(selectedJob?.tanggal_mulai);
+      const completedDate = fmtDate(selectedJob?.tanggal_mulai);
       const salesName = selectedJob?.sales_name ?? null;
       const presalesName = selectedJob?.presales_name ?? null;
 
@@ -572,7 +632,6 @@ export default function GenerateLaporanPage() {
   };
 
   /* ============== Realtime subscribe (ADMIN) ============== */
-  // Dengarkan upload baru/meta baru untuk project terkait job yang dipilih
   useEffect(() => {
     if (!formData.jobId) return;
 
@@ -583,7 +642,8 @@ export default function GenerateLaporanPage() {
     let t: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
       if (t) clearTimeout(t);
-      t = setTimeout(() => buildPreview(formData.jobId), 120);
+      // debounce ringan supaya tidak flood saat banyak event
+      t = setTimeout(() => buildPreview(formData.jobId), 100);
     };
 
     const chUploads = supabase
@@ -609,7 +669,7 @@ export default function GenerateLaporanPage() {
       )
       .subscribe();
 
-    // Fallback teknisi (jika dipakai)
+    // ==== Fallback teknisi: update jika foto/utama/meta berubah ====
     const chPhotos = supabase
       .channel(`rt-job_photos-${formData.jobId}`)
       .on(
@@ -624,6 +684,22 @@ export default function GenerateLaporanPage() {
       )
       .subscribe();
 
+    // Histori foto per kategori (multi-foto): kalau ada foto baru/hapus
+    const chPhotoEntries = supabase
+      .channel(`rt-job_photo_entries-${formData.jobId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "job_photo_entries",
+          filter: `job_id=eq.${formData.jobId}`,
+        },
+        refresh
+      )
+      .subscribe();
+
+    // Serial number per kategori (opsional tabel lama)
     const chSN = supabase
       .channel(`rt-job_sn-${formData.jobId}`)
       .on(
@@ -643,6 +719,7 @@ export default function GenerateLaporanPage() {
       supabase.removeChannel(chUploads);
       supabase.removeChannel(chMeta);
       supabase.removeChannel(chPhotos);
+      supabase.removeChannel(chPhotoEntries);
       supabase.removeChannel(chSN);
     };
   }, [formData.jobId, jobs, buildPreview]);
