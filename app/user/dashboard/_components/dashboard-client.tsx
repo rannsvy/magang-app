@@ -1,4 +1,4 @@
-// app/user/dashboard/_components/dashboard-client.tsx
+// app/user/dashboard/DashboardClient.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -10,7 +10,7 @@ import { Star } from "lucide-react";
 import { PWAInstallPrompt } from "@/components/pwa-install-prompt";
 import { createClient } from "@supabase/supabase-js";
 
-/* ====== Tipe data ====== */
+/* ===================== Types (UI dari code 1) ===================== */
 type Job = {
   id: string; // projects.id (uuid)
   job_id: string; // projects.job_id (kode job)
@@ -21,9 +21,17 @@ type Job = {
   isPending?: boolean; // dari /api/job-photos/[jobId]
   assignedTechnicians: { name: string; isLeader: boolean }[];
 
-  // Tambahan untuk Survey (tetap opsional, tidak merusak instalasi)
+  /** Filter Survey/Instalasi (opsional, default "instalasi") */
   type?: "survey" | "instalasi";
   building_name?: string | null;
+
+  /** UI terbaru — opsional; tampil kalau disuplai API */
+  supervisor_name?: string | null;
+  sales_name?: string | null;
+
+  /** Kendaraan */
+  vehicle_name?: string | null; // single (mis. "Panther (L 1880 ZB)")
+  vehicle_names?: string[]; // multiple (mis. ["Panther (L 1880 ZB)","Grandmax (L 9636 BF)"])
 };
 
 const supabase = createClient(
@@ -31,7 +39,7 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-/* ====== Cache lokal (offline) ====== */
+/* ===================== Cache lokal (offline) — dari code 2 ===================== */
 const STORAGE_KEY = "dashboard-cache-v1";
 const PROGRESS_KEY = "dashboard-progress-v1";
 
@@ -52,10 +60,10 @@ function saveLocal<T>(key: string, val: T) {
   }
 }
 
-/* ====== Utils ====== */
+/* ===================== Utils ===================== */
 function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
   let t: any;
-  return (...args: any[]) => {
+  return (...args: Parameters<T>) => {
     clearTimeout(t);
     t = setTimeout(() => fn(...args), ms);
   };
@@ -64,6 +72,7 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
 async function getJobProgressOfflineAware(
   jobId: string
 ): Promise<{ percent: number; isPending: boolean }> {
+  // Offline → gunakan cache progres terakhir
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     const map =
       loadLocal<Record<string, { percent: number; isPending: boolean }>>(
@@ -71,6 +80,7 @@ async function getJobProgressOfflineAware(
       ) || {};
     return map[jobId] ?? { percent: 0, isPending: false };
   }
+  // Online → fetch API
   try {
     const res = await fetch(`/api/job-photos/${encodeURIComponent(jobId)}`, {
       cache: "no-store",
@@ -81,6 +91,7 @@ async function getJobProgressOfflineAware(
     const isPending = (json?.status as string) === "pending";
     return { percent, isPending };
   } catch {
+    // Gagal fetch → fallback cache
     const map =
       loadLocal<Record<string, { percent: number; isPending: boolean }>>(
         PROGRESS_KEY
@@ -107,6 +118,8 @@ async function attachProgress(items: Job[]): Promise<Job[]> {
       };
     })
   );
+
+  // cache progres per job_id untuk offline
   const progressMap = Object.fromEntries(
     enriched.map((j) => [
       j.job_id,
@@ -114,10 +127,11 @@ async function attachProgress(items: Job[]): Promise<Job[]> {
     ])
   );
   saveLocal(PROGRESS_KEY, progressMap);
+
   return enriched;
 }
 
-/* ====== Auto-mark completed (dari versi survey) ====== */
+/* ===================== Auto-mark completed (gaya code 2) ===================== */
 const completedPostedRef = new Set<string>();
 async function markProjectCompleted(projectId: string) {
   try {
@@ -132,8 +146,8 @@ async function markProjectCompleted(projectId: string) {
   }
 }
 
-/* ====== Komponen utama ====== */
-export default function DashboardClient() {
+/* ===================== Page (UI dari code 1 + fungsi code 2) ===================== */
+export default function TechnicianDashboard() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -144,11 +158,12 @@ export default function DashboardClient() {
   const [currentPage, setCurrentPage] = useState(1);
   const jobsPerPage = 4;
 
-  // Filter tipe (All/Survey/Instalasi)
-  const [filterType, setFilterType] =
-    useState<"all" | "survey" | "instalasi">("all");
+  // segmented filter (all/survey/instalasi) — UI code 1
+  const [filterType, setFilterType] = useState<"all" | "survey" | "instalasi">(
+    "all"
+  );
 
-  // Refs
+  // Refs supabase channels
   const technicianKeyRef = useRef<string | null>(null);
   const baseChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
     null
@@ -159,10 +174,11 @@ export default function DashboardClient() {
   const photosChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(
     null
   );
-  const surveyRoomsChannelRef = useRef<
-    ReturnType<typeof supabase.channel> | null
-  >(null);
+  const surveyRoomsChannelRef = useRef<ReturnType<
+    typeof supabase.channel
+  > | null>(null);
 
+  /* ========== Loader utama (mengikuti pola code 2) ========== */
   const loadJobs = async () => {
     try {
       setLoading(true);
@@ -177,6 +193,8 @@ export default function DashboardClient() {
         typeof window !== "undefined"
           ? localStorage.getItem("technician_id")
           : null;
+
+      // terima: ?technician= (uuid teknisi ATAU code)
       const technician = qTech || lsId || lsCode;
       technicianKeyRef.current = technician;
 
@@ -184,7 +202,7 @@ export default function DashboardClient() {
         ? `?technician=${encodeURIComponent(technician)}`
         : `?debug=1`;
 
-      // OFFLINE → gunakan cache jika ada
+      // OFFLINE → gunakan cache dashboard jika ada
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         const cached = loadLocal<{ items: Job[]; lastUpdated: number }>(
           STORAGE_KEY
@@ -196,25 +214,27 @@ export default function DashboardClient() {
         }
       }
 
-      // ONLINE → fetch
+      // ONLINE → fetch dari API
       const res = await fetch(`/api/technicians/jobs${qs}`, {
         cache: "no-store",
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Gagal memuat pekerjaan");
 
+      // Lengkapi progress & pending (offline-aware)
       const withProgress = await attachProgress(json.items ?? []);
+
+      // Simpan ke state dan cache
       setJobs(withProgress);
       saveLocal(STORAGE_KEY, { items: withProgress, lastUpdated: Date.now() });
 
-      // Auto-complete bila progress >= 100 & bukan pending
+      // Auto set completed bila >= 100 dan bukan pending (aman: kita online di cabang ini)
       const candidates = withProgress.filter(
         (j) => (j.progress ?? 0) >= 100 && !j.isPending
       );
       for (const j of candidates) {
         if (!completedPostedRef.has(j.id)) {
           completedPostedRef.add(j.id);
-          // aman dipanggil saat online (kita sampai sini setelah fetch)
           markProjectCompleted(j.id);
         }
       }
@@ -226,6 +246,7 @@ export default function DashboardClient() {
       resubscribePhotos(jobIds);
       resubscribeSurveyRooms(projectIds);
     } catch (e: any) {
+      // Gagal fetch → fallback cache jika ada
       const cached = loadLocal<{ items: Job[]; lastUpdated: number }>(
         STORAGE_KEY
       );
@@ -243,12 +264,13 @@ export default function DashboardClient() {
     }
   };
 
+  // Load awal & saat query berubah
   useEffect(() => {
     loadJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Realtime global → refetch
+  /* ========== Realtime Global (projects & assignments) — code 2 ========== */
   useEffect(() => {
     const debouncedReload = debounce(loadJobs, 200);
 
@@ -267,14 +289,16 @@ export default function DashboardClient() {
       .subscribe();
 
     baseChannelRef.current = ch;
+
     return () => {
-      if (baseChannelRef.current) supabase.removeChannel(baseChannelRef.current);
+      if (baseChannelRef.current)
+        supabase.removeChannel(baseChannelRef.current);
       baseChannelRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Subscribe khusus projects yang aktif di list
+  /* ========== Subscribe per daftar aktif — code 2 ========== */
   function resubscribeProjects(projectIds: string[]) {
     if (projectsChannelRef.current) {
       supabase.removeChannel(projectsChannelRef.current);
@@ -304,7 +328,6 @@ export default function DashboardClient() {
     projectsChannelRef.current = ch;
   }
 
-  // Subscribe khusus job_photos untuk job_id yang tampil
   function resubscribePhotos(jobIds: string[]) {
     if (photosChannelRef.current) {
       supabase.removeChannel(photosChannelRef.current);
@@ -312,7 +335,7 @@ export default function DashboardClient() {
     }
     if (!jobIds.length) return;
 
-    // job_id bertipe text, jadi harus di-quote dan escape
+    // job_id text → harus di-quote dan escape
     const q = jobIds.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
 
     const ch = supabase
@@ -332,7 +355,6 @@ export default function DashboardClient() {
     photosChannelRef.current = ch;
   }
 
-  // Subscribe survey rooms → supaya filter Survey ikut update realtime
   function resubscribeSurveyRooms(projectIds: string[]) {
     if (surveyRoomsChannelRef.current) {
       supabase.removeChannel(surveyRoomsChannelRef.current);
@@ -358,7 +380,7 @@ export default function DashboardClient() {
     surveyRoomsChannelRef.current = ch;
   }
 
-  /* ====== Filter & pagination ====== */
+  /* ========== Filter + Paging (UI dari code 1) ========== */
   const filteredJobs = useMemo(() => {
     if (filterType === "all") return jobs;
     return jobs.filter((j) => (j.type ?? "instalasi") === filterType);
@@ -371,7 +393,7 @@ export default function DashboardClient() {
   const startIndex = (currentPage - 1) * jobsPerPage;
   const currentJobs = filteredJobs.slice(startIndex, startIndex + jobsPerPage);
 
-  /* ====== UI helpers ====== */
+  /* ========== UI helpers (UI code 1) ========== */
   const getStatusDisplay = (job: Job) => {
     if (job.isPending) {
       return { text: "Pending", color: "bg-amber-100 text-amber-700" };
@@ -392,22 +414,19 @@ export default function DashboardClient() {
     return "bg-gray-50 border-gray-200";
   };
 
-  // Klik card: rute survey vs instalasi
+  /* ========== Navigasi card (UI code 1) + simpan last_job_id (fungsi code 2) ========== */
   const handleJobClick = (job: Job) => {
-    // simpan last job id untuk fallback offline (tetap dari versi lama)
     try {
       localStorage.setItem("last_job_id", job.job_id);
     } catch {}
     if (job.type === "survey") {
-      // rute survey (mengikuti versi survey)
       router.push(`/user/survey/floors?jobId=${encodeURIComponent(job.id)}`);
     } else {
-      // rute instalasi (versi lama)
       router.push(`/user/upload_foto?job=${encodeURIComponent(job.job_id)}`);
     }
   };
 
-  /* ====== Cleanup channels saat unmount ====== */
+  /* ========== Cleanup channels saat unmount ========== */
   useEffect(() => {
     return () => {
       if (projectsChannelRef.current)
@@ -419,12 +438,12 @@ export default function DashboardClient() {
     };
   }, []);
 
-  /* ====== Render ====== */
+  /* ===================== Render (UI code 1) ===================== */
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header + segmented filter (dari versi survey) */}
+      {/* Header + segmented filter */}
       <TechnicianHeader
-        title="SiLapor"
+        title="Reaport"
         showFilter
         filterValue={filterType}
         onFilterChange={(v) => {
@@ -450,6 +469,14 @@ export default function DashboardClient() {
                   const badge = getStatusDisplay(job);
                   const bg = getCardBackground(job);
 
+                  const vehicleList: string[] = (
+                    job.vehicle_names?.length
+                      ? job.vehicle_names
+                      : job.vehicle_name
+                      ? [job.vehicle_name]
+                      : []
+                  ) as string[];
+
                   return (
                     <Card
                       key={job.id}
@@ -463,7 +490,6 @@ export default function DashboardClient() {
                               {job.name}
                             </h3>
 
-                            {/* Baris khusus Survey */}
                             {job.type === "survey" && job.building_name ? (
                               <p className="text-xs font-medium text-gray-700 leading-tight mb-0.5">
                                 Nama Gedung: {job.building_name}
@@ -484,9 +510,7 @@ export default function DashboardClient() {
                                     key={idx}
                                     className="flex items-center gap-1"
                                   >
-                                    <span>
-                                      {idx + 1}. {tech.name}
-                                    </span>
+                                    <span>- {tech.name}</span>
                                     {tech.isLeader && (
                                       <Star className="h-2.5 w-2.5 text-red-500 fill-red-500" />
                                     )}
@@ -502,8 +526,49 @@ export default function DashboardClient() {
                             >
                               {badge.text}
                             </div>
+
                             <div className="text-[10px] text-gray-500 font-mono leading-none">
                               {job.job_id}
+                            </div>
+
+                            {(job.supervisor_name || job.sales_name) && (
+                              <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
+                                <div>
+                                  SPV: <b>{job.supervisor_name ?? "-"}</b>
+                                </div>
+                                <div>
+                                  Sales: <b>{job.sales_name ?? "-"}</b>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Kendaraan: single / multiple */}
+                            <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
+                              {vehicleList.length === 0 ? (
+                                <div>Kendaraan : -</div>
+                              ) : vehicleList.length === 1 ? (
+                                <div>
+                                  Kendaraan : -{" "}
+                                  <b className="whitespace-nowrap">
+                                    {vehicleList[0]}
+                                  </b>
+                                </div>
+                              ) : (
+                                <div className="text-right">
+                                  <div>Kendaraan :</div>
+                                  <div className="mt-0.5 space-y-0.5">
+                                    {vehicleList.map((v, idx) => (
+                                      <div
+                                        key={idx}
+                                        className="flex items-center gap-1 justify-end"
+                                      >
+                                        <span>-</span>
+                                        <b className="whitespace-nowrap">{v}</b>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -528,7 +593,7 @@ export default function DashboardClient() {
         </div>
       </main>
 
-      {/* Prompt PWA tetap ada */}
+      {/* Prompt PWA */}
       <PWAInstallPrompt />
     </div>
   );

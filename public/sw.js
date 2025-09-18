@@ -1,5 +1,5 @@
 /* public/sw.js — fast offline upload with timeout & ACK (Instalasi + Survey, merged) */
-const VERSION = "magang-app-v1.0.45"; // ⬅️ bump versi agar SW baru aktif
+const VERSION = "magang-app-v1.0.48"; // ⬅️ bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -15,9 +15,6 @@ const APP_SHELL = [
   "/auth/login",
   "/offline",
   "/manifest.json",
-  // ikon/logo yang ada di dua versi
-  "/icon-192x192.png",
-  "/icon-512x512.png",
   "/logo-reaport.png",
 ];
 
@@ -314,13 +311,15 @@ self.addEventListener("fetch", (e) => {
             createdAt: Date.now(),
             // tandai meta via path:
             kind:
-              url.pathname === META_PATH /* || url.pathname === SURVEY_META_PATH */
+              url.pathname ===
+              META_PATH /* || url.pathname === SURVEY_META_PATH */
                 ? "meta"
                 : "upload",
           });
           try {
             await self.registration.sync.register(
-              url.pathname === META_PATH /* || url.pathname === SURVEY_META_PATH */
+              url.pathname ===
+                META_PATH /* || url.pathname === SURVEY_META_PATH */
                 ? "meta-sync"
                 : "photo-upload-sync"
             );
@@ -405,11 +404,12 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(
       (async () => {
         try {
-          const res = await fetch(req);
-          const resForCache = res.clone();
+          const r = await fetch(req);
+          const copy = r.clone();
           e.waitUntil(
-            caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache))
+            caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, copy))
           );
+          return r; // <-- return di dalam try, variabel in-scope
         } catch {
           const hit = await caches.match(req, { ignoreSearch: true });
           if (hit) return hit;
@@ -418,7 +418,6 @@ self.addEventListener("fetch", (e) => {
             status: 503,
           });
         }
-        return res;
       })()
     );
     return;
