@@ -49,6 +49,7 @@ interface JobRow {
   id: string; // job_id
   job_id?: string | null;
   name: string | null;
+  nama_panggilan: string | null;
   project_id: string; // projects.id (uuid)
   lokasi: string | null;
   tanggal_mulai?: string | null;
@@ -159,12 +160,53 @@ const formatMeter = (m: number) => {
 const getActiveMeasure = (c?: PhotoCategory) =>
   c?.measures?.[c.currentIndex] ?? c?.cableM;
 
+/* ====== WIB date helper ====== */
+const todayWIB = () => {
+  const ms = Date.now() + 7 * 60 * 60 * 1000;
+  return new Date(ms).toISOString().slice(0, 10);
+};
+
+/* ====== Ambil nama teknisi dari /api/assignments (leader dulu) ====== */
+async function fetchTechnicianNamesForProject(
+  projectId: string,
+  dateHint?: string
+): Promise<string> {
+  const date =
+    dateHint && /^\d{4}-\d{2}-\d{2}$/.test(dateHint) ? dateHint : todayWIB();
+
+  const res = await fetch(`/api/assignments?date=${encodeURIComponent(date)}`, {
+    cache: "no-store",
+  });
+
+  if (!res.ok) return "";
+
+  const json = (await res.json().catch(() => null)) as { data?: any[] } | null;
+
+  const rows = (json?.data ?? [])
+    .filter(
+      (x) =>
+        x?.projectId === projectId &&
+        typeof x?.technicianId === "string" &&
+        !String(x.technicianId).startsWith("car-")
+    )
+    .sort(
+      (a, b) =>
+        Number(!!b.isProjectLeader) - Number(!!a.isProjectLeader) ||
+        String(a.technicianName || "").localeCompare(
+          String(b.technicianName || ""),
+          "id"
+        )
+    );
+
+  const names = rows.map((r) =>
+    r.isProjectLeader ? `${r.technicianName} (Ketua)` : r.technicianName
+  );
+  return names.join(", ");
+}
+
 /** =========================
- *  Fallback instalasi/teknisi
- *  —> SEKARANG AMBIL SEMUA FOTO + POSISIKAN currentIndex BERDASARKAN selectedPhotoId
- *  Ini yang bikin realtime berubah ketika "Set sebagai Utama" ditekan oleh teknisi.
+ *  Fallback instalasi/teknisi — HANYA foto Utama (hemat bandwidth)
  *  ========================= */
-/** Fallback instalasi/teknisi — HANYA foto Utama (hemat bandwidth) */
 async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
   categories: PhotoCategory[];
   serialsByName: Record<string, string>;
@@ -196,14 +238,12 @@ async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
   const items: TechItemLocal[] = data.items ?? [];
 
   const categories: PhotoCategory[] = items
-    // pastikan minimal ada 1 foto yg bisa ditampilkan
     .filter((it) => (it.photos?.length ?? 0) > 0 || it.photoThumb || it.photo)
     .map((it) => {
       let photos: string[] = [];
       let currentIndex = 0;
 
       if (it.photos?.length) {
-        // === MODE BARU: pilih hanya foto Utama ===
         let idx = 0;
         if (it.selectedPhotoId) {
           const found = it.photos.findIndex((p) => p.id === it.selectedPhotoId);
@@ -212,9 +252,8 @@ async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
         const sel = it.photos[idx] || it.photos[0];
         const selDisplay = sel?.thumb || sel?.url || "";
         photos = selDisplay ? [String(selDisplay)] : [];
-        currentIndex = 0; // karena hanya 1 foto
+        currentIndex = 0;
       } else if (it.photoThumb || it.photo) {
-        // === LEGACY: tetap 1 foto (memang single) ===
         photos = [String(it.photoThumb || it.photo)];
         currentIndex = 0;
       }
@@ -222,8 +261,8 @@ async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
       return {
         id: String(it.id),
         name: it.name,
-        photos, // HANYA 1: foto utama
-        currentIndex: 0, // selalu 0 karena single
+        photos,
+        currentIndex: 0,
         cableM: ((): number | undefined => {
           if (it.meter === null || it.meter === undefined) return undefined;
           const n =
@@ -236,7 +275,6 @@ async function loadPhotosFromTechnicianApi(jobId: string): Promise<{
       };
     });
 
-  // Map label SN by name (tetap sama)
   const serialsByName: Record<string, string> = {};
   for (const it of items) {
     if (it.requiresSerialNumber && it.serialNumber) {
@@ -471,6 +509,7 @@ export default function GenerateLaporanPage() {
         id: String(j.job_id),
         job_id: j.job_id ?? null,
         name: j.name ?? null,
+        nama_panggilan: j.nama_panggilan ?? null,
         project_id: String(j.id),
         lokasi: j.lokasi ?? null,
         tanggal_mulai: j.tanggal_mulai ?? null,
@@ -569,7 +608,6 @@ export default function GenerateLaporanPage() {
       }
 
       // merge meta supabase (hanya relevan untuk fallback teknisi)
-      // catatan: SN & cable_meter per kategori akan ter-update realtime via subscribe.
       if (categories.length && !categories[0].name.includes(" — ")) {
         const { metersByCat, snByCat } = await fetchPhotoMeta(jobId);
         categories = categories.map((c) => ({
@@ -581,18 +619,41 @@ export default function GenerateLaporanPage() {
 
       const jobName = selectedJob?.name || selectedJob?.id || "";
       const location = selectedJob?.lokasi || "";
+
+      // Tanggal referensi assignments: pakai tanggal_mulai jika valid, else hari ini WIB
+      const jobDate =
+        selectedJob?.tanggal_mulai &&
+        !Number.isNaN(new Date(selectedJob.tanggal_mulai).getTime())
+          ? new Date(selectedJob.tanggal_mulai).toISOString().slice(0, 10)
+          : todayWIB();
+
       const completedDate = fmtDate(selectedJob?.tanggal_mulai);
+
+      // Ambil nama teknisi dari API assignments (leader dulu)
+      let technicianDisplay = "";
+      try {
+        technicianDisplay = await fetchTechnicianNamesForProject(
+          selectedJob.project_id,
+          jobDate
+        );
+      } catch {
+        // ignore
+      }
+
+      // fallback kalau belum ada assignment
+      if (!technicianDisplay) {
+        technicianDisplay =
+          typeof selectedJob?.sigma_teknisi === "number"
+            ? "-"
+            : `Teknisi (${selectedJob.sigma_teknisi})`;
+      }
+
       const salesName = selectedJob?.sales_name ?? null;
       const presalesName = selectedJob?.presales_name ?? null;
 
       const nextPreview: ReportPreview = {
         jobName,
-        technicianName:
-          salesName ||
-          presalesName ||
-          (typeof selectedJob?.sigma_teknisi === "number"
-            ? `Teknisi (${selectedJob?.sigma_teknisi})`
-            : "Teknisi"),
+        technicianName: technicianDisplay,
         location,
         completedDate,
         photoCategories: categories,
@@ -714,6 +775,21 @@ export default function GenerateLaporanPage() {
       )
       .subscribe();
 
+    // ==== Realtime: jika assignment teknisi berubah, refresh preview ====
+    const chAssign = supabase
+      .channel(`rt-assign-${projectId}`)
+      .on(
+        "postgres_changes",
+        {
+          schema: "public",
+          table: "project_assignments",
+          event: "*",
+          filter: `project_id=eq.${projectId}`,
+        },
+        refresh
+      )
+      .subscribe();
+
     return () => {
       if (t) clearTimeout(t);
       supabase.removeChannel(chUploads);
@@ -721,6 +797,7 @@ export default function GenerateLaporanPage() {
       supabase.removeChannel(chPhotos);
       supabase.removeChannel(chPhotoEntries);
       supabase.removeChannel(chSN);
+      supabase.removeChannel(chAssign);
     };
   }, [formData.jobId, jobs, buildPreview]);
 

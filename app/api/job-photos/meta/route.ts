@@ -16,8 +16,60 @@ function parseMeter(input: unknown): number | null | undefined {
   return null;
 }
 
+// Hanya teknisi yang boleh eksekusi
+async function assertTechnician() {
+  const supabase = supabaseServer();
+
+  const { data: auth, error: authErr } = await supabase.auth.getUser();
+  if (authErr || !auth?.user) {
+    return {
+      ok: false as const,
+      res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+    };
+  }
+
+  const uid = auth.user.id;
+
+  // Cek profiles: ada technician_id => teknisi
+  const { data: profile, error: profErr } = await supabase
+    .from("profiles")
+    .select("technician_id, email")
+    .eq("id", uid)
+    .maybeSingle();
+
+  if (profErr) {
+    return {
+      ok: false as const,
+      res: NextResponse.json(
+        { error: profErr.message || "Auth failed" },
+        { status: 500 }
+      ),
+    };
+  }
+
+  const isTechnician = !!profile?.technician_id;
+
+  // Jika bukan teknisi, tolak (view-only)
+  if (!isTechnician) {
+    return {
+      ok: false as const,
+      res: NextResponse.json(
+        { error: "Forbidden: hanya teknisi yang dapat memperbarui meta." },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return { ok: true as const, supabase };
+}
+
 export async function POST(req: Request) {
   try {
+    // === Guard peran (server-side) ===
+    const guard = await assertTechnician();
+    if (!guard.ok) return guard.res;
+    const supabase = guard.supabase!;
+
     const body = await req.json();
 
     const jobId = body?.jobId as string | undefined;
@@ -81,8 +133,6 @@ export async function POST(req: Request) {
     ) {
       selectedPhotoId = String(body.ocrStatus.selectedPhotoId).trim() || null;
     }
-
-    const supabase = supabaseServer();
 
     // validasi selectedPhotoId milik job/category yang sama
     if (selectedPhotoId) {

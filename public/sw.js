@@ -1,5 +1,5 @@
-/* public/sw.js — fast offline upload with timeout & ACK (Instalasi + Survey, merged) */
-const VERSION = "magang-app-v1.0.48"; // ⬅️ bump versi agar SW baru aktif
+/* public/sw.js — fast offline upload with timeout & ACK (Merged: code2 + login handling from code1) */
+const VERSION = "magang-app-v1.0.49"; // bump untuk aktifkan SW baru
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -16,6 +16,8 @@ const APP_SHELL = [
   "/offline",
   "/manifest.json",
   "/logo-reaport.png",
+  "/icon-192x192.png",
+  "/icon-512x512.png",
 ];
 
 /* ===== Config upload/meta ===== */
@@ -23,9 +25,9 @@ const QUEUE_DB = "photo-upload-queue-db";
 const QUEUE_STORE = "requests";
 const UPLOAD_PATH = "/api/job-photos/upload";
 const META_PATH = "/api/job-photos/meta";
-// 🔥 Dukung Survey
+// 🔥 Survey
 const SURVEY_UPLOAD_PATH = "/api/survey/uploads";
-// const SURVEY_META_PATH = "/api/survey/meta"; // siapkan jika perlu
+// const SURVEY_META_PATH = "/api/survey/meta"; // siapkan bila diperlukan
 const UPLOAD_TIMEOUT_MS = 2500; // jika fetch > 2.5s → antre (UI cepat dapat respons)
 
 /* ===== IndexedDB (queue) ===== */
@@ -138,8 +140,7 @@ async function processQueue() {
     }
   }
 
-  if (okIds.length)
-    await notifyClients({ type: "sync-complete", queueIds: okIds });
+  if (okIds.length) await notifyClients({ type: "sync-complete", queueIds: okIds });
 }
 
 /* ===== Cache utils ===== */
@@ -203,9 +204,7 @@ self.addEventListener("activate", (e) => {
       .then((keys) =>
         Promise.all(
           keys.map((k) =>
-            k.startsWith("magang-app-") &&
-            k !== STATIC_CACHE &&
-            k !== DYNAMIC_CACHE
+            k.startsWith("magang-app-") && k !== STATIC_CACHE && k !== DYNAMIC_CACHE
               ? caches.delete(k)
               : Promise.resolve()
           )
@@ -243,24 +242,47 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
-  // 🔐 Bypass untuk Supabase auth callback/confirm (dari code 1)
+  // 🔐 BYPASS: semua rute auth → biarkan browser handle (cookie ikut)
+  // (dari code 1, diperluas: bukan hanya callback/confirm, tapi semua /auth/*)
   if (
     url.origin === self.location.origin &&
-    (url.pathname === "/auth/callback" ||
+    (
+      url.pathname === "/auth/callback" ||
       url.pathname.startsWith("/auth/callback") ||
       url.pathname === "/auth/confirm" ||
-      url.pathname.startsWith("/auth/confirm"))
+      url.pathname.startsWith("/auth/confirm") ||
+      url.pathname.startsWith("/auth/") // ⬅️ penting untuk login & rute auth lain
+    )
   ) {
-    return;
+    return; // no intercept
   }
 
-  // 0) Intercept upload/meta: network-first dengan TIMEOUT; kalau lambat/gagal → antre
+  // 🛡️ BYPASS: semua /api/** (agar cookie tidak hilang & tidak dicache),
+  // KECUALI POST ke endpoint yang memang dikelola antrean offline.
+  if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
+    const isManagedUpload =
+      req.method === "POST" &&
+      (
+        url.pathname === UPLOAD_PATH ||
+        url.pathname === META_PATH ||
+        url.pathname === SURVEY_UPLOAD_PATH
+        // || url.pathname === SURVEY_META_PATH
+      );
+    if (!isManagedUpload) {
+      e.respondWith(fetch(req)); // network only + credentials dari req asli
+      return;
+    }
+  }
+
+  // === Upload & Meta POST (antrian offline) ===
   if (
     req.method === "POST" &&
-    (url.pathname === UPLOAD_PATH ||
+    (
+      url.pathname === UPLOAD_PATH ||
       url.pathname === META_PATH ||
-      url.pathname === SURVEY_UPLOAD_PATH)
-    // || url.pathname === SURVEY_META_PATH
+      url.pathname === SURVEY_UPLOAD_PATH
+      // || url.pathname === SURVEY_META_PATH
+    )
   ) {
     e.respondWith(
       (async () => {
@@ -280,14 +302,11 @@ self.addEventListener("fetch", (e) => {
             try {
               const resClone = onlineRes.clone();
               const data = await resClone.json().catch(() => null);
-              if (
-                data &&
-                (data.ok || data.photoUrl || data.thumbUrl || data.thumb_url)
-              ) {
+              if (data && (data.ok || data.photoUrl || data.thumbUrl || data.thumb_url)) {
                 await notifyClients({
                   type: "upload-online-ack",
-                  categoryId: data.categoryId || null, // instalasi kadang kirim
-                  thumbUrl: data.thumbUrl || data.thumb_url || null, // camel/snake
+                  categoryId: data.categoryId || null,
+                  thumbUrl: data.thumbUrl || data.thumb_url || null,
                   serialNumber: data.serialNumber || null,
                   meter: typeof data.meter === "number" ? data.meter : null,
                 });
@@ -309,17 +328,14 @@ self.addEventListener("fetch", (e) => {
             headers,
             body,
             createdAt: Date.now(),
-            // tandai meta via path:
             kind:
-              url.pathname ===
-              META_PATH /* || url.pathname === SURVEY_META_PATH */
+              url.pathname === META_PATH /* || url.pathname === SURVEY_META_PATH */
                 ? "meta"
                 : "upload",
           });
           try {
             await self.registration.sync.register(
-              url.pathname ===
-                META_PATH /* || url.pathname === SURVEY_META_PATH */
+              url.pathname === META_PATH /* || url.pathname === SURVEY_META_PATH */
                 ? "meta-sync"
                 : "photo-upload-sync"
             );
@@ -334,6 +350,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
+  // Hanya GET yang lewat sini
   if (req.method !== "GET") return;
 
   const isSameOrigin = url.origin === self.location.origin;
@@ -399,7 +416,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // 3) API GET (same-origin) → network-first + fallback cache
+  // 3) API GET (same-origin) → (TIDAK akan terpakai untuk /api/** karena sudah di-bypass di atas)
   if (url.pathname.startsWith("/api/")) {
     e.respondWith(
       (async () => {
@@ -409,7 +426,7 @@ self.addEventListener("fetch", (e) => {
           e.waitUntil(
             caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, copy))
           );
-          return r; // <-- return di dalam try, variabel in-scope
+          return r;
         } catch {
           const hit = await caches.match(req, { ignoreSearch: true });
           if (hit) return hit;

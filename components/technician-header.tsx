@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/lib/supabaseBrowser";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,8 +37,9 @@ export function TechnicianHeader({
 }: TechnicianHeaderProps) {
   const router = useRouter();
 
-  const handleLogout = () => {
-    router.push("/auth/login");
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.replace("/auth/login");
   };
 
   const handleBack = () => {

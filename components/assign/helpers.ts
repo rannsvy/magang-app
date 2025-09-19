@@ -150,3 +150,15 @@ export const getProjectStatusDisplay = (project: UIProject) => {
 
 export const truncateText = (t: string, max = 20) =>
   t.length <= max ? t : t.substring(0, max) + "...";
+
+export const calcManDaysInstalasi = (sigmaHari: string, sigmaTeknisi: string) => {
+  const h = parseInt(sigmaHari || "0", 10);
+  const t = parseInt(sigmaTeknisi || "0", 10);
+  return h > 0 && t > 0 ? h * t : 0;
+};
+
+export const calcManDaysSurvey = (totalHari: string, totalTeknisi: string) => {
+  const h = parseInt(totalHari || "0", 10);
+  const t = parseInt(totalTeknisi || "0", 10);
+  return h > 0 && t > 0 ? h * t : 0;
+};
