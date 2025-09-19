@@ -1,12 +1,9 @@
-// app/user/upload_foto/page.tsx
 "use client";
 
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { TechnicianHeader } from "@/components/technician-header";
 import { Pagination } from "@/components/pagination";
 import { Button } from "@/components/ui/button";
@@ -14,7 +11,7 @@ import { Camera, Star, Plus } from "lucide-react";
 import ReactCrop, { type Crop, type PixelCrop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
 
-/* ==== OCR SN (dengan kandidat) ==== */
+/* ==== OCR SN (kandidat) ==== */
 import { type OcrInfo, recognizeSerialNumberWithCandidates } from "@/lib/ocr";
 
 /* ==== Auto-crop ==== */
@@ -37,7 +34,7 @@ import { safePostJSON } from "@/lib/offline/safePost";
 
 const UPLOAD_ENDPOINT = "/api/job-photos/upload";
 
-/* ===== Types ===== */
+/* ===== Types (gabungan) ===== */
 type UploadState = "queued" | "uploading" | "uploaded" | "error";
 
 interface PhotoEntry {
@@ -47,7 +44,6 @@ interface PhotoEntry {
   thumb: string;
   remoteUrl?: string;
   sharpness: number;
-  sn?: string;              // ⬅️ SN PER-FOTO
   uploadState?: UploadState;
   queueId?: string;
   uploadError?: string;
@@ -58,20 +54,20 @@ interface PhotoCategory {
   id: string;
   name: string;
   requiresSerialNumber: boolean;
-  requiresCable?: boolean; // dukung flag server + deteksi nama
-  // Legacy single (kompat)
+
+  // Legacy single (kompat server lama)
   photo?: string;
   photoThumb?: string;
 
   // Multi
   photos?: PhotoEntry[];
   selectedPhotoId?: string; // dipakai di tampilan & laporan
-  offlineThumb?: string;    // thumb utk offline (pakai selected)
+  offlineThumb?: string; // agar tetap tampil offline
 
-  serialNumber?: string;    // mirror dari foto terpilih (untuk server)
-  meter?: number;
+  serialNumber?: string; // hasil validasi SN
+  meter?: number; // panjang kabel (khusus kategori kabel)
 
-  // state agregat kategori (untuk badge status)
+  // state agregat kategori (untuk badge/status upload)
   uploadState?: UploadState;
   queueId?: string;
   uploadError?: string;
@@ -88,7 +84,11 @@ type LooseCrop = {
   unit?: "px" | "%";
 };
 
-const cropsAlmostEqual = (a?: LooseCrop | null, b?: LooseCrop | null, e = 0.5) =>
+const cropsAlmostEqual = (
+  a?: LooseCrop | null,
+  b?: LooseCrop | null,
+  e = 0.5
+) =>
   !!a &&
   !!b &&
   Math.abs(a.x - b.x) < e &&
@@ -97,7 +97,10 @@ const cropsAlmostEqual = (a?: LooseCrop | null, b?: LooseCrop | null, e = 0.5) =
   Math.abs(a.height - b.height) < e &&
   a.unit === b.unit;
 
-async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<Blob> {
+async function cropElToBlob(
+  img: HTMLImageElement,
+  cropPx: PixelCrop
+): Promise<Blob> {
   const scaleX = img.naturalWidth / img.width;
   const scaleY = img.naturalHeight / img.height;
   const sx = Math.max(0, Math.round(cropPx.x * scaleX));
@@ -120,7 +123,11 @@ async function cropElToBlob(img: HTMLImageElement, cropPx: PixelCrop): Promise<B
   );
 }
 
-async function cropElToDataUrl(img: HTMLImageElement, cropPx: PixelCrop, expand = 0.35): Promise<string> {
+async function cropElToDataUrl(
+  img: HTMLImageElement,
+  cropPx: PixelCrop,
+  expand = 0.35
+): Promise<string> {
   const scaleX = img.naturalWidth / img.width;
   const scaleY = img.naturalHeight / img.height;
   const ex = Math.max(0, cropPx.x - cropPx.width * expand);
@@ -158,7 +165,7 @@ async function urlToDataUrl(u: string): Promise<string> {
   });
 }
 
-/* ======= QUALITY SCORE (Sobel + Laplacian, normalized & center-weighted) ======= */
+/* ======= QUALITY SCORE ======= */
 async function computeSharpnessFromDataUrl(dataUrl: string): Promise<number> {
   const im = new Image();
   (im as any).decoding = "async";
@@ -177,7 +184,9 @@ async function computeSharpnessFromDataUrl(dataUrl: string): Promise<number> {
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
-  const ctx = c.getContext("2d", { willReadFrequently: true })!;
+  const ctx = c.getContext("2d", {
+    willReadFrequently: true,
+  }) as CanvasRenderingContext2D;
   (ctx as any).imageSmoothingEnabled = false;
   ctx.drawImage(im, 0, 0, W, H);
   const { data } = ctx.getImageData(0, 0, W, H);
@@ -210,24 +219,33 @@ async function computeSharpnessFromDataUrl(dataUrl: string): Promise<number> {
   for (let y = 1; y < H - 1; y++) {
     for (let x = 1; x < W - 1; x++) {
       const i = y * W + x;
-
       const gx =
-        -Y[i - W - 1] - 2 * Y[i - 1] - Y[i + W - 1] +
-        Y[i - W + 1] + 2 * Y[i + 1] + Y[i + W + 1];
+        -Y[i - W - 1] -
+        2 * Y[i - 1] -
+        Y[i + W - 1] +
+        Y[i - W + 1] +
+        2 * Y[i + 1] +
+        Y[i + W + 1];
       const gy =
-        -Y[i - W - 1] - 2 * Y[i - W] - Y[i - W + 1] +
-        Y[i + W - 1] + 2 * Y[i + W] + Y[i + W + 1];
+        -Y[i - W - 1] -
+        2 * Y[i - W] -
+        Y[i - W + 1] +
+        Y[i + W - 1] +
+        2 * Y[i + W] +
+        Y[i + W + 1];
       const g2 = gx * gx + gy * gy;
 
       const L = Y[i - W] + Y[i - 1] + Y[i + 1] + Y[i + W] - 4 * Y[i];
 
       const dx = x - cx;
       const dy = y - cy;
-      const w = Math.exp(-(dx * dx) / (2 * sx * sx) - (dy * dy) / (2 * sy * sy));
+      const w = Math.exp(
+        -(dx * dx) / (2 * sx * sx) - (dy * dy) / (2 * sy * sy)
+      );
 
       sobelEnergy += g2 * w;
       lapSum += L * w;
-      lapSqSum += (L * L) * w;
+      lapSqSum += L * L * w;
       npx++;
     }
   }
@@ -250,34 +268,30 @@ async function fetchCategories(jobId: string): Promise<PhotoCategory[]> {
 
   const items = Array.isArray(json.items) ? json.items : [];
 
-  // Server → state client (multi-foto + kompat lama)
   const list = items.map((it: any) => {
-    const requiresCable =
-      !!it.requiresCable ||
-      String(it.type || "").toLowerCase() === "photo+cable" ||
-      isCableCategory(String(it.name || ""));
-
     const base: PhotoCategory = {
       id: String(it.id),
       name: String(it.name ?? ""),
-      requiresSerialNumber:
-        !!it.requiresSerialNumber ||
-        String(it.type || "").toLowerCase() === "photo+sn",
-      requiresCable,
+      requiresSerialNumber: Boolean(it.requiresSerialNumber),
       photo: it.photo ?? undefined,
       photoThumb: it.photoThumb ?? undefined,
       offlineThumb: undefined,
-      serialNumber: it.serialNumber ?? undefined, // mirror
+      serialNumber: it.serialNumber ?? undefined,
       meter: typeof it.meter === "number" ? it.meter : undefined,
       photoToken: undefined,
       uploadState: undefined,
       queueId: undefined,
       uploadError: undefined,
-      photos: [],
+      // NOTE: jangan andalkan base.photos untuk operasi di bawah;
+      // kita akan pakai tmpPhotos dulu.
+      photos: [], // placeholder
       selectedPhotoId: undefined,
     };
 
-    // kompat record lama: jadikan 1 foto di array
+    // gunakan penampung lokal agar tidak memicu error "possibly undefined"
+    let tmpPhotos: PhotoEntry[] = [];
+
+    // Kompat data lama (single photo)
     if (it.photoThumb || it.photo) {
       const thumb = String(it.photoThumb || it.photo);
       const entry: PhotoEntry = {
@@ -286,13 +300,33 @@ async function fetchCategories(jobId: string): Promise<PhotoCategory[]> {
         thumb,
         remoteUrl: String(it.photo || it.photoThumb),
         sharpness: 0,
-        sn: it.serialNumber ?? undefined,
         uploadState: "uploaded",
       };
-      base.photos = [entry];
+      tmpPhotos = [entry];
       base.selectedPhotoId = entry.id;
       base.offlineThumb = thumb;
     }
+
+    // Mode baru (riwayat multi-foto)
+    if (Array.isArray(it.photos) && it.photos.length) {
+      tmpPhotos = it.photos.map((p: any) => ({
+        id: String(p.id),
+        createdAt: p.createdAt ? Number(p.createdAt) : Date.now(),
+        thumb: String(p.thumb ?? p.url ?? ""),
+        remoteUrl: p.url ?? undefined,
+        sharpness: Number(p.sharpness ?? 0),
+        uploadState: "uploaded",
+      }));
+      base.selectedPhotoId = it.selectedPhotoId ?? undefined;
+
+      // set offlineThumb ke foto utama (pakai tmpPhotos, bukan base.photos)
+      const sel =
+        tmpPhotos.find((pp) => pp.id === base.selectedPhotoId) ?? tmpPhotos[0];
+      base.offlineThumb = sel?.thumb;
+    }
+
+    // tuliskan kembali ke base.photos di paling akhir
+    base.photos = tmpPhotos;
 
     return base;
   });
@@ -300,7 +334,7 @@ async function fetchCategories(jobId: string): Promise<PhotoCategory[]> {
   return list;
 }
 
-/* ============== Persist meta (SN/meter/selected photo) – OFFLINE ============== */
+/* ============== Persist meta (SN/meter/selected photo) – OFFLINE READY ============== */
 async function saveMeta(
   jobId: string,
   categoryId: string,
@@ -314,22 +348,41 @@ async function saveMeta(
   const payload: any = {
     jobId,
     categoryId,
-    serialNumber: meta.serialNumber ?? null,
-    meter: typeof meta.meter === "number" ? meta.meter : null,
-    ocrStatus: meta.ocrStatus ?? "done",
   };
-  if (meta.selectedPhotoId) {
-    payload.ocrStatus = JSON.stringify({
-      status: meta.ocrStatus ?? "done",
-      selectedPhotoId: meta.selectedPhotoId,
-    });
+
+  // serial number
+  if (meta.serialNumber !== undefined) {
+    payload.serialNumber =
+      meta.serialNumber === null || meta.serialNumber === ""
+        ? null
+        : meta.serialNumber;
   }
+
+  // meter
+  if (meta.meter !== undefined) {
+    payload.meter = meta.meter;
+  }
+
+  // selectedPhotoId dikirim SEBAGAI FIELD TOP-LEVEL
+  if (meta.selectedPhotoId !== undefined) {
+    payload.selectedPhotoId = meta.selectedPhotoId;
+  }
+
+  // ocrStatus boleh ikut, tapi kirim sebagai OBJEK (bukan string)
+  if (meta.ocrStatus !== undefined) {
+    payload.ocrStatus = meta.selectedPhotoId
+      ? {
+          status: meta.ocrStatus ?? "done",
+          selectedPhotoId: meta.selectedPhotoId,
+        }
+      : { status: meta.ocrStatus ?? "done" };
+  }
+
   await safePostJSON("/api/job-photos/meta", payload);
 }
 
-/* ===== UI helpers (status & pilihan foto utama) ===== */
-const getSelectedThumb = (c: PhotoCategory | undefined): string | undefined => {
-  if (!c) return undefined;
+/* ===== UI helpers ===== */
+const getSelectedThumb = (c: PhotoCategory): string | undefined => {
   if (c.selectedPhotoId && c.photos?.length) {
     const p = c.photos.find((x) => x.id === c.selectedPhotoId);
     if (p?.thumb) return p.thumb;
@@ -337,21 +390,16 @@ const getSelectedThumb = (c: PhotoCategory | undefined): string | undefined => {
   return c.offlineThumb || c.photoThumb || c.photo || undefined;
 };
 
-const getSelectedPhoto = (c: PhotoCategory | undefined): PhotoEntry | undefined =>
-  c?.photos?.find((p) => p.id === c.selectedPhotoId);
-
 const getCategoryStatus = (c: PhotoCategory) => {
   const thumb = getSelectedThumb(c);
   const hasImg = !!thumb;
 
-  if (c.uploadState === "queued" || c.uploadState === "uploading") return "pending";
+  if (c.uploadState === "queued" || c.uploadState === "uploading")
+    return "pending";
   if (c.uploadState === "error") return "error";
-
   if (!hasImg) return "empty";
-  if (c.requiresSerialNumber) {
-    const sel = getSelectedPhoto(c);
-    if (!(sel?.sn ?? "").trim()) return "incomplete";
-  }
+  if (c.requiresSerialNumber && !(c.serialNumber ?? "").trim())
+    return "incomplete";
   return "complete";
 };
 
@@ -376,7 +424,7 @@ function formatDateOnly(epochMs: number) {
   return `${dd}-${mm}-${yyyy}`;
 }
 
-/* ===== Component (gabungan) ===== */
+/* ================= Page (UI code 2 + fitur code 1) ================= */
 export default function UploadFotoPage() {
   const sp = useSearchParams();
   const qJob = sp.get("job") ?? "";
@@ -390,7 +438,6 @@ export default function UploadFotoPage() {
       } catch {}
     }
   }, [jobId]);
-
   useEffect(() => {
     if (!qJob) {
       try {
@@ -407,6 +454,12 @@ export default function UploadFotoPage() {
   }, [categories]);
 
   const [currentPage, setCurrentPage] = useState(1);
+  const perPage = 12;
+  const totalPages = Math.max(1, Math.ceil(categories.length / perPage));
+  const slice = categories.slice(
+    (currentPage - 1) * perPage,
+    (currentPage - 1) * perPage + perPage
+  );
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const setFileInputRef =
@@ -419,7 +472,9 @@ export default function UploadFotoPage() {
 
   // ==== Crop state ====
   const [cropOpen, setCropOpen] = useState(false);
-  const [pendingCategoryId, setPendingCategoryId] = useState<string | null>(null);
+  const [pendingCategoryId, setPendingCategoryId] = useState<string | null>(
+    null
+  );
   const [srcToCrop, setSrcToCrop] = useState<string | null>(null);
   const [crop, setCrop] = useState<Crop | undefined>(undefined);
   const [completedCrop, setCompletedCrop] = useState<PixelCrop | null>(null);
@@ -434,7 +489,7 @@ export default function UploadFotoPage() {
   // Loading tombol "Simpan Crop"
   const [savingCrop, setSavingCrop] = useState(false);
 
-  // ==== SN Validation (modal) ====
+  // ==== SN Validation modal ====
   const [snOpen, setSnOpen] = useState(false);
   const [snSrc, setSnSrc] = useState<string | null>(null);
   const [snCandidates, setSnCandidates] = useState<string[]>([]);
@@ -445,26 +500,14 @@ export default function UploadFotoPage() {
   const [snError, setSnError] = useState("");
   const snImgRef = useRef<HTMLImageElement | null>(null);
   const [snCrop, setSnCrop] = useState<Crop | undefined>();
-  const [snCompletedCrop, setSnCompletedCrop] = useState<PixelCrop | null>(null);
+  const [snCompletedCrop, setSnCompletedCrop] = useState<PixelCrop | null>(
+    null
+  );
 
-  // target foto yang akan diisi SN (agar tidak salah nempel)
-  const snTargetRef = useRef<{ catId: string; photoId: string } | null>(null);
-
-  // ==== Review Modal ====
+  // ==== Review Modal (riwayat multi-foto) ====
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewCatId, setReviewCatId] = useState<string | null>(null);
   const [reviewIndex, setReviewIndex] = useState<number>(0);
-
-  // === Reopen Review setelah crop ===
-  const reopenReviewAfterCropRef = useRef<{ reopen: boolean; catId?: string }>({
-    reopen: false,
-    catId: undefined,
-  });
-
-  // pagination — “seperti semula” (12 / halaman)
-  const perPage = 12;
-  const totalPages = Math.max(1, Math.ceil(categories.length / perPage));
-  const slice = categories.slice((currentPage - 1) * perPage, (currentPage - 1) * perPage + perPage);
 
   // cache key & helpers
   const cacheKey = jobId ? `upload_cats_${jobId}` : "";
@@ -486,7 +529,8 @@ export default function UploadFotoPage() {
     if (!cacheKey) return;
     const onOffline = () => persistSnapshotNow(cacheKey, categoriesRef.current);
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") persistSnapshotNow(cacheKey, categoriesRef.current);
+      if (document.visibilityState === "hidden")
+        persistSnapshotNow(cacheKey, categoriesRef.current);
     };
     window.addEventListener("offline", onOffline);
     document.addEventListener("visibilitychange", onVisibility);
@@ -496,14 +540,16 @@ export default function UploadFotoPage() {
     };
   }, [cacheKey]);
 
-  const mergePending = (serverItems: PhotoCategory[], localItems: PhotoCategory[]) => {
+  const mergePending = (
+    serverItems: PhotoCategory[],
+    localItems: PhotoCategory[]
+  ) => {
     const mapLocal = new Map(localItems.map((c) => [c.id, c] as const));
     return serverItems.map((it) => {
       const local = mapLocal.get(it.id);
       if (!local) return it;
       return {
         ...it,
-        requiresCable: typeof it.requiresCable === "boolean" ? it.requiresCable : local.requiresCable,
         photos: local.photos?.length ? local.photos : it.photos ?? [],
         selectedPhotoId: local.selectedPhotoId ?? it.selectedPhotoId,
         uploadState: local.uploadState,
@@ -522,7 +568,7 @@ export default function UploadFotoPage() {
   useEffect(() => {
     if (!jobId) return;
     (async () => {
-      // opsional init kategori di server
+      // optional: init kategori di server
       fetch("/api/job-photos/init", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -549,20 +595,30 @@ export default function UploadFotoPage() {
             if (cat.photos?.length) {
               const withSharp = await Promise.all(
                 cat.photos.map(async (p) =>
-                  p.sharpness > 0 ? p : { ...p, sharpness: await computeSharpnessFromDataUrl(p.thumb) }
+                  p.sharpness > 0
+                    ? p
+                    : {
+                        ...p,
+                        sharpness: await computeSharpnessFromDataUrl(p.thumb),
+                      }
                 )
               );
               let selectedId = cat.selectedPhotoId;
               if (!selectedId) {
                 let best = withSharp[0];
-                for (const it of withSharp) if (it.sharpness > best.sharpness) best = it;
+                for (const it of withSharp)
+                  if (it.sharpness > best.sharpness) best = it;
                 selectedId = best.id;
               }
-              const selPhoto = withSharp.find((x) => x.id === selectedId);
-              const thumb = selPhoto?.thumb ?? withSharp[0].thumb;
-              // mirror serialNumber dari foto terpilih bila ada
-              const serialNumber = selPhoto?.sn ?? cat.serialNumber;
-              return { ...cat, photos: withSharp, selectedPhotoId: selectedId, offlineThumb: thumb, serialNumber };
+              const thumb =
+                withSharp.find((x) => x.id === selectedId)?.thumb ??
+                withSharp[0].thumb;
+              return {
+                ...cat,
+                photos: withSharp,
+                selectedPhotoId: selectedId,
+                offlineThumb: thumb,
+              };
             }
             return cat;
           })
@@ -597,20 +653,25 @@ export default function UploadFotoPage() {
     return () => window.removeEventListener("offline", onOffline);
   }, [cacheKey]);
 
-  // prefetch thumbnail terpilih ke dataURL agar tersedia offline
+  // prefetch thumbnail ke dataURL agar tersedia offline
   useEffect(() => {
     if (!online) return;
     let cancelled = false;
     (async () => {
       const need = categories
         .map((c) => ({ c, sel: getSelectedThumb(c) }))
-        .filter((x) => x.sel && !x.c.offlineThumb) as { c: PhotoCategory; sel: string }[];
+        .filter((x) => x.sel && !x.c.offlineThumb) as {
+        c: PhotoCategory;
+        sel: string;
+      }[];
       for (const { c, sel } of need) {
         try {
           const dataUrl = await urlToDataUrl(sel);
           if (cancelled) return;
           setCategories((prev) => {
-            const next = prev.map((p) => (p.id === c.id ? { ...p, offlineThumb: dataUrl } : p));
+            const next = prev.map((p) =>
+              p.id === c.id ? { ...p, offlineThumb: dataUrl } : p
+            );
             persistSnapshotNow(cacheKey, next);
             return next;
           });
@@ -622,7 +683,7 @@ export default function UploadFotoPage() {
     };
   }, [online, categories, cacheKey]);
 
-  // realtime patch dari Supabase
+  // realtime patch dari Supabase (job_photos & job_serial_numbers)
   useEffect(() => {
     if (!jobId) return;
     let active = true;
@@ -641,12 +702,22 @@ export default function UploadFotoPage() {
       .channel(`tech-upload-${jobId}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "job_photos", filter: `job_id=eq.${jobId}` },
+        {
+          event: "*",
+          schema: "public",
+          table: "job_photos",
+          filter: `job_id=eq.${jobId}`,
+        },
         refetch
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "job_serial_numbers", filter: `job_id=eq.${jobId}` },
+        {
+          event: "*",
+          schema: "public",
+          table: "job_serial_numbers",
+          filter: `job_id=eq.${jobId}`,
+        },
         refetch
       )
       .subscribe();
@@ -656,42 +727,11 @@ export default function UploadFotoPage() {
     };
   }, [jobId, cacheKey]);
 
-  // SW message handlers (sinkronisasi offline queue) — gabungan
+  // SW message handlers (sinkronisasi offline queue)
   useEffect(() => {
     function onMessage(e: MessageEvent) {
       const d: any = e.data;
       if (!d || typeof d !== "object") return;
-
-      // Kompat pesan dari code 1
-      if (d.type === "upload-online-ack" && d.categoryId) {
-        setCategories((prev) => {
-          const next = prev.map((c) => {
-            if (c.id !== d.categoryId) return c;
-            const thumb = d.thumbUrl || c.offlineThumb || c.photoThumb;
-            let photos = c.photos ?? [];
-            if (photos.length && c.selectedPhotoId) {
-              photos = photos.map((p) =>
-                p.id === c.selectedPhotoId
-                  ? { ...p, uploadState: "uploaded" as UploadState }
-                  : p
-              );
-            }
-            return {
-              ...c,
-              offlineThumb: thumb,
-              photoThumb: d.thumbUrl || c.photoThumb,
-              meter: typeof d.meter === "number" ? d.meter : c.meter,
-              serialNumber: d.serialNumber ? d.serialNumber : c.serialNumber,
-              photos,
-              uploadState: "uploaded" as UploadState,
-              queueId: undefined,
-              uploadError: undefined,
-            };
-          });
-          persistSnapshotNow(cacheKey, next);
-          return next;
-        });
-      }
 
       if (d.type === "persist-now") {
         persistSnapshotNow(cacheKey, categoriesRef.current);
@@ -703,7 +743,12 @@ export default function UploadFotoPage() {
             if (!c.photos?.length) return c;
             const photos = c.photos.map((p) =>
               p.queueId && d.queueIds.includes(p.queueId)
-                ? { ...p, uploadState: "uploaded" as UploadState, queueId: undefined, uploadError: undefined }
+                ? {
+                    ...p,
+                    uploadState: "uploaded" as UploadState,
+                    queueId: undefined,
+                    uploadError: undefined,
+                  }
                 : p
             );
             return { ...c, photos, uploadState: "uploaded" as UploadState };
@@ -719,7 +764,12 @@ export default function UploadFotoPage() {
             if (!c.photos?.length) return c;
             const photos = c.photos.map((p) =>
               p.queueId === d.queueId
-                ? { ...p, uploadState: "uploaded" as UploadState, queueId: undefined, uploadError: undefined }
+                ? {
+                    ...p,
+                    uploadState: "uploaded" as UploadState,
+                    queueId: undefined,
+                    uploadError: undefined,
+                  }
                 : p
             );
             return { ...c, photos, uploadState: "uploaded" as UploadState };
@@ -750,7 +800,9 @@ export default function UploadFotoPage() {
                 ? {
                     ...p,
                     uploadState: "error" as UploadState,
-                    uploadError: d.message || (d.status ? `HTTP ${d.status}` : "Replay gagal"),
+                    uploadError:
+                      d.message ||
+                      (d.status ? `HTTP ${d.status}` : "Replay gagal"),
                   }
                 : p
             );
@@ -763,7 +815,8 @@ export default function UploadFotoPage() {
     }
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.addEventListener("message", onMessage);
-      return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+      return () =>
+        navigator.serviceWorker.removeEventListener("message", onMessage);
     }
   }, [jobId, cacheKey]);
 
@@ -775,7 +828,9 @@ export default function UploadFotoPage() {
       const t = setInterval(() => {
         if (tries-- <= 0) return clearInterval(t);
         navigator.serviceWorker?.controller?.postMessage({ type: "heartbeat" });
-        navigator.serviceWorker?.controller?.postMessage({ type: "persist-now" });
+        navigator.serviceWorker?.controller?.postMessage({
+          type: "persist-now",
+        });
       }, 700);
       return () => clearInterval(t);
     }
@@ -786,36 +841,50 @@ export default function UploadFotoPage() {
     if (el) el.value = "";
   };
 
-  /* ====== UX klik kartu: pertahankan UI card code 1, perilaku code 2 ====== */
+  // Behavior: klik kartu -> jika belum ada foto buka kamera; kalau sudah ada foto -> buka Review
+  const handleCardClick = (cat: PhotoCategory) => {
+    const thumbSel = getSelectedThumb(cat);
+    if (!thumbSel) {
+      fileInputRefs.current[cat.id]?.click();
+    } else {
+      openReview(cat.id);
+    }
+  };
+
   const openReview = (catId: string) => {
     const cat = categoriesRef.current.find((c) => c.id === catId);
     if (!cat) return;
     const selId = cat.selectedPhotoId;
-    const idx = selId && cat.photos ? Math.max(0, cat.photos.findIndex((p) => p.id === selId)) : 0;
+    const idx =
+      selId && cat.photos
+        ? Math.max(
+            0,
+            cat.photos.findIndex((p) => p.id === selId)
+          )
+        : 0;
     setReviewCatId(catId);
     setReviewIndex(idx < 0 ? 0 : idx);
     setReviewOpen(true);
   };
 
-  const handleCardClick = (id: string) => {
-    const cat = categoriesRef.current.find((c) => c.id === id);
-    const hasImg = !!getSelectedThumb(cat);
-    if (!hasImg) {
-      fileInputRefs.current[id]?.click();
-    } else {
-      openReview(id);
-    }
+  // Tambah foto dari dalam Review — TIDAK menutup Review agar foto lama tetap terlihat
+  const handleAddPhotoFromReview = (catId: string) => {
+    fileInputRefs.current[catId]?.click();
   };
 
-  /* ========== Ambil foto → modal crop ========== */
-  const handlePhotoCapture = (id: string, e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoCapture = (
+    id: string,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const cat = categories.find((c) => c.id === id);
     if (cat?.requiresSerialNumber) {
       setCategories((prev) => {
-        const next = prev.map((c) => (c.id === id ? { ...c, serialNumber: undefined } : c));
+        const next = prev.map((c) =>
+          c.id === id ? { ...c, serialNumber: undefined } : c
+        );
         persistSnapshotNow(cacheKey, next);
         return next;
       });
@@ -830,15 +899,16 @@ export default function UploadFotoPage() {
       setCompletedCrop(null);
       setAspect(undefined);
 
-      const isCable = !!cat?.requiresCable || isCableCategory(cat?.name || "");
+      const isCable = !!cat && isCableCategory(cat.name);
       setIsPendingCable(isCable);
-      setCableMeterDraft(isCable && typeof cat?.meter === "number" ? String(cat.meter) : "");
+      setCableMeterDraft(
+        isCable && typeof cat?.meter === "number" ? String(cat.meter) : ""
+      );
     };
     fr.readAsDataURL(file);
     (e.target as HTMLInputElement).value = "";
   };
 
-  /* ========== onImageLoaded + auto-crop suggestion ========== */
   const onImageLoaded = (img: HTMLImageElement) => {
     imgRef.current = img;
     setIsPortrait(img.naturalHeight >= img.naturalWidth);
@@ -846,14 +916,27 @@ export default function UploadFotoPage() {
     const iw = img.width;
     const ih = img.height;
     const base = Math.round(Math.min(iw, ih) * 0.85);
-    let w = base, h = base;
+    let w = base,
+      h = base;
     if (aspect) {
       w = base;
       h = Math.round(w / aspect);
-      if (h > ih) { h = Math.round(ih * 0.85); w = Math.round(h * aspect); }
-      if (w > iw) { w = Math.round(iw * 0.85); h = Math.round(w / aspect); }
+      if (h > ih) {
+        h = Math.round(ih * 0.85);
+        w = Math.round(h * aspect);
+      }
+      if (w > iw) {
+        w = Math.round(iw * 0.85);
+        h = Math.round(w / aspect);
+      }
     }
-    const def: Crop = { unit: "px", x: Math.max(0, Math.round((iw - w) / 2)), y: Math.max(0, Math.round((ih - h) / 2)), width: w, height: h };
+    const def: Crop = {
+      unit: "px",
+      x: Math.max(0, Math.round((iw - w) / 2)),
+      y: Math.max(0, Math.round((ih - h) / 2)),
+      width: w,
+      height: h,
+    };
     setCrop(def);
     setCompletedCrop(def as unknown as PixelCrop);
 
@@ -864,7 +947,8 @@ export default function UploadFotoPage() {
         const suggestion = await suggestAutoCrop(srcToCrop, cat?.name);
         if (!suggestion || !imgRef.current) return;
 
-        const dispW = imgRef.current.width, dispH = imgRef.current.height;
+        const dispW = imgRef.current.width,
+          dispH = imgRef.current.height;
         const scaleX = dispW / suggestion.naturalW;
         const scaleY = dispH / suggestion.naturalH;
         const nx = Math.round(suggestion.box.x * scaleX);
@@ -872,7 +956,13 @@ export default function UploadFotoPage() {
         const nw = Math.round(suggestion.box.w * scaleX);
         const nh = Math.round(suggestion.box.h * scaleY);
 
-        const autoCrop: Crop = { unit: "px", x: nx, y: ny, width: nw, height: nh };
+        const autoCrop: Crop = {
+          unit: "px",
+          x: nx,
+          y: ny,
+          width: nw,
+          height: nh,
+        };
         ignoreNextChangeRef.current = true;
         setCrop(autoCrop);
         setCompletedCrop(autoCrop as unknown as PixelCrop);
@@ -886,155 +976,199 @@ export default function UploadFotoPage() {
     onImageLoaded(imgRef.current);
   }, [aspect]);
 
-  /* ============== KONFIRM CROP ============== */
-  const handleConfirmCrop = async () => {
-    if (!imgRef.current || !completedCrop || !pendingCategoryId) return;
-    setSavingCrop(true);
+/* ============== KONFIRM CROP ============== */
+const handleConfirmCrop = async () => {
+  if (!imgRef.current || !completedCrop || !pendingCategoryId) return;
+  setSavingCrop(true);
 
-    const fullBlob = await cropElToBlob(imgRef.current, completedCrop);
-    const thumbBlob = await makeThumbnail(fullBlob, 640, true, 0.8);
+  // 1) Siapkan blob & skor kualitas
+  const fullBlob = await cropElToBlob(imgRef.current, completedCrop);
+  const thumbBlob = await makeThumbnail(fullBlob, 640, true, 0.8);
 
-    const [fullDataUrl, thumbDataUrl] = await Promise.all([blobToDataUrl(fullBlob), blobToDataUrl(thumbBlob)]);
-    const sharpness = await computeSharpnessFromDataUrl(thumbDataUrl);
+  const [fullDataUrl, thumbDataUrl] = await Promise.all([
+    blobToDataUrl(fullBlob),
+    blobToDataUrl(thumbBlob),
+  ]);
+  const sharpness = await computeSharpnessFromDataUrl(thumbDataUrl);
 
-    const token = Date.now();
-    const photoId = uid();
+  // 2) Siapkan entri baru & hitung "best"
+  const token = Date.now();
+  const photoId = uid();
+  const initialState: UploadState = online ? "uploading" : "queued";
 
-    // meter parsing (kalau kategori kabel)
-    const meterVal = isPendingCable && (cableMeterDraft || "").trim().length
-      ? Number((cableMeterDraft || "").trim().replace(",", "."))
-      : undefined;
-
-    // Optimistic add (multi-foto)
-    setCategories((prev) => {
-      const next = prev.map((c) => {
-        if (c.id !== pendingCategoryId) return c;
-        const photos: PhotoEntry[] = [
-          ...(c.photos ?? []),
-          {
-            id: photoId,
-            createdAt: token,
-            full: fullDataUrl,
-            thumb: thumbDataUrl,
-            sharpness,
-            uploadState: (online ? "uploading" : "queued") as UploadState,
-            token,
-          },
-        ];
-
-        // pilih foto paling tajam sebagai utama
-        let best = photos[0];
-        for (const it of photos) if (it.sharpness > best.sharpness) best = it;
-        const selected = best.id;
-        const thumbSel = best.thumb ?? thumbDataUrl;
-
-        return {
-          ...c,
-          photos,
-          selectedPhotoId: selected,
-          offlineThumb: thumbSel,
-          photoToken: token,
-          uploadState: (online ? "uploading" : "queued") as UploadState,
-          uploadError: undefined,
-          meter: typeof meterVal === "number" && !Number.isNaN(meterVal) ? meterVal : c.meter,
-        };
-      });
-      persistSnapshotNow(cacheKey, next);
-      return next;
-    });
-
-    // simpan meter kalau ada
-    if (typeof meterVal === "number" && !Number.isNaN(meterVal)) {
-      await saveMeta(jobId, pendingCategoryId, { meter: meterVal });
-    }
-
-    // Upload (non-blocking)
-    (async () => {
-      try {
-        const fd = new FormData();
-        const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`;
-        fd.append("photo", new File([fullBlob], fileName, { type: "image/jpeg" }));
-        fd.append("thumb", new File([thumbBlob], `thumb-${fileName}`, { type: "image/jpeg" }));
-        fd.append("jobId", jobId);
-        fd.append("categoryId", pendingCategoryId);
-
-        const catSnap = categoriesRef.current.find((x) => x.id === pendingCategoryId);
-        if (typeof catSnap?.meter === "number") fd.append("meter", String(catSnap.meter));
-        if (catSnap?.requiresSerialNumber && catSnap.serialNumber) {
-          fd.append("serialNumber", catSnap.serialNumber);
-        }
-
-        const result: any = await safeUpload({
-          endpoint: UPLOAD_ENDPOINT,
-          formData: fd,
-          meta: { jobId, categoryId: pendingCategoryId, token, photoId },
-        });
-
-        setCategories((prev) => {
-          const next = prev.map((c) => {
-            if (c.id !== pendingCategoryId || !c.photos?.length) return c;
-            const photos = c.photos.map((p) =>
-              p.id === photoId
-                ? {
-                    ...p,
-                    uploadState: (result?.status === "queued" ? "queued" : "uploaded") as UploadState,
-                    queueId: result?.status === "queued" ? result.queueId : undefined,
-                    uploadError: undefined,
-                  }
-                : p
-            );
-            const aggState = (result?.status === "queued" ? "queued" : "uploaded") as UploadState;
-            return { ...c, photos, uploadState: aggState };
-          });
-          persistSnapshotNow(cacheKey, next);
-          return next;
-        });
-      } catch {
-        setCategories((prev) => {
-          const next = prev.map((c) => {
-            if (c.id !== pendingCategoryId || !c.photos?.length) return c;
-            const photos = c.photos.map((p) =>
-              p.id === photoId ? { ...p, uploadState: "queued" as UploadState, uploadError: undefined } : p
-            );
-            return { ...c, photos, uploadState: "queued" as UploadState };
-          });
-          persistSnapshotNow(cacheKey, next);
-          return next;
-        });
-      }
-    })();
-
-    // === Buka popup validasi SN (jika perlu) dan catat target foto untuk SN ===
-    const cat = categoriesRef.current.find((c) => c.id === pendingCategoryId);
-    const needSN = cat?.requiresSerialNumber && !cat.serialNumber;
-    if (needSN) {
-      snTargetRef.current = { catId: pendingCategoryId, photoId }; // SN menempel ke foto ini
-      const expandedCropDataUrl = await cropElToDataUrl(imgRef.current, completedCrop, 0.35);
-      setSnSrc(expandedCropDataUrl);
-      setSnOpen(true);
-      setSnLoading(false);
-      setSnError("");
-      setSnProgress(0);
-      setSnCandidates([]);
-      setSnDraft("");
-      setSnCrop(undefined);
-      setSnCompletedCrop(null);
-    }
-
-    // reset & tutup modal crop
-    if (pendingCategoryId) resetFileInput(pendingCategoryId);
-    setCropOpen(false);
-    setSrcToCrop(null);
-    setPendingCategoryId(null);
-    setIsPendingCable(false);
-    setCableMeterDraft("");
-    setSavingCrop(false);
-
-    // reopen review jika sebelumnya dari review
-    const rr = reopenReviewAfterCropRef.current;
-    if (rr.reopen && rr.catId) openReview(rr.catId);
-    reopenReviewAfterCropRef.current = { reopen: false, catId: undefined };
+  const catBefore = categoriesRef.current.find((c) => c.id === pendingCategoryId);
+  const existing = catBefore?.photos ?? [];
+  const newEntry: PhotoEntry = {
+    id: photoId,
+    createdAt: token,
+    full: fullDataUrl,
+    thumb: thumbDataUrl,
+    sharpness,
+    uploadState: initialState,
+    token,
   };
+  const nextPhotos = [...existing, newEntry];
+
+  let best = nextPhotos[0];
+  for (const it of nextPhotos) if (it.sharpness > best.sharpness) best = it;
+
+  const bestIsThisNew = best.id === photoId; // <--- NEW: apakah foto baru adalah yang terbaik?
+
+  // meter (jika kategori kabel)
+  const meterVal =
+    isPendingCable &&
+    cableMeterDraft.trim() !== "" &&
+    !Number.isNaN(Number(cableMeterDraft))
+      ? Number(cableMeterDraft)
+      : catBefore?.meter;
+
+  // 3) Update state lokal: pilih foto terbaik sebagai "Utama"
+  setCategories((prev) => {
+    const next = prev.map((c) =>
+      c.id !== pendingCategoryId
+        ? c
+        : {
+            ...c,
+            photos: nextPhotos,
+            selectedPhotoId: best.id,
+            offlineThumb: best.thumb,
+            photoToken: token,
+            uploadState: initialState,
+            uploadError: undefined,
+            meter: meterVal,
+          }
+    );
+    persistSnapshotNow(cacheKey, next);
+    return next;
+  });
+
+  // 4) Persist meter (kalau diisi) — aman dipersist sekarang
+  if (
+    isPendingCable &&
+    cableMeterDraft.trim() !== "" &&
+    !Number.isNaN(Number(cableMeterDraft))
+  ) {
+    try {
+      await saveMeta(jobId, pendingCategoryId, {
+        meter: Number(cableMeterDraft),
+      });
+    } catch {}
+  }
+
+  // 5) Upload (non-blocking). Setelah sukses & online: persist selectedPhotoId pakai entryId dari server
+  (async () => {
+    try {
+      const fd = new FormData();
+      const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`;
+
+      fd.append("photo", new File([fullBlob], fileName, { type: "image/jpeg" }));
+      fd.append("thumb", new File([thumbBlob], `thumb-${fileName}`, { type: "image/jpeg" }));
+      fd.append("jobId", jobId);
+      fd.append("categoryId", pendingCategoryId);
+
+      // NEW: kirim token & sharpness ke server (dicatat di riwayat)
+      fd.append("token", String(token));
+      fd.append("sharpness", String(sharpness));
+
+      // Info tambahan jika tersedia
+      const catSnap = categoriesRef.current.find((x) => x.id === pendingCategoryId);
+      if (typeof catSnap?.meter === "number") {
+        fd.append("meter", String(catSnap.meter));
+      }
+      if (catSnap?.requiresSerialNumber && catSnap.serialNumber) {
+        fd.append("serialNumber", catSnap.serialNumber);
+      }
+
+      const result: any = await safeUpload({
+        endpoint: UPLOAD_ENDPOINT,
+        formData: fd,
+        meta: { jobId, categoryId: pendingCategoryId, token, photoId },
+      });
+
+      // Update state upload -> uploaded/queued
+      setCategories((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== pendingCategoryId || !c.photos?.length) return c;
+          const resultState: UploadState =
+            result?.status === "queued" ? "queued" : "uploaded";
+          const photos = c.photos.map((p) =>
+            p.id === photoId
+              ? {
+                  ...p,
+                  uploadState: resultState,
+                  queueId: result?.status === "queued" ? result.queueId : undefined,
+                  uploadError: undefined,
+                }
+              : p
+          );
+          return { ...c, photos, uploadState: resultState };
+        });
+        persistSnapshotNow(cacheKey, next);
+        return next;
+      });
+
+      // NEW: Persist "Utama" HANYA kalau foto baru memang yang terbaik dan kita dapat entryId dari server
+      if (online && bestIsThisNew && result?.entryId) {
+        try {
+          await saveMeta(jobId, pendingCategoryId, {
+            selectedPhotoId: result.entryId,
+            ocrStatus: "selected",
+          });
+        } catch {}
+      }
+
+      // OPTIONAL (aman & ringan): jika best BUKAN foto baru namun beda dengan selectedPhotoId yang tersimpan di DB,
+      // kamu bisa juga memanggil saveMeta(...) di sini menggunakan ID existing (kalau ID itu berasal dari server).
+      // Biasanya tidak diperlukan jika server sudah menyimpan pilihan sebelumnya dengan benar.
+
+    } catch {
+      // Mark as queued saat gagal (biar SW bisa replay)
+      setCategories((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== pendingCategoryId || !c.photos?.length) return c;
+          const photos = c.photos.map((p) =>
+            p.id === photoId
+              ? { ...p, uploadState: "queued" as UploadState, uploadError: undefined }
+              : p
+          );
+          return { ...c, photos, uploadState: "queued" as UploadState };
+        });
+        persistSnapshotNow(cacheKey, next);
+        return next;
+      });
+    }
+  })();
+
+  // 6) Jika perlu validasi SN, buka modal-nya
+  const cat = categoriesRef.current.find((c) => c.id === pendingCategoryId);
+  const needSN = cat?.requiresSerialNumber && !cat.serialNumber;
+  if (needSN) {
+    const expandedCropDataUrl = await cropElToDataUrl(
+      imgRef.current,
+      completedCrop,
+      0.35
+    );
+    setSnSrc(expandedCropDataUrl);
+    setSnOpen(true);
+    setSnLoading(false);
+    setSnError("");
+    setSnProgress(0);
+    setSnCandidates([]);
+    setSnDraft("");
+    setSnCrop(undefined);
+    setSnCompletedCrop(null);
+  }
+
+  // 7) Reset UI modal
+  if (pendingCategoryId) resetFileInput(pendingCategoryId);
+  setCropOpen(false);
+  setSrcToCrop(null);
+  setPendingCategoryId(null);
+  setIsPendingCable(false);
+  setCableMeterDraft("");
+  setSavingCrop(false);
+};
+
 
   const handleCancelCrop = () => {
     if (pendingCategoryId) resetFileInput(pendingCategoryId);
@@ -1044,29 +1178,62 @@ export default function UploadFotoPage() {
     setIsPendingCable(false);
     setCableMeterDraft("");
     setSavingCrop(false);
-
-    const rr = reopenReviewAfterCropRef.current;
-    if (rr.reopen && rr.catId) openReview(rr.catId);
-    reopenReviewAfterCropRef.current = { reopen: false, catId: undefined };
   };
 
-  // ===== set photo utama =====
+  // ====== SN actions (modal) ======
+  const applySNToCategory = async (finalSn: string) => {
+    const catId = pendingCategoryId;
+    let targetId = catId;
+    if (!targetId) {
+      const newest = [...categoriesRef.current]
+        .filter(
+          (c) => c.photoToken && c.requiresSerialNumber && !c.serialNumber
+        )
+        .sort((a, b) => b.photoToken! - a.photoToken!)[0];
+      targetId = newest?.id ?? null;
+    }
+    if (!targetId) return;
+
+    setCategories((prev) => {
+      const next = prev.map((c) =>
+        c.id === targetId ? { ...c, serialNumber: finalSn } : c
+      );
+      persistSnapshotNow(cacheKey, next);
+      return next;
+    });
+    await saveMeta(jobId, targetId, {
+      serialNumber: finalSn,
+      ocrStatus: "done",
+    });
+    persistSnapshotNow(cacheKey, categoriesRef.current);
+  };
+
   const setSelectedPhoto = async (catId: string, photoId: string) => {
     setCategories((prev) => {
       const next = prev.map((c) => {
         if (c.id !== catId) return c;
-        const thumb = c.photos?.find((p) => p.id === photoId)?.thumb || c.offlineThumb || c.photoThumb || c.photo;
-        const serialNumber = c.photos?.find((p) => p.id === photoId)?.sn; // mirror SN dari foto terpilih
-        return { ...c, selectedPhotoId: photoId, offlineThumb: thumb, serialNumber };
+        const thumb =
+          c.photos?.find((p) => p.id === photoId)?.thumb ||
+          c.offlineThumb ||
+          c.photoThumb ||
+          c.photo;
+        return { ...c, selectedPhotoId: photoId, offlineThumb: thumb };
       });
       persistSnapshotNow(cacheKey, next);
       return next;
     });
-    await saveMeta(jobId, catId, { selectedPhotoId: photoId, ocrStatus: "selected", serialNumber: undefined });
+    await saveMeta(jobId, catId, {
+      selectedPhotoId: photoId,
+      ocrStatus: "selected",
+    });
   };
 
-  // ====== SN modal helpers ======
-  async function snCropToDataUrl(img: HTMLImageElement, cropPx: PixelCrop, expand = 0): Promise<string> {
+  // OCR di modal SN
+  async function snCropToDataUrl(
+    img: HTMLImageElement,
+    cropPx: PixelCrop,
+    expand = 0
+  ): Promise<string> {
     const scaleX = img.naturalWidth / img.width;
     const scaleY = img.naturalHeight / img.height;
 
@@ -1103,13 +1270,20 @@ export default function UploadFotoPage() {
       setSnCandidates([]);
       setSnProgress(1);
 
-      const roiDataUrl = await snCropToDataUrl(snImgRef.current, snCompletedCrop, 0.1);
-      const { candidates } = await recognizeSerialNumberWithCandidates(roiDataUrl, {
-        enableBarcode: true,
-        onProgress: (info: OcrInfo) => {
-          if (info.status === "ocr") setSnProgress(info.progress);
-        },
-      });
+      const roiDataUrl = await snCropToDataUrl(
+        snImgRef.current,
+        snCompletedCrop,
+        0.1
+      );
+      const { candidates } = await recognizeSerialNumberWithCandidates(
+        roiDataUrl,
+        {
+          enableBarcode: true,
+          onProgress: (info: OcrInfo) => {
+            if (info.status === "ocr") setSnProgress(info.progress);
+          },
+        }
+      );
       setSnCandidates(candidates);
       setSnDraft(candidates[0] ?? "");
     } catch (e: any) {
@@ -1142,28 +1316,6 @@ export default function UploadFotoPage() {
     }
   }
 
-  const applySNToCategory = async (finalSn: string) => {
-    const target = snTargetRef.current;
-    if (!target) return;
-
-    setCategories((prev) => {
-      const next = prev.map((c) => {
-        if (c.id !== target.catId) return c;
-        const photos = (c.photos ?? []).map((p) => (p.id === target.photoId ? { ...p, sn: finalSn } : p));
-        // mirror ke kategori bila foto yang dipilih adalah foto terpilih
-        const selected = photos.find((p) => p.id === c.selectedPhotoId);
-        const serialNumber = selected?.sn ?? finalSn;
-        return { ...c, photos, serialNumber };
-      });
-      persistSnapshotNow(cacheKey, next);
-      return next;
-    });
-
-    await saveMeta(jobId, target.catId, { serialNumber: finalSn, ocrStatus: "done" });
-    persistSnapshotNow(cacheKey, categoriesRef.current);
-    snTargetRef.current = null;
-  };
-
   /* ====== Render ====== */
   return (
     <div className="min-h-screen bg-gray-50">
@@ -1177,26 +1329,25 @@ export default function UploadFotoPage() {
         <div className="max-w-4xl mx-auto">
           {!jobId ? (
             <div className="text-center text-sm text-red-600">
-              Job tidak diketahui. Buka dari dashboard saat online terlebih dahulu.
+              Job tidak diketahui. Buka dari dashboard saat online terlebih
+              dahulu.
             </div>
           ) : (
             <>
-              {/* === Grid card: PERTAHANKAN UI CODE 1 (rasio 1:1, aspect-square) === */}
+              {/* === Grid kategori === */}
               <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-1 mb-4">
                 {slice.map((category) => {
                   const status = getCategoryStatus(category);
                   const styles = getCategoryStyles(status);
                   const imgSrc = getSelectedThumb(category);
-                  const selPhoto = getSelectedPhoto(category);
 
                   return (
                     <div key={category.id} className="space-y-1">
                       <Card
                         className={`cursor-pointer transition-all hover:shadow-md ${styles} overflow-hidden w-full`}
-                        onClick={() => handleCardClick(category.id)}
+                        onClick={() => handleCardClick(category)}
                       >
                         <CardContent className="">
-                          {/* Kotak rasio 1:1, gambar memenuhi penuh */}
                           <div className="relative w-full aspect-square overflow-hidden rounded-md bg-gray-100">
                             {imgSrc ? (
                               <img
@@ -1215,7 +1366,10 @@ export default function UploadFotoPage() {
                         </CardContent>
                       </Card>
 
-                      <p className="text-xs font-medium text-center text-gray-700 px-1">
+                      <p
+                        className="text-xs font-medium text-center text-gray-700 px-1"
+                        title={category.name}
+                      >
                         {category.name}
                       </p>
 
@@ -1223,45 +1377,48 @@ export default function UploadFotoPage() {
                       {category.uploadState && (
                         <p className="text-[10px] text-center text-gray-600">
                           {category.uploadState === "uploaded" && "Terkirim ✔"}
-                          {category.uploadState === "uploading" && "Mengunggah..."}
-                          {category.uploadState === "queued" && "Menunggu koneksi—otomatis dikirim"}
+                          {category.uploadState === "uploading" &&
+                            "Mengunggah..."}
+                          {category.uploadState === "queued" &&
+                            "Menunggu koneksi—otomatis dikirim"}
                           {category.uploadState === "error" && (
                             <span className="text-red-600">
                               Gagal
-                              {category.uploadError ? `: ${category.uploadError}` : ""}
+                              {category.uploadError
+                                ? `: ${category.uploadError}`
+                                : ""}
                             </span>
                           )}
                         </p>
                       )}
 
-                      {/* Ringkas: tampilkan meter utk kategori kabel (bila sudah ada foto) */}
-                      {(category.offlineThumb || category.photoThumb || category.photo) &&
-                        (category.requiresCable || isCableCategory(category.name)) && !category.requiresSerialNumber && (
-                        <p className="text-[11px] text-gray-600 text-center">
-                          {typeof category.meter === "number" ? (
-                            <>Panjang: <b>{category.meter} m</b></>
-                          ) : (
-                            <>Panjang belum diisi</>
-                          )}
-                        </p>
-                      )}
+                      {/* Info khusus kabel */}
+                      {!category.requiresSerialNumber &&
+                        (category.offlineThumb ||
+                          category.photoThumb ||
+                          category.photo) &&
+                        isCableCategory(category.name) && (
+                          <p className="text-[11px] text-gray-600 text-center">
+                            {Number.isFinite(category.meter) ? (
+                              <>
+                                Panjang: <b>{category.meter} m</b>
+                              </>
+                            ) : (
+                              <>Panjang belum diisi</>
+                            )}
+                          </p>
+                        )}
 
-                      {/* Tampilkan SN singkat dari foto terpilih (tanpa input manual di grid) */}
-                      {category.requiresSerialNumber && selPhoto?.sn && (
-                        <p className="text-[9px] text-gray-600 text-center">
-                          SN = <span className="font-semibold">{selPhoto.sn}</span>
-                        </p>
-                      )}
-
-                      {/* Hidden input (per kartu) */}
-                      <input
-                        ref={setFileInputRef(category.id)}
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        className="hidden"
-                        onChange={(e) => handlePhotoCapture(category.id, e)}
-                      />
+                      {/* Info SN ringkas */}
+                      {category.requiresSerialNumber &&
+                        category.serialNumber && (
+                          <p className="text-[9px] text-gray-600 text-center">
+                            SN ={" "}
+                            <span className="font-semibold">
+                              {category.serialNumber}
+                            </span>
+                          </p>
+                        )}
                     </div>
                   );
                 })}
@@ -1284,10 +1441,14 @@ export default function UploadFotoPage() {
         </div>
       </main>
 
-      {/* ===== Modal Crop + input meter (UI code 1) ===== */}
+      {/* ===== Modal Crop + input meter ===== */}
       {cropOpen && srcToCrop && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className={`bg-white rounded-xl p-4 w-[92vw] ${isPortrait ? "max-w-[480px]" : "max-w-[720px]"}`}>
+          <div
+            className={`bg-white rounded-xl p-4 w-[92vw] ${
+              isPortrait ? "max-w-[480px]" : "max-w-[720px]"
+            }`}
+          >
             <h3 className="text-sm font-semibold mb-3">Crop Foto</h3>
 
             <div className="relative max-h-[70vh] max-w-[92vw] bg-black/5 rounded overflow-hidden flex items-center justify-center">
@@ -1329,7 +1490,15 @@ export default function UploadFotoPage() {
                   value={aspect ?? "free"}
                   onChange={(e) => {
                     const v = e.target.value;
-                    setAspect(v === "free" ? undefined : v === "1:1" ? 1 : v === "4:3" ? 4 / 3 : 16 / 9);
+                    setAspect(
+                      v === "free"
+                        ? undefined
+                        : v === "1:1"
+                        ? 1
+                        : v === "4:3"
+                        ? 4 / 3
+                        : 16 / 9
+                    );
                   }}
                   className="text-xs border rounded px-2 py-1"
                 >
@@ -1342,7 +1511,9 @@ export default function UploadFotoPage() {
 
               {isPendingCable && (
                 <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-600 min-w-[120px]">Panjang Kabel (m)</label>
+                  <label className="text-xs text-gray-600 min-w-[120px]">
+                    Panjang Kabel (m)
+                  </label>
                   <input
                     type="number"
                     inputMode="decimal"
@@ -1358,18 +1529,34 @@ export default function UploadFotoPage() {
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={handleCancelCrop} className="px-3 py-1.5 text-sm rounded border">
+              <button
+                onClick={handleCancelCrop}
+                className="px-3 py-1.5 text-sm rounded border"
+              >
                 Batal
               </button>
               <button
                 onClick={handleConfirmCrop}
-                className={`px-3 py-1.5 text-sm rounded text-white ${savingCrop ? "bg-blue-400" : "bg-blue-600"} flex items-center gap-2`}
+                className={`px-3 py-1.5 text-sm rounded text-white ${
+                  savingCrop ? "bg-blue-400" : "bg-blue-600"
+                } flex items-center gap-2`}
                 disabled={!completedCrop || savingCrop}
               >
                 {savingCrop && (
                   <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                    />
                   </svg>
                 )}
                 {savingCrop ? "Menyimpan..." : "Simpan Crop"}
@@ -1379,32 +1566,62 @@ export default function UploadFotoPage() {
         </div>
       )}
 
-      {/* ===== Modal Validasi SN (dari code 2) ===== */}
+      {/* ===== Modal Validasi SN (pilih area + OCR) ===== */}
       {snOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className={`bg-white rounded-xl p-4 w-[92vw] ${isPortrait ? "max-w-[480px]" : "max-w-[720px]"}`}>
-            <h3 className="text-sm font-semibold mb-3">Validasi Serial Number</h3>
+          <div
+            className={`bg-white rounded-xl p-4 w-[92vw] ${
+              isPortrait ? "max-w-[480px]" : "max-w-[720px]"
+            }`}
+          >
+            <h3 className="text-sm font-semibold mb-3">
+              Validasi Serial Number
+            </h3>
 
             <div className="relative max-h-[70vh] max-w-[92vw] rounded overflow-hidden bg-black/5 p-2">
               {snSrc ? (
-                <ReactCrop crop={snCrop} onChange={(c) => setSnCrop(c as Crop)} onComplete={(c) => setSnCompletedCrop(c as PixelCrop)} keepSelection>
-                  <img ref={snImgRef} src={snSrc} alt="SN crop" className="max-h-[260px] w-full object-contain rounded" />
+                <ReactCrop
+                  crop={snCrop}
+                  onChange={(c) => setSnCrop(c as Crop)}
+                  onComplete={(c) => setSnCompletedCrop(c as PixelCrop)}
+                  keepSelection
+                >
+                  <img
+                    ref={snImgRef}
+                    src={snSrc}
+                    alt="SN crop"
+                    className="max-h-[260px] w-full object-contain rounded"
+                  />
                 </ReactCrop>
               ) : (
-                <div className="text-xs text-gray-500 p-3">Tidak ada gambar</div>
+                <div className="text-xs text-gray-500 p-3">
+                  Tidak ada gambar
+                </div>
               )}
             </div>
 
             <p className="mt-2 text-[11px] text-gray-600">
-              Tarik kotak pada bagian tulisan SN (atau barcode) lalu klik <b>Baca Area</b>. Atau gunakan <b>Deteksi Otomatis</b>.
+              Tarik kotak pada bagian tulisan SN (atau barcode) lalu klik{" "}
+              <b>Baca Area</b>. Atau gunakan <b>Deteksi Otomatis</b>.
             </p>
 
             <div className="mt-3 flex flex-wrap gap-2">
-              <Button type="button" onClick={readSNFromSelectedArea} className="px-3 py-1.5 text-sm" disabled={!snCompletedCrop || snLoading}>
+              <Button
+                type="button"
+                onClick={readSNFromSelectedArea}
+                className="px-3 py-1.5 text-sm"
+                disabled={!snCompletedCrop || snLoading}
+              >
                 {snLoading ? "Membaca…" : "Baca Area"}
               </Button>
 
-              <button type="button" onClick={autoDetectSNWhole} className="px-3 py-1.5 text-sm rounded border" disabled={snLoading}>
+              <button
+                type="button"
+                onClick={autoDetectSNWhole}
+                className="px-3 py-1.5 text-sm rounded border"
+                disabled={snLoading}
+                title="Coba OCR seluruh gambar"
+              >
                 Deteksi Otomatis
               </button>
 
@@ -1416,6 +1633,7 @@ export default function UploadFotoPage() {
                 }}
                 className="px-3 py-1.5 text-sm rounded border"
                 disabled={snLoading}
+                title="Kosongkan area"
               >
                 Reset Area
               </button>
@@ -1423,7 +1641,9 @@ export default function UploadFotoPage() {
 
             <div className="mt-3 space-y-2">
               {snLoading ? (
-                <p className="text-xs text-gray-600">Memproses… {snProgress}%</p>
+                <p className="text-xs text-gray-600">
+                  Memproses… {snProgress}%
+                </p>
               ) : snCandidates.length ? (
                 <div className="flex flex-wrap gap-2">
                   {snCandidates.map((c) => (
@@ -1431,7 +1651,11 @@ export default function UploadFotoPage() {
                       key={c}
                       type="button"
                       onClick={() => setSnDraft(c)}
-                      className={`px-2 py-1 rounded border text-xs ${snDraft === c ? "bg-blue-600 text-white border-blue-600" : "bg-white hover:bg-gray-50"}`}
+                      className={`px-2 py-1 rounded border text-xs ${
+                        snDraft === c
+                          ? "bg-blue-600 text-white border-blue-600"
+                          : "bg-white hover:bg-gray-50"
+                      }`}
                       title={c}
                     >
                       {c}
@@ -1440,16 +1664,26 @@ export default function UploadFotoPage() {
                 </div>
               ) : (
                 <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                  Belum ada kandidat. Pilih area lalu klik <b>Baca Area</b>, atau pakai <b>Deteksi Otomatis</b>.
+                  Belum ada kandidat. Pilih area lalu klik <b>Baca Area</b>,
+                  atau pakai <b>Deteksi Otomatis</b>.
                 </div>
               )}
 
               <div className="space-y-1">
-                <Label className="text-xs">S/N (manual / pilih kandidat)</Label>
-                <Input value={snDraft} onChange={(e) => setSnDraft(e.target.value.toUpperCase())} placeholder="Masukkan SN" className="text-xs" />
+                <label className="text-xs">S/N (manual / pilih kandidat)</label>
+                <input
+                  value={snDraft}
+                  onChange={(e) => setSnDraft(e.target.value.toUpperCase())}
+                  placeholder="Masukkan SN"
+                  className="text-xs border rounded px-2 py-1 w-full"
+                />
               </div>
 
-              {snError && <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">{snError}</div>}
+              {snError && (
+                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+                  {snError}
+                </div>
+              )}
             </div>
 
             <div className="mt-4 flex justify-end gap-2">
@@ -1465,7 +1699,6 @@ export default function UploadFotoPage() {
                   setSnProgress(0);
                   setSnCrop(undefined);
                   setSnCompletedCrop(null);
-                  snTargetRef.current = null;
                 }}
                 className="px-3 py-1.5 text-sm rounded border disabled:opacity-60"
                 disabled={snSaving}
@@ -1492,7 +1725,9 @@ export default function UploadFotoPage() {
                     setSnSaving(false);
                   }
                 }}
-                className={`px-3 py-1.5 text-sm rounded text-white flex items-center gap-2 ${snSaving || snLoading ? "bg-blue-400" : "bg-blue-600"} disabled:opacity-60`}
+                className={`px-3 py-1.5 text-sm rounded text-white flex items-center gap-2 ${
+                  snSaving || snLoading ? "bg-blue-400" : "bg-blue-600"
+                } disabled:opacity-60`}
                 disabled={snLoading || snSaving || !snDraft.trim()}
               >
                 {snLoading ? "Mencari…" : snSaving ? "Menyimpan…" : "Simpan"}
@@ -1502,29 +1737,43 @@ export default function UploadFotoPage() {
         </div>
       )}
 
-      {/* ===== Modal Review Riwayat Foto (tanpa tombol Hapus) ===== */}
+      {/* ===== Modal Review Riwayat Foto (multi-foto, set 'Utama') ===== */}
       {reviewOpen && reviewCatId && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" onClick={() => setReviewOpen(false)}>
-          <div className="bg-white rounded-xl p-4 w-[94vw] max-w-[920px] max-h-[92vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60"
+          onClick={() => setReviewOpen(false)}
+        >
+          <div
+            className="bg-white rounded-xl p-4 w-[94vw] max-w-[920px] max-h-[92vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
             {(() => {
               const cat = categories.find((c) => c.id === reviewCatId);
               const photos = cat?.photos ?? [];
-              const idx = Math.min(Math.max(0, reviewIndex), Math.max(0, photos.length - 1));
+              const idx = Math.min(
+                Math.max(0, reviewIndex),
+                Math.max(0, photos.length - 1)
+              );
               const current = photos[idx];
 
               return (
                 <>
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-semibold">{cat?.name || "Foto"}</h3>
+                    <h3 className="text-sm font-semibold">
+                      {cat?.name || "Foto"}
+                    </h3>
                     <div className="flex items-center gap-2">
-                      <button className="px-2 py-1 text-xs rounded border" onClick={() => {
-                        reopenReviewAfterCropRef.current = { reopen: true, catId: reviewCatId! };
-                        setReviewOpen(false);
-                        fileInputRefs.current[reviewCatId!]?.click();
-                      }}>
-                        <Plus className="inline-block mr-1 h-3.5 w-3.5" /> Tambah Foto
+                      <button
+                        className="px-2 py-1 text-xs rounded border"
+                        onClick={() => handleAddPhotoFromReview(reviewCatId!)}
+                      >
+                        <Plus className="inline-block mr-1 h-3.5 w-3.5" />
+                        Tambah Foto
                       </button>
-                      <button className="px-2 py-1 text-xs rounded border" onClick={() => setReviewOpen(false)}>
+                      <button
+                        className="px-2 py-1 text-xs rounded border"
+                        onClick={() => setReviewOpen(false)}
+                      >
                         Tutup
                       </button>
                     </div>
@@ -1535,38 +1784,52 @@ export default function UploadFotoPage() {
                     <div className="md:col-span-2">
                       <div className="relative aspect-video bg-gray-50 rounded-md overflow-hidden flex items-center justify-center">
                         {current ? (
-                          <img src={current.thumb} alt="preview" className="max-h-full max-w-full object-contain" />
+                          <img
+                            src={current.thumb}
+                            alt="preview"
+                            className="max-h-full max-w-full object-contain"
+                          />
                         ) : (
-                          <div className="text-xs text-gray-500">Belum ada foto</div>
+                          <div className="text-xs text-gray-500">
+                            Belum ada foto
+                          </div>
                         )}
                         {current && (
-                          <>
-                            <span className="absolute top-2 left-2 text-[11px] px-2 py-0.5 rounded bg-black/60 text-white">
-                              Diambil: {formatDateOnly(current.createdAt)}
-                            </span>
-                            {cat?.requiresSerialNumber && (
-                              <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-blue-600 text-white">
-                                SN: {current.sn ?? "—"}
-                              </span>
-                            )}
-                            {!cat?.requiresSerialNumber && typeof cat?.meter === "number" && (
-                              <span className="absolute top-2 right-2 text-[11px] px-2 py-0.5 rounded bg-emerald-600 text-white">
-                                Panjang: {cat.meter} m
-                              </span>
-                            )}
-                          </>
+                          <span className="absolute top-2 left-2 text-[11px] px-2 py-0.5 rounded bg-black/60 text-white">
+                            Diambil: {formatDateOnly(current.createdAt)}
+                          </span>
                         )}
                       </div>
 
                       {current && cat && (
                         <div className="mt-2 flex items-center gap-2">
                           <button
-                            className={`px-3 py-1.5 text-xs rounded text-white ${cat.selectedPhotoId === current.id ? "bg-emerald-600" : "bg-blue-600"}`}
+                            className={`px-3 py-1.5 text-xs rounded text-white ${
+                              cat.selectedPhotoId === current.id
+                                ? "bg-emerald-600"
+                                : "bg-blue-600"
+                            }`}
                             onClick={() => setSelectedPhoto(cat.id, current.id)}
                           >
                             <Star className="inline-block h-3.5 w-3.5 mr-1" />
-                            {cat.selectedPhotoId === current.id ? "Utama" : "Set sebagai Utama"}
+                            {cat.selectedPhotoId === current.id
+                              ? "Utama"
+                              : "Set sebagai Utama"}
                           </button>
+
+                          {/* Badge info khusus */}
+                          {cat.requiresSerialNumber && cat.serialNumber && (
+                            <span className="ml-2 text-[11px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                              SN: {cat.serialNumber}
+                            </span>
+                          )}
+                          {!cat.requiresSerialNumber &&
+                            isCableCategory(cat.name) &&
+                            Number.isFinite(cat.meter) && (
+                              <span className="ml-2 text-[11px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                Kabel: {cat.meter} m
+                              </span>
+                            )}
                         </div>
                       )}
                     </div>
@@ -1577,19 +1840,24 @@ export default function UploadFotoPage() {
                         {photos.map((p, i) => (
                           <button
                             key={p.id}
-                            className={`relative rounded border overflow-hidden ${i === idx ? "ring-2 ring-blue-600" : ""}`}
+                            className={`relative rounded border overflow-hidden ${
+                              i === idx ? "ring-2 ring-blue-600" : ""
+                            }`}
                             onClick={() => setReviewIndex(i)}
                           >
-                            <img src={p.thumb} className="h-[80px] w-full object-cover" alt={`p-${i}`} />
+                            <img
+                              src={p.thumb}
+                              className="h-[80px] w-full object-cover"
+                              alt={`p-${i}`}
+                            />
                             {cat?.selectedPhotoId === p.id && (
-                              <span className="absolute bottom-1 right-1 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded">Utama</span>
+                              <span className="absolute bottom-1 right-1 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded">
+                                Utama
+                              </span>
                             )}
                             <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">
                               {formatDateOnly(p.createdAt)}
                             </span>
-                            {cat?.requiresSerialNumber && p.sn && (
-                              <span className="absolute bottom-1 left-1 bg-slate-900/80 text-white text-[9px] px-1 py-0.5 rounded">{p.sn}</span>
-                            )}
                           </button>
                         ))}
                       </div>
@@ -1598,9 +1866,35 @@ export default function UploadFotoPage() {
                 </>
               );
             })()}
+
+            {/* Hidden inputs untuk tambah foto dari Review & dari card kosong */}
+            {categories.map((c) => (
+              <input
+                key={`hidden-${c.id}`}
+                ref={setFileInputRef(c.id)}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(e) => handlePhotoCapture(c.id, e)}
+              />
+            ))}
           </div>
         </div>
       )}
+
+      {/* Hidden inputs untuk semua kategori (juga dipakai saat card kosong diklik) */}
+      {categories.map((c) => (
+        <input
+          key={`hidden-bottom-${c.id}`}
+          ref={setFileInputRef(c.id)}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={(e) => handlePhotoCapture(c.id, e)}
+        />
+      ))}
     </div>
   );
 }

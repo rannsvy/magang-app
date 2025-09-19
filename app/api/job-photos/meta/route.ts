@@ -1,3 +1,4 @@
+// app/api/job-photos/meta/route.ts
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServers";
 
@@ -87,7 +88,7 @@ export async function POST(req: Request) {
     if (selectedPhotoId) {
       const { data: entry, error: e1 } = await supabase
         .from("job_photo_entries")
-        .select("id")
+        .select("id, url, thumb_url")
         .eq("job_id", jobId)
         .eq("category_id", String(categoryId))
         .eq("id", selectedPhotoId)
@@ -105,14 +106,34 @@ export async function POST(req: Request) {
           { status: 400 }
         );
       }
+
       payload.selected_photo_id = selectedPhotoId;
+      // Sinkronkan snapshot ke URL foto terpilih
+      if (entry.url) payload.url = entry.url;
+      if (entry.thumb_url) payload.thumb_url = entry.thumb_url;
+    } else if (selectedPhotoId === null) {
+      // mengosongkan pilihan (jarang dipakai)
+      payload.selected_photo_id = null;
     }
 
-    const { error } = await supabase
-      .from("job_photos")
-      .upsert(payload, { onConflict: "job_id,category_id" });
-
-    if (error) throw error;
+    // ===== Upsert dengan fallback bila kolom selected_photo_id belum ada =====
+    try {
+      const { error } = await supabase
+        .from("job_photos")
+        .upsert(payload, { onConflict: "job_id,category_id" });
+      if (error) throw error;
+    } catch (e: any) {
+      // Retry tanpa selected_photo_id (untuk skema lama)
+      if (Object.prototype.hasOwnProperty.call(payload, "selected_photo_id")) {
+        const { selected_photo_id, ...fallback } = payload;
+        const { error: e2 } = await supabase
+          .from("job_photos")
+          .upsert(fallback, { onConflict: "job_id,category_id" });
+        if (e2) throw e2;
+      } else {
+        throw e;
+      }
+    }
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
