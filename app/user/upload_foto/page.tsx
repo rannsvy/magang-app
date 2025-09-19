@@ -424,11 +424,82 @@ function formatDateOnly(epochMs: number) {
   return `${dd}-${mm}-${yyyy}`;
 }
 
+/* ====== IDENTITAS USER (Technician vs Supervisor/GM/Manager) ====== */
+type WhoAmI = {
+  isTechnician: boolean;
+  isSupervisor: boolean;
+  supervisorRole: "Supervisor" | "Manager" | "GM" | "General Manager" | null;
+};
+
+async function fetchWhoAmI(): Promise<WhoAmI> {
+  const { data: u } = await supabase.auth.getUser();
+  const user = u?.user ?? null;
+  if (!user)
+    return { isTechnician: false, isSupervisor: false, supervisorRole: null };
+
+  // profiles
+  const { data: prof } = await supabase
+    .from("profiles")
+    .select("technician_id, email, role")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  const isTechnician = !!prof?.technician_id;
+
+  // supervisors by email
+  const email = (prof?.email || user.email || "").toLowerCase();
+  let isSupervisor = false;
+  let supervisorRole: WhoAmI["supervisorRole"] = null;
+
+  if (email) {
+    const { data: sup } = await supabase
+      .from("supervisors")
+      .select("role")
+      .eq("email", email)
+      .maybeSingle();
+    if (sup?.role) {
+      isSupervisor = true;
+      const r = String(sup.role).toLowerCase();
+      supervisorRole =
+        r === "gm"
+          ? "GM"
+          : r === "general manager"
+          ? "General Manager"
+          : r === "manager"
+          ? "Manager"
+          : "Supervisor";
+    }
+  }
+
+  return { isTechnician, isSupervisor, supervisorRole };
+}
+
 /* ================= Page (UI code 2 + fitur code 1) ================= */
 export default function UploadFotoPage() {
   const sp = useSearchParams();
   const qJob = sp.get("job") ?? "";
   const [jobId, setJobId] = useState<string>(qJob);
+
+  // >>> Mode Edit / View-only
+  const [editable, setEditable] = useState<boolean>(false);
+  const [accessLoaded, setAccessLoaded] = useState(false);
+  const [who, setWho] = useState<WhoAmI>({
+    isTechnician: false,
+    isSupervisor: false,
+    supervisorRole: null,
+  });
+
+  useEffect(() => {
+    (async () => {
+      const me = await fetchWhoAmI();
+      setWho(me);
+      // Default:
+      // - Technician  => edit ON
+      // - Supervisor/GM/Manager => view-only (edit OFF) bisa toggle
+      setEditable(me.isTechnician ? true : false);
+      setAccessLoaded(true);
+    })();
+  }, []);
 
   // simpan/restore last_job_id
   useEffect(() => {
@@ -842,12 +913,17 @@ export default function UploadFotoPage() {
   };
 
   // Behavior: klik kartu -> jika belum ada foto buka kamera; kalau sudah ada foto -> buka Review
+  // >>> Di-mode view-only: hanya buka Review kalau sudah ada foto (tidak bisa ambil foto baru)
   const handleCardClick = (cat: PhotoCategory) => {
     const thumbSel = getSelectedThumb(cat);
-    if (!thumbSel) {
-      fileInputRefs.current[cat.id]?.click();
+    if (editable) {
+      if (!thumbSel) {
+        fileInputRefs.current[cat.id]?.click();
+      } else {
+        openReview(cat.id);
+      }
     } else {
-      openReview(cat.id);
+      if (thumbSel) openReview(cat.id);
     }
   };
 
@@ -1311,6 +1387,33 @@ export default function UploadFotoPage() {
         backUrl="/user/dashboard"
       />
 
+      {/* Switch Mode Edit: tampil untuk Supervisor/GM/Manager (non-teknisi) */}
+      {accessLoaded && (who.isSupervisor || !who.isTechnician) && (
+        <div className="px-3 pt-2 flex items-center justify-end">
+          <label className="flex items-center gap-2 text-xs text-gray-700 select-none">
+            <span>Mode Edit</span>
+            <button
+              type="button"
+              onClick={() => setEditable((v) => !v)}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
+                editable ? "bg-blue-600" : "bg-gray-300"
+              }`}
+              aria-pressed={editable}
+              title={editable ? "Matikan edit (view-only)" : "Nyalakan edit"}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+                  editable ? "translate-x-4" : "translate-x-1"
+                }`}
+              />
+            </button>
+            <span className="ml-1 text-[11px] text-gray-500">
+              {editable ? "ON" : "OFF"}
+            </span>
+          </label>
+        </div>
+      )}
+
       <main className="p-2">
         <div className="max-w-4xl mx-auto">
           {!jobId ? (
@@ -1749,13 +1852,16 @@ export default function UploadFotoPage() {
                       {cat?.name || "Foto"}
                     </h3>
                     <div className="flex items-center gap-2">
-                      <button
-                        className="px-2 py-1 text-xs rounded border"
-                        onClick={() => handleAddPhotoFromReview(reviewCatId!)}
-                      >
-                        <Plus className="inline-block mr-1 h-3.5 w-3.5" />
-                        Tambah Foto
-                      </button>
+                      {/* Tombol tambah foto disembunyikan saat view-only */}
+                      {editable && (
+                        <button
+                          className="px-2 py-1 text-xs rounded border"
+                          onClick={() => handleAddPhotoFromReview(reviewCatId!)}
+                        >
+                          <Plus className="inline-block mr-1 h-3.5 w-3.5" />
+                          Tambah Foto
+                        </button>
+                      )}
                       <button
                         className="px-2 py-1 text-xs rounded border"
                         onClick={() => setReviewOpen(false)}
@@ -1789,19 +1895,24 @@ export default function UploadFotoPage() {
 
                       {current && cat && (
                         <div className="mt-2 flex items-center gap-2">
-                          <button
-                            className={`px-3 py-1.5 text-xs rounded text-white ${
-                              cat.selectedPhotoId === current.id
-                                ? "bg-emerald-600"
-                                : "bg-blue-600"
-                            }`}
-                            onClick={() => setSelectedPhoto(cat.id, current.id)}
-                          >
-                            <Star className="inline-block h-3.5 w-3.5 mr-1" />
-                            {cat.selectedPhotoId === current.id
-                              ? "Utama"
-                              : "Set sebagai Utama"}
-                          </button>
+                          {/* Tombol 'Set sebagai Utama' disembunyikan saat view-only */}
+                          {editable && (
+                            <button
+                              className={`px-3 py-1.5 text-xs rounded text-white ${
+                                cat.selectedPhotoId === current.id
+                                  ? "bg-emerald-600"
+                                  : "bg-blue-600"
+                              }`}
+                              onClick={() =>
+                                setSelectedPhoto(cat.id, current.id)
+                              }
+                            >
+                              <Star className="inline-block h-3.5 w-3.5 mr-1" />
+                              {cat.selectedPhotoId === current.id
+                                ? "Utama"
+                                : "Set sebagai Utama"}
+                            </button>
+                          )}
 
                           {/* Badge info khusus */}
                           {cat.requiresSerialNumber && cat.serialNumber && (
@@ -1854,33 +1965,37 @@ export default function UploadFotoPage() {
             })()}
 
             {/* Hidden inputs untuk tambah foto dari Review & dari card kosong */}
-            {categories.map((c) => (
-              <input
-                key={`hidden-${c.id}`}
-                ref={setFileInputRef(c.id)}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="hidden"
-                onChange={(e) => handlePhotoCapture(c.id, e)}
-              />
-            ))}
+            {/* Render hanya saat editable */}
+            {editable &&
+              categories.map((c) => (
+                <input
+                  key={`hidden-${c.id}`}
+                  ref={setFileInputRef(c.id)}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => handlePhotoCapture(c.id, e)}
+                />
+              ))}
           </div>
         </div>
       )}
 
       {/* Hidden inputs untuk semua kategori (juga dipakai saat card kosong diklik) */}
-      {categories.map((c) => (
-        <input
-          key={`hidden-bottom-${c.id}`}
-          ref={setFileInputRef(c.id)}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          onChange={(e) => handlePhotoCapture(c.id, e)}
-        />
-      ))}
+      {/* Render hanya saat editable */}
+      {editable &&
+        categories.map((c) => (
+          <input
+            key={`hidden-bottom-${c.id}`}
+            ref={setFileInputRef(c.id)}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => handlePhotoCapture(c.id, e)}
+          />
+        ))}
     </div>
   );
 }

@@ -32,6 +32,7 @@ export default function LoginPage() {
     const {
       data: { user },
     } = await supabase.auth.getUser();
+
     if (!user) {
       setError("Login berhasil tapi user tidak ditemukan.");
       return;
@@ -53,7 +54,6 @@ export default function LoginPage() {
 
     // 3) fallback
     const isAdmin = role === "admin" || (user.email ?? "").includes("admin");
-
     router.replace(isAdmin ? "/admin/dashboard" : "/user/dashboard");
   };
 
@@ -61,15 +61,38 @@ export default function LoginPage() {
     e.preventDefault();
     setIsLoading(true);
     setError("");
+
     try {
+      const emailTrim = email.trim();
+
       const { error } = await supabase.auth.signInWithPassword({
-        email,
+        email: emailTrim,
         password,
       });
       if (error) {
         setError(error.message || "Email atau password salah");
         return;
       }
+
+      // ⬅️ Kirim token ke server agar dibuat cookie httpOnly (dipakai API route)
+      const { data: sess } = await supabase.auth.getSession();
+      const at = sess?.session?.access_token;
+      const rt = sess?.session?.refresh_token;
+
+      if (at && rt) {
+        const res = await fetch("/api/auth/set", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "include", // penting agar cookie dari server masuk ke browser
+          body: JSON.stringify({ access_token: at, refresh_token: rt }),
+        });
+        if (!res.ok) {
+          // Tidak fatal untuk user-side (client tetap punya session), tapi API server bisa 401
+          const j = await res.json().catch(() => ({}));
+          console.warn("auth/set failed:", j?.error || res.statusText);
+        }
+      }
+
       await routeAfterLogin();
     } catch (err: any) {
       setError(err?.message ?? "Terjadi kesalahan saat login");
@@ -82,7 +105,9 @@ export default function LoginPage() {
     setIsGoogleLoading(true);
     setError("");
     try {
-      const redirectTo = `${window.location.origin}/auth/callback`;
+      const qs = window.location.search || "";
+      const redirectTo = `${window.location.origin}/auth/callback${qs}`;
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -93,7 +118,6 @@ export default function LoginPage() {
       if (error) setError(error.message);
     } catch (err: any) {
       setError(err?.message ?? "Gagal memulai login Google");
-    } finally {
       setIsGoogleLoading(false);
     }
   };
@@ -154,7 +178,11 @@ export default function LoginPage() {
               </Alert>
             )}
 
-            <Button type="submit" className="w-full" disabled={isLoading}>
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={isLoading || isGoogleLoading}
+            >
               {isLoading ? "Masuk..." : "Login"}
             </Button>
           </form>
@@ -172,10 +200,15 @@ export default function LoginPage() {
             variant="outline"
             className="w-full"
             onClick={handleGoogleLogin}
-            disabled={isGoogleLoading}
+            disabled={isGoogleLoading || isLoading}
           >
             {/* Ikon Google (SVG kecil) */}
-            <svg className="mr-2 h-4 w-4" viewBox="0 0 533.5 544.3">
+            <svg
+              className="mr-2 h-4 w-4"
+              viewBox="0 0 533.5 544.3"
+              aria-hidden="true"
+              focusable="false"
+            >
               <path
                 d="M533.5 278.4c0-18.5-1.7-36.3-5-53.5H272v101.2h146.9c-6.3 34-25.2 62.8-53.8 82v68.1h86.9c51 47 80.5 116.3 80.5 196.8 0 17.7-1.7 35-4.9 51.6h105.9V278.4z"
                 fill="#4285f4"

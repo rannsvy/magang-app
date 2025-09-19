@@ -1,5 +1,6 @@
+// CreateProjectDialog.tsx
 "use client";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -16,18 +17,35 @@ import {
   NewSurveyProjectForm,
   TemplateOption,
 } from "./types";
-import { formatDateDDMMYYYY } from "./helpers";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { apiFetch } from "@/lib/apiFetch";
 import {
   ExternalIdPicker,
   type ExternalSelected,
 } from "@/components/external-id-picker";
+import { calcManDaysInstalasi, calcManDaysSurvey } from "./helpers";
 
 type Props = {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  onCreated: (p: UIProject) => void; // callback setelah sukses create
+  onCreated: (p: UIProject) => void;
+};
+
+type ShapedDetail = {
+  type: "paket" | "npkt";
+  id: string;
+  lokasi?: string;
+  salesName?: string;
+  meta?: {
+    paketId?: string;
+    namaPaket?: string;
+    instansi?: string;
+    alamatInstansi?: string;
+    tglPaket?: string;
+    salesId?: string;
+  };
+  items?: Array<{ kebutuhan: string; qty: number; satuan: string }>;
+  [k: string]: any;
 };
 
 export default function CreateProjectDialog({
@@ -78,6 +96,30 @@ export default function CreateProjectDialog({
       tipeTemplate: "",
     });
 
+  // ===== (NEW - from code 1) Auto Man Days: Instalasi =====
+  useEffect(() => {
+    const md = calcManDaysInstalasi(
+      newProjectForm.sigmaHari,
+      newProjectForm.sigmaTeknisi
+    );
+    setNewProjectForm((prev) => ({
+      ...prev,
+      sigmaManDays: md ? String(md) : "",
+    }));
+  }, [newProjectForm.sigmaHari, newProjectForm.sigmaTeknisi]);
+
+  // ===== (NEW - from code 1) Auto Man Days: Survey =====
+  useEffect(() => {
+    const md = calcManDaysSurvey(
+      newSurveyProjectForm.totalHari,
+      newSurveyProjectForm.totalTeknisi
+    );
+    setNewSurveyProjectForm((prev) => ({
+      ...prev,
+      totalManDays: md ? String(md) : "",
+    }));
+  }, [newSurveyProjectForm.totalHari, newSurveyProjectForm.totalTeknisi]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -90,10 +132,125 @@ export default function CreateProjectDialog({
     })();
   }, []);
 
-  // === NEW: pilihan ID Paket/NPKT yang dipilih user
+  // ====== Picker eksternal (paket/npkt) [keep from code 2] ======
   const [externalSelected, setExternalSelected] =
     useState<ExternalSelected>(null);
 
+  // Hindari menimpa input user setelah mereka mengetik manual
+  const lokasiTouched = useRef(false);
+  const salesTouched = useRef(false);
+  const lastApplied = useRef<string | null>(null);
+
+  const cleanupAddress = (s: string) =>
+    s
+      .replace(/\s+/g, " ")
+      .replace(/\s*,\s*/g, ", ")
+      .replace(/,\s*$/, "")
+      .trim();
+
+  function parseDetail(anyResp: any): {
+    lokasi?: string;
+    salesName?: string;
+    namaPaket?: string;
+  } {
+    // 1) Bentuk sudah di-shape oleh route /api/pog/detail
+    if (anyResp && (anyResp.lokasi || anyResp.salesName || anyResp.meta)) {
+      const lok = typeof anyResp.lokasi === "string" ? anyResp.lokasi : "";
+      const sname =
+        typeof anyResp.salesName === "string" ? anyResp.salesName : "";
+      const namaPaket =
+        anyResp?.meta?.namaPaket && typeof anyResp.meta.namaPaket === "string"
+          ? anyResp.meta.namaPaket
+          : "";
+      return { lokasi: lok, salesName: sname, namaPaket };
+    }
+
+    // 2) Bentuk raw (status + data[]) atau data[]
+    const list: any[] =
+      (Array.isArray(anyResp?.data?.data) && anyResp.data.data) ||
+      (Array.isArray(anyResp?.data) && anyResp.data) ||
+      [];
+
+    const first =
+      list[0] ||
+      // beberapa API mungkin menaruh langsung array di root
+      (Array.isArray(anyResp) ? anyResp[0] : undefined);
+
+    if (!first) return {};
+
+    // gabungkan instansi + alamatInstansi
+    const instansi = first.instansi ? String(first.instansi).trim() : "";
+    const alamat = first.alamatInstansi
+      ? cleanupAddress(String(first.alamatInstansi))
+      : "";
+    const lokasi =
+      (instansi && alamat ? `${instansi} — ${alamat}` : instansi || alamat) ||
+      "";
+
+    const salesName = first.idSales ? String(first.idSales) : "";
+    const namaPaket = first.namaPaket ? String(first.namaPaket) : "";
+
+    return { lokasi, salesName, namaPaket };
+  }
+
+  // Ambil detail POG segera saat user memilih ID (paket/npkt)
+  useEffect(() => {
+    if (!externalSelected?.id || !externalSelected?.type) {
+      lastApplied.current = null;
+      return;
+    }
+    const key = `${externalSelected.type}:${externalSelected.id}`;
+    if (lastApplied.current === key) return;
+
+    const ac = new AbortController();
+    let ignore = false;
+
+    (async () => {
+      try {
+        const url = `/api/pog/detail?type=${
+          externalSelected.type
+        }&id=${encodeURIComponent(externalSelected.id)}`;
+        const r = await fetch(url, { cache: "no-store", signal: ac.signal });
+        const resp: ShapedDetail | any = r.ok ? await r.json() : null;
+
+        if (ignore || !resp) return;
+
+        const { lokasi, salesName } = parseDetail(resp);
+
+        // Autofill form Instalasi (TANPA menyentuh namaProject)
+        setNewProjectForm((prev) => {
+          const next = { ...prev };
+          if ((!lokasiTouched.current || !prev.lokasi) && lokasi) {
+            next.lokasi = lokasi;
+          }
+          if ((!salesTouched.current || !prev.namaSales) && salesName) {
+            next.namaSales = salesName;
+          }
+          return next;
+        });
+
+        // Autofill form Survey (TANPA menyentuh namaProject)
+        setNewSurveyProjectForm((prev) => {
+          const next = { ...prev };
+          if (!prev.lokasi && lokasi) next.lokasi = lokasi;
+          return next;
+        });
+
+        lastApplied.current = key;
+      } catch (e) {
+        if (!ignore) {
+          console.error("Gagal ambil detail POG:", e);
+        }
+      }
+    })();
+
+    return () => {
+      ignore = true;
+      ac.abort();
+    };
+  }, [externalSelected]);
+
+  // ====== Util Dates ======
   const validateDates = (start: string, deadline: string) => {
     if (start && deadline) {
       const s = new Date(start);
@@ -109,7 +266,7 @@ export default function CreateProjectDialog({
     return true;
   };
 
-  // Survey: generate rooms per floor
+  // ====== Survey: generate rooms ======
   const generateRoomDetails = (floors: number, roomsPerFloor: number) => {
     const details: Array<{ floor: number; rooms: string[] }> = [];
     for (let floor = 1; floor <= floors; floor++) {
@@ -134,6 +291,7 @@ export default function CreateProjectDialog({
     }
   }, [newSurveyProjectForm.lantai, newSurveyProjectForm.ruanganPerLantai]);
 
+  // ====== Paket grid ======
   const PER_COL = 5;
   const paketGroups = (() => {
     const details = newProjectForm.paketDetails ?? [];
@@ -186,9 +344,12 @@ export default function CreateProjectDialog({
     });
   };
 
+  // ====== Reset ======
   const resetAll = () => {
     setExternalSelected(null);
-    setProjectCategory(null);
+    lastApplied.current = null;
+    lokasiTouched.current = false;
+    salesTouched.current = false;
     setDateErr("");
     setTmplErr("");
     setIsSaving(false);
@@ -227,6 +388,7 @@ export default function CreateProjectDialog({
     });
   };
 
+  // ====== UI Project mapper ======
   const buildUIProject = (p: DbProjectWithStats): UIProject => ({
     id: p.id,
     name: p.name,
@@ -243,15 +405,15 @@ export default function CreateProjectDialog({
     sigmaTeknisi: p.sigma_teknisi ?? 0,
     sigmaManDays: String(p.sigma_man_days ?? 0),
     actualManDays: p.actual_man_days ?? 0,
-    sales: p.sales ?? p.sales_name ?? p.nama_sales ?? "",
+    sales: (p as any).sales ?? p.sales_name ?? (p as any).nama_sales ?? "",
   });
 
+  // ====== Submit instalasi (gabungan: code 2 + auto-calc dari code 1) ======
   const submitInstalasi = async () => {
     if (
       !newProjectForm.namaProject ||
       !newProjectForm.tanggalMulaiProject ||
       !newProjectForm.tanggalDeadlineProject ||
-      !newProjectForm.sigmaManDays ||
       !newProjectForm.sigmaHari ||
       !newProjectForm.sigmaTeknisi
     )
@@ -269,6 +431,18 @@ export default function CreateProjectDialog({
     )
       return;
 
+    // Recompute Man Days (defensive)
+    const md = calcManDaysInstalasi(
+      newProjectForm.sigmaHari,
+      newProjectForm.sigmaTeknisi
+    );
+    if (md <= 0) return;
+
+    // sinkronkan UI (opsional)
+    if (String(md) !== newProjectForm.sigmaManDays) {
+      setNewProjectForm((prev) => ({ ...prev, sigmaManDays: String(md) }));
+    }
+
     setTmplErr("");
 
     try {
@@ -282,7 +456,7 @@ export default function CreateProjectDialog({
         tanggalTerimaPo: newProjectForm.tanggalTerimaPo || null,
         tanggalMulaiProject: newProjectForm.tanggalMulaiProject,
         tanggalDeadlineProject: newProjectForm.tanggalDeadlineProject,
-        sigmaManDays: Number(newProjectForm.sigmaManDays),
+        sigmaManDays: md, // gunakan hasil kalkulasi
         sigmaHari: Number(newProjectForm.sigmaHari),
         sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
         templateKey: newProjectForm.tipeTemplate,
@@ -298,8 +472,7 @@ export default function CreateProjectDialog({
             rw: p.rw || null,
             rt: p.rt || null,
           })) ?? [],
-
-        // NEW: kirim salah satu sesuai pilihan user
+        // pertahankan integrasi code 2
         idPaket:
           externalSelected?.type === "paket" ? externalSelected.id : null,
         idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
@@ -324,6 +497,7 @@ export default function CreateProjectDialog({
     }
   };
 
+  // ====== Submit survey (gabungan: code 2 + auto-calc dari code 1) ======
   const submitSurvey = async () => {
     if (
       !newSurveyProjectForm.namaProject ||
@@ -333,7 +507,6 @@ export default function CreateProjectDialog({
       !newSurveyProjectForm.tanggalDeadlineProject ||
       !newSurveyProjectForm.totalHari ||
       !newSurveyProjectForm.totalTeknisi ||
-      !newSurveyProjectForm.totalManDays ||
       !newSurveyProjectForm.tipeTemplate
     )
       return;
@@ -346,6 +519,21 @@ export default function CreateProjectDialog({
     )
       return;
 
+    // Recompute Man Days (defensive)
+    const md = calcManDaysSurvey(
+      newSurveyProjectForm.totalHari,
+      newSurveyProjectForm.totalTeknisi
+    );
+    if (md <= 0) return;
+
+    // sinkronkan UI (opsional)
+    if (String(md) !== newSurveyProjectForm.totalManDays) {
+      setNewSurveyProjectForm((prev) => ({
+        ...prev,
+        totalManDays: String(md),
+      }));
+    }
+
     try {
       setIsSaving(true);
       const payload = {
@@ -356,11 +544,10 @@ export default function CreateProjectDialog({
         tanggalDeadlineProject: newSurveyProjectForm.tanggalDeadlineProject,
         totalHari: Number(newSurveyProjectForm.totalHari),
         totalTeknisi: Number(newSurveyProjectForm.totalTeknisi),
-        totalManDays: Number(newSurveyProjectForm.totalManDays),
+        totalManDays: md, // gunakan hasil kalkulasi
         tipeTemplate: newSurveyProjectForm.tipeTemplate,
         roomDetails: newSurveyProjectForm.roomDetails ?? [],
-
-        // NEW: ikutkan juga (server boleh abaikan bila route survey tak memproses)
+        // pertahankan integrasi code 2
         idPaket:
           externalSelected?.type === "paket" ? externalSelected.id : null,
         idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
@@ -391,6 +578,7 @@ export default function CreateProjectDialog({
     else submitInstalasi();
   };
 
+  // ====== Can create (pakai kalkulasi md dari code 1) ======
   const canCreate =
     projectCategory === "survey"
       ? !!newSurveyProjectForm.namaProject &&
@@ -398,7 +586,10 @@ export default function CreateProjectDialog({
         !!newSurveyProjectForm.lokasi &&
         !!newSurveyProjectForm.tanggalMulaiProject &&
         !!newSurveyProjectForm.tanggalDeadlineProject &&
-        !!newSurveyProjectForm.totalManDays &&
+        calcManDaysSurvey(
+          newSurveyProjectForm.totalHari,
+          newSurveyProjectForm.totalTeknisi
+        ) > 0 &&
         !!newSurveyProjectForm.totalHari &&
         !!newSurveyProjectForm.totalTeknisi &&
         !!newSurveyProjectForm.tipeTemplate &&
@@ -406,7 +597,10 @@ export default function CreateProjectDialog({
       : !!newProjectForm.namaProject &&
         !!newProjectForm.tanggalMulaiProject &&
         !!newProjectForm.tanggalDeadlineProject &&
-        !!newProjectForm.sigmaManDays &&
+        calcManDaysInstalasi(
+          newProjectForm.sigmaHari,
+          newProjectForm.sigmaTeknisi
+        ) > 0 &&
         !!newProjectForm.sigmaHari &&
         !!newProjectForm.sigmaTeknisi &&
         !!newProjectForm.tipeTemplate &&
@@ -480,6 +674,7 @@ export default function CreateProjectDialog({
                 required
               />
             </div>
+
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label htmlFor="lokasi" className="min-w-[140px]">
                 Lokasi
@@ -489,12 +684,13 @@ export default function CreateProjectDialog({
                   id="lokasi"
                   type="text"
                   value={newProjectForm.lokasi}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    lokasiTouched.current = true;
                     setNewProjectForm({
                       ...newProjectForm,
                       lokasi: e.target.value,
-                    })
-                  }
+                    });
+                  }}
                   placeholder="Contoh: Bank Mandiri Darmo"
                   maxLength={140}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -505,10 +701,13 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
-            {/* NEW: Picker ID Paket / ID NPKT */}
+            {/* Picker eksternal (pertahankan integrasi code 2) */}
             <ExternalIdPicker
               value={externalSelected}
-              onChange={setExternalSelected}
+              onChange={(v) => {
+                lastApplied.current = null;
+                setExternalSelected(v);
+              }}
               defaultType="paket"
               tglAwal="2025-03-01"
               tglAkhir="2025-09-01"
@@ -551,49 +750,57 @@ export default function CreateProjectDialog({
                     gridTemplateColumns: `repeat(${paketGroups.length}, minmax(0, 1fr))`,
                   }}
                 >
-                  {paketGroups.map((group, colIdx) => (
-                    <div key={colIdx} className="space-y-3">
-                      {group.items.map((p, idxInCol) => {
-                        const absoluteIndex = group.start + idxInCol;
-                        return (
-                          <div
-                            key={absoluteIndex}
-                            className="grid grid-cols-3 gap-2 items-center"
-                          >
-                            <div className="text-xs font-medium text-gray-700">
-                              Paket #{absoluteIndex + 1}
+                  {paketGroups.map(
+                    (
+                      group: {
+                        start: number;
+                        items: Array<{ rw: string; rt: string }>;
+                      },
+                      colIdx: number
+                    ) => (
+                      <div key={colIdx} className="space-y-3">
+                        {group.items.map((p, idxInCol) => {
+                          const absoluteIndex = group.start + idxInCol;
+                          return (
+                            <div
+                              key={absoluteIndex}
+                              className="grid grid-cols-3 gap-2 items-center"
+                            >
+                              <div className="text-xs font-medium text-gray-700">
+                                Paket #{absoluteIndex + 1}
+                              </div>
+                              <input
+                                type="text"
+                                placeholder="RW"
+                                value={p.rw}
+                                onChange={(e) =>
+                                  updatePaketDetail(
+                                    absoluteIndex,
+                                    "rw",
+                                    e.target.value
+                                  )
+                                }
+                                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                              />
+                              <input
+                                type="text"
+                                placeholder="RT"
+                                value={p.rt}
+                                onChange={(e) =>
+                                  updatePaketDetail(
+                                    absoluteIndex,
+                                    "rt",
+                                    e.target.value
+                                  )
+                                }
+                                className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                              />
                             </div>
-                            <input
-                              type="text"
-                              placeholder="RW"
-                              value={p.rw}
-                              onChange={(e) =>
-                                updatePaketDetail(
-                                  absoluteIndex,
-                                  "rw",
-                                  e.target.value
-                                )
-                              }
-                              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                            />
-                            <input
-                              type="text"
-                              placeholder="RT"
-                              value={p.rt}
-                              onChange={(e) =>
-                                updatePaketDetail(
-                                  absoluteIndex,
-                                  "rt",
-                                  e.target.value
-                                )
-                              }
-                              className="h-9 rounded-md border border-input bg-background px-2 text-sm"
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))}
+                          );
+                        })}
+                      </div>
+                    )
+                  )}
                 </div>
               )}
             </div>
@@ -607,12 +814,13 @@ export default function CreateProjectDialog({
                 id="namaSales"
                 type="text"
                 value={newProjectForm.namaSales}
-                onChange={(e) =>
+                onChange={(e) => {
+                  salesTouched.current = true;
                   setNewProjectForm({
                     ...newProjectForm,
                     namaSales: e.target.value,
-                  })
-                }
+                  });
+                }}
                 placeholder="Masukkan nama sales"
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               />
@@ -683,26 +891,6 @@ export default function CreateProjectDialog({
                   />
                 </div>
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="sigmaManDays" className="min-w-[120px]">
-                    Man Days <span className="text-red-500">*</span>
-                  </Label>
-                  <input
-                    id="sigmaManDays"
-                    type="number"
-                    min="0"
-                    value={newProjectForm.sigmaManDays}
-                    onChange={(e) =>
-                      setNewProjectForm({
-                        ...newProjectForm,
-                        sigmaManDays: e.target.value,
-                      })
-                    }
-                    placeholder="Target Man Days"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
-                  />
-                </div>
-                <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaTeknisi" className="min-w-[120px]">
                     Total Teknisi <span className="text-red-500">*</span>
                   </Label>
@@ -718,6 +906,26 @@ export default function CreateProjectDialog({
                       })
                     }
                     placeholder="Jumlah Teknisi"
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    required
+                  />
+                </div>
+                <div className="flex flex-col md:flex-row md:items-center gap-2">
+                  <Label htmlFor="sigmaHari" className="min-w-[120px]">
+                    Total Hari <span className="text-red-500">*</span>
+                  </Label>
+                  <input
+                    id="sigmaHari"
+                    type="number"
+                    min="0"
+                    value={newProjectForm.sigmaHari}
+                    onChange={(e) =>
+                      setNewProjectForm({
+                        ...newProjectForm,
+                        sigmaHari: e.target.value,
+                      })
+                    }
+                    placeholder="Durasi Project (Hari)"
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                     required
                   />
@@ -796,23 +1004,18 @@ export default function CreateProjectDialog({
                   </div>
                 </div>
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
-                  <Label htmlFor="sigmaHari" className="min-w-[120px]">
-                    Total Hari <span className="text-red-500">*</span>
+                  <Label htmlFor="sigmaManDays" className="min-w-[120px]">
+                    Man Days <span className="text-red-500">*</span>
                   </Label>
                   <input
-                    id="sigmaHari"
+                    id="sigmaManDays"
                     type="number"
                     min="0"
-                    value={newProjectForm.sigmaHari}
-                    onChange={(e) =>
-                      setNewProjectForm({
-                        ...newProjectForm,
-                        sigmaHari: e.target.value,
-                      })
-                    }
-                    placeholder="Durasi Project (Hari)"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
+                    value={newProjectForm.sigmaManDays}
+                    readOnly
+                    placeholder="Otomatis"
+                    aria-readonly="true"
+                    className="flex h-10 w-full rounded-md border border-input bg-gray-50 px-3 py-2 text-sm cursor-default hover:cursor-not-allowed select-none focus:outline-none focus:ring-0"
                   />
                 </div>
                 <div className="flex flex-col md:flex-row md:items-start gap-2">
@@ -841,7 +1044,7 @@ export default function CreateProjectDialog({
                       <option value="" disabled>
                         Pilih Tipe Template
                       </option>
-                      {templateOptions.map((opt) => (
+                      {templateOptions.map((opt: TemplateOption) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>
@@ -946,10 +1149,13 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
-            {/* NEW: Picker ID Paket / ID NPKT (survey juga bisa simpan) */}
+            {/* Picker eksternal (pertahankan integrasi code 2) */}
             <ExternalIdPicker
               value={externalSelected}
-              onChange={setExternalSelected}
+              onChange={(v) => {
+                lastApplied.current = null;
+                setExternalSelected(v);
+              }}
               defaultType="paket"
               tglAwal="2025-03-01"
               tglAkhir="2025-09-01"
@@ -1011,7 +1217,9 @@ export default function CreateProjectDialog({
                         <button
                           type="button"
                           onClick={() =>
-                            setCurrentFloorPage((p) => Math.max(1, p - 1))
+                            setCurrentFloorPage((p: number) =>
+                              Math.max(1, p - 1)
+                            )
                           }
                           disabled={currentFloorPage === 1}
                           className="p-1 rounded hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1025,7 +1233,7 @@ export default function CreateProjectDialog({
                         <button
                           type="button"
                           onClick={() =>
-                            setCurrentFloorPage((p) =>
+                            setCurrentFloorPage((p: number) =>
                               Math.min(
                                 newSurveyProjectForm.roomDetails.length || 1,
                                 p + 1
@@ -1047,8 +1255,10 @@ export default function CreateProjectDialog({
 
                 <div className="space-y-6">
                   {newSurveyProjectForm.roomDetails
-                    .filter((_, idx) => idx === currentFloorPage - 1)
-                    .map((floor, _) => {
+                    .filter(
+                      (_: unknown, idx: number) => idx === currentFloorPage - 1
+                    )
+                    .map((floor) => {
                       const actualIndex = currentFloorPage - 1;
                       return (
                         <div key={floor.floor} className="space-y-3">
@@ -1056,7 +1266,7 @@ export default function CreateProjectDialog({
                             Lantai #{floor.floor}
                           </h5>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {floor.rooms.map((room, rIdx) => (
+                            {floor.rooms.map((room: string, rIdx: number) => (
                               <div key={rIdx} className="flex flex-col gap-1">
                                 <Label
                                   htmlFor={`room-${actualIndex}-${rIdx}`}
@@ -1144,15 +1354,10 @@ export default function CreateProjectDialog({
                     type="number"
                     min="0"
                     value={newSurveyProjectForm.totalManDays}
-                    onChange={(e) =>
-                      setNewSurveyProjectForm({
-                        ...newSurveyProjectForm,
-                        totalManDays: e.target.value,
-                      })
-                    }
-                    placeholder="Target man days"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
+                    readOnly
+                    placeholder="Otomatis"
+                    aria-readonly="true"
+                    className="flex h-10 w-full rounded-md border border-input bg-gray-50 px-3 py-2 text-sm cursor-default hover:cursor-not-allowed select-none focus:outline-none focus:ring-0"
                   />
                 </div>
               </div>
@@ -1237,7 +1442,7 @@ export default function CreateProjectDialog({
                       <option value="" disabled>
                         Pilih Tipe Template
                       </option>
-                      {templateOptions.map((opt) => (
+                      {templateOptions.map((opt: TemplateOption) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>

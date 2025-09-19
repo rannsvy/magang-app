@@ -170,43 +170,22 @@ export default function TechnicianDashboard() {
   }
 
   /** ==== Loader utama ==== */
+  // ganti bagian loadJobs()
   const loadJobs = async () => {
     try {
       setLoading(true);
       setErr(null);
 
-      const qTech = searchParams.get("technician");
-      const lsCode =
-        typeof window !== "undefined"
-          ? localStorage.getItem("technician_code")
-          : null;
-      const lsId =
-        typeof window !== "undefined"
-          ? localStorage.getItem("technician_id")
-          : null;
-
-      // terima: ?technician= (uuid teknisi ATAU code)
-      const technician = qTech || lsId || lsCode;
-      technicianKeyRef.current = technician;
-
-      const qs = technician
-        ? `?technician=${encodeURIComponent(technician)}`
-        : `?debug=1`;
-
-      // Ambil list job untuk teknisi
-      const res = await fetch(`/api/technicians/jobs${qs}`, {
+      const res = await fetch(`/api/technicians/jobs`, {
         cache: "no-store",
+        credentials: "include",
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Gagal memuat pekerjaan");
 
-      // Lengkapi dengan progress & pending flag
       const withProgress = await attachProgress(json.items ?? []);
-
-      // Simpan ke state
       setJobs(withProgress);
 
-      // Auto set completed bila >= 100 dan bukan pending
       const candidates = withProgress.filter(
         (j) => (j.progress ?? 0) >= 100 && !j.isPending
       );
@@ -217,7 +196,6 @@ export default function TechnicianDashboard() {
         }
       }
 
-      // Re-subscribe realtime: projects, job_photos, survey_rooms
       const projectIds = (json.items ?? []).map((j: Job) => j.id);
       const jobIds = (json.items ?? []).map((j: Job) => j.job_id);
       resubscribeProjects(projectIds);

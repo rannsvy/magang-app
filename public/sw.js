@@ -1,5 +1,5 @@
 /* public/sw.js — fast offline upload with timeout & ACK */
-const VERSION = "magang-app-v1.0.35"; // ⬅️ bump versi agar SW baru aktif
+const VERSION = "magang-app-v1.0.36"; // ⬅️ bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -107,6 +107,7 @@ async function processQueue() {
         method: item.method || "POST",
         headers,
         body: item.body || null,
+        // credentials default "same-origin" → cookie ikut untuk same-origin
       });
 
       if (res && res.ok) {
@@ -235,16 +236,32 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
+  // 🛡️ BYPASS: semua rute auth → biarkan browser langsung (cookie ikut)
   if (
     url.origin === self.location.origin &&
     (url.pathname === "/auth/callback" ||
       url.pathname.startsWith("/auth/callback") ||
       url.pathname === "/auth/confirm" ||
-      url.pathname.startsWith("/auth/confirm"))
+      url.pathname.startsWith("/auth/confirm") ||
+      url.pathname.startsWith("/auth/"))
   ) {
-    return; 
+    return; // no intercept
   }
 
+  // 🛡️ BYPASS: semua /api/** (agar cookie tidak hilang & tidak dicache),
+  // kecuali dua endpoint POST yang memang dikelola SW untuk antre offline.
+  if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
+    const isManagedUpload =
+      req.method === "POST" &&
+      (url.pathname === UPLOAD_PATH || url.pathname === META_PATH);
+
+    if (!isManagedUpload) {
+      e.respondWith(fetch(req)); // network only, credentials ikut karena pakai req asli
+      return;
+    }
+  }
+
+  // === Upload & Meta POST (antrian offline) ===
   if (
     req.method === "POST" &&
     (url.pathname === UPLOAD_PATH || url.pathname === META_PATH)
@@ -299,9 +316,7 @@ self.addEventListener("fetch", (e) => {
           } catch (_) {}
           return new Response(
             JSON.stringify({ status: "queued", queueId: id }),
-            {
-              headers: { "Content-Type": "application/json" },
-            }
+            { headers: { "Content-Type": "application/json" } }
           );
         }
       })()
@@ -309,16 +324,16 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
+  // Hanya GET yang lewat sini
   if (req.method !== "GET") return;
 
   const isSameOrigin = url.origin === self.location.origin;
   const accept = req.headers.get("accept") || "";
   const isHTML = req.mode === "navigate" || accept.includes("text/html");
 
-  // 🛡️ NEW: Bypass cache untuk Supabase & cross-origin JSON (hindari data basi)
+  // 🛡️ Bypass cache untuk Supabase & cross-origin JSON (hindari data basi)
   const isSupabase = /\.supabase\.(co|net)$/.test(url.hostname);
   const wantsJson = accept.includes("application/json");
-
   if (!isSameOrigin && (isSupabase || wantsJson)) {
     e.respondWith(fetch(req)); // network-only
     return;
@@ -376,33 +391,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // 3) API GET (same-origin) → network-first + fallback cache
-  if (url.pathname.startsWith("/api/")) {
-    e.respondWith(
-      (async () => {
-        try {
-          const res = await fetch(req);
-          const resForCache = res.clone();
-          e.waitUntil(
-            caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache))
-          );
-          return res;
-        } catch {
-          const hit = await caches.match(req, { ignoreSearch: true });
-          return (
-            hit ||
-            new Response(JSON.stringify({ error: "offline" }), {
-              headers: { "Content-Type": "application/json" },
-              status: 503,
-            })
-          );
-        }
-      })()
-    );
-    return;
-  }
-
-  // 4) Default → network-first; fallback cache
+  // 3) Default → network-first; fallback cache
   e.respondWith(
     (async () => {
       try {

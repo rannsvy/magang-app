@@ -572,12 +572,16 @@ export async function POST(req: NextRequest) {
 
   /* ========= 2) Sinkron project_assignments (harian; teknisi & kendaraan) ========= */
   if (projectsWithAssignments.length && activeScopeProjectIds.length) {
-    // 2.a supervisor EXISTING utk tanggal ini
-    const existingSupByProject = new Map<string, string>();
+    // 2.a Ambil LEADER & SUPERVISOR EXISTING utk tanggal ini
+    //    -> dipakai hanya bila leader TIDAK BERUBAH; jika leader BERUBAH maka akan memakai DEFAULT supervisor leader baru.
+    const existingLeaderInfoByProject = new Map<
+      string,
+      { leaderTid: string | null; supervisorId: string | null }
+    >();
     {
       const { data: existingLeaders, error: exErr } = await sa
         .from("project_assignments")
-        .select("project_id, supervisor_id")
+        .select("project_id, technician_id, supervisor_id")
         .eq("work_date", date)
         .in("project_id", activeScopeProjectIds)
         .is("removed_at", null)
@@ -587,12 +591,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: exErr.message }, { status: 500 });
 
       for (const row of (existingLeaders ?? []) as any[]) {
-        if (row.supervisor_id) {
-          existingSupByProject.set(
-            row.project_id as string,
-            row.supervisor_id as string
-          );
-        }
+        existingLeaderInfoByProject.set(row.project_id as string, {
+          leaderTid: (row.technician_id as string) ?? null,
+          supervisorId: (row.supervisor_id as string) ?? null,
+        });
       }
     }
 
@@ -649,10 +651,14 @@ export async function POST(req: NextRequest) {
 
         let supId: string | null = null;
         if (isLeader) {
-          supId =
-            existingSupByProject.get(pid) ??
-            defaultSupByTech.get(tid)?.id ??
-            null;
+          const existing = existingLeaderInfoByProject.get(pid);
+          // Leader TIDAK berubah -> pertahankan supervisor existing bila ada
+          if (existing && existing.leaderTid === tid && existing.supervisorId) {
+            supId = existing.supervisorId;
+          } else {
+            // Leader BERUBAH atau belum ada -> pakai default supervisor milik leader baru
+            supId = defaultSupByTech.get(tid)?.id ?? null;
+          }
         }
 
         paRows.push({

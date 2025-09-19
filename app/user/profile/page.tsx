@@ -1,26 +1,31 @@
-"use client"
+"use client";
 
-import { useRouter } from "next/navigation"
-import { Card, CardContent } from "@/components/ui/card"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { TechnicianHeader } from "@/components/technician-header"
-import { Key, LogOut, User } from "lucide-react"
+import { useRouter } from "next/navigation";
+import { Card, CardContent } from "@/components/ui/card";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { TechnicianHeader } from "@/components/technician-header";
+import { Key, LogOut, User } from "lucide-react";
+import { supabase } from "@/lib/supabaseBrowser";
 
 export default function TechnicianProfile() {
-  const router = useRouter()
+  const router = useRouter();
 
   const handleResetPassword = () => {
-    router.push("/user/reset-password")
-  }
+    router.push("/user/reset-password");
+  };
 
-  const handleLogout = () => {
-    // Simulate logout
-    router.push("/auth/login")
-  }
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.replace("/auth/login");
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <TechnicianHeader title="Profil" showBackButton={true} backUrl="/user/dashboard" />
+      <TechnicianHeader
+        title="Profil"
+        showBackButton={true}
+        backUrl="/user/dashboard"
+      />
 
       {/* Main Content */}
       <main className="p-4">
@@ -49,13 +54,18 @@ export default function TechnicianProfile() {
                   <div className="flex items-center justify-center w-10 h-10 bg-blue-100 rounded-full mr-4">
                     <Key className="h-5 w-5 text-blue-600" />
                   </div>
-                  <span className="text-gray-900 font-medium">Reset Password</span>
+                  <span className="text-gray-900 font-medium">
+                    Reset Password
+                  </span>
                 </div>
               </CardContent>
             </Card>
 
             {/* Logout Card */}
-            <Card className="cursor-pointer transition-all hover:shadow-md hover:bg-red-50" onClick={handleLogout}>
+            <Card
+              className="cursor-pointer transition-all hover:shadow-md hover:bg-red-50"
+              onClick={handleLogout}
+            >
               <CardContent className="p-4">
                 <div className="flex items-center">
                   <div className="flex items-center justify-center w-10 h-10 bg-red-100 rounded-full mr-4">
@@ -69,5 +79,5 @@ export default function TechnicianProfile() {
         </div>
       </main>
     </div>
-  )
+  );
 }

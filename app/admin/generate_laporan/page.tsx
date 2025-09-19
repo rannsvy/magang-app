@@ -644,8 +644,8 @@ export default function GenerateLaporanPage() {
       if (!technicianDisplay) {
         technicianDisplay =
           typeof selectedJob?.sigma_teknisi === "number"
-            ? `Teknisi (${selectedJob.sigma_teknisi})`
-            : "Teknisi";
+            ? "-"
+            : `Teknisi (${selectedJob.sigma_teknisi})`;
       }
 
       const salesName = selectedJob?.sales_name ?? null;
