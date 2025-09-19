@@ -74,6 +74,7 @@
     "tailwindcss-animate": "^1.0.7",
     "tesseract.js": "^6.0.1",
     "vaul": "^0.9.9",
+    "web-push": "^3.6.7",
     "xlsx": "^0.18.5",
     "xlsx-js-style": "^1.2.0",
     "xmldom": "npm:@xmldom/xmldom@^0.8.10",
