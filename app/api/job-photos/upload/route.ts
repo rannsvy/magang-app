@@ -1,6 +1,7 @@
 // app/api/job-photos/upload/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // WAJIB: service role key (server)
+import { supabaseServer } from "@/lib/supabaseServers"; // untuk auth user & RBAC
 import crypto from "crypto";
 
 export const runtime = "nodejs";
@@ -19,8 +20,58 @@ async function ensureBucketExists() {
   }
 }
 
+// Guard: hanya teknisi yang boleh upload
+async function assertTechnician() {
+  const supabase = supabaseServer();
+
+  const { data: auth, error: authErr } = await supabase.auth.getUser();
+  if (authErr || !auth?.user) {
+    return {
+      ok: false as const,
+      res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+    };
+  }
+
+  const uid = auth.user.id;
+
+  // Cek profiles: ada technician_id => teknisi
+  const { data: profile, error: profErr } = await supabase
+    .from("profiles")
+    .select("technician_id, email")
+    .eq("id", uid)
+    .maybeSingle();
+
+  if (profErr) {
+    return {
+      ok: false as const,
+      res: NextResponse.json(
+        { error: profErr.message || "Auth failed" },
+        { status: 500 }
+      ),
+    };
+  }
+
+  const isTechnician = !!profile?.technician_id;
+
+  if (!isTechnician) {
+    return {
+      ok: false as const,
+      res: NextResponse.json(
+        { error: "Forbidden: hanya teknisi yang dapat mengunggah foto." },
+        { status: 403 }
+      ),
+    };
+  }
+
+  return { ok: true as const };
+}
+
 export async function POST(req: Request) {
   try {
+    // === Guard peran lebih dulu (sebelum baca multipart besar) ===
+    const guard = await assertTechnician();
+    if (!guard.ok) return guard.res;
+
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("multipart/form-data")) {
       const peek = (await req.text()).slice(0, 60);
@@ -110,7 +161,6 @@ export async function POST(req: Request) {
         });
       if (histErr) {
         // Tidak fatal—lanjutkan ke snapshot
-        // console.warn("[upload] job_photo_entries insert warn:", histErr.message);
       }
     } catch {
       // tabel belum ada / RLS — abaikan demi kompatibilitas
@@ -127,8 +177,7 @@ export async function POST(req: Request) {
     if (serialNumber) payload.serial_number = serialNumber;
     if (Number.isFinite(meterNum)) payload.cable_meter = meterNum;
 
-    // Jika belum ada selected_photo_id di snapshot, set ke entryId yang baru
-    // (akan diabaikan bila kolom tidak ada—Supabase akan error; kita tangkap & re-upsert tanpa kolom tsb)
+    // Jika skema mendukung selected_photo_id, set ke entryId yang baru
     let upsertOk = false;
     try {
       payload.selected_photo_id = entryId;

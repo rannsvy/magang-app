@@ -1,4 +1,4 @@
-// app/api/technicians/route.ts
+// /app/api/technicians/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
@@ -16,16 +16,17 @@ export async function GET() {
   if (!verror && vdata) {
     const shaped = (vdata ?? []).map((t: any) => ({
       id: String(t.id),
-      // UI saat ini pakai "name" atau "nama"
-      name: String(t.nama_lengkap ?? "Teknisi"),
-      inisial: String(t.inisial ?? (t.nama_lengkap?.[0] ?? "?")).toUpperCase(),
+      // 🔸 utamakan nama_panggilan untuk tampilan
+      name: String(t.nama_panggilan || t.nama_lengkap || "Teknisi"),
+      inisial: String(t.inisial ?? t.nama_lengkap?.[0] ?? "?").toUpperCase(),
       email: t.email ?? "",
       phone: t.telepon ?? "",
       joinDate:
         t.tanggal_gabung ??
         (t.dibuat_pada ? String(t.dibuat_pada).slice(0, 10) : ""),
-      // seragamkan status untuk UI
-      status: String(t.status_sekarang === "di_kantor" ? "Di_Kantor" : t.status_sekarang),
+      status: String(
+        t.status_sekarang === "di_kantor" ? "Di_Kantor" : t.status_sekarang
+      ),
       // kolom Indonesia ikut dipaparkan bila perlu di UI
       nama_panggilan: t.nama_panggilan ?? "",
       aktif: !!t.aktif,
@@ -36,7 +37,9 @@ export async function GET() {
   // 2) Fallback ke tabel technicians (kolom Indonesia)
   const { data, error } = await supabaseAdmin
     .from("technicians")
-    .select("id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan")
+    .select(
+      "id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan"
+    )
     .order("inisial", { ascending: true });
 
   if (error) {
@@ -45,8 +48,9 @@ export async function GET() {
 
   const shaped = (data ?? []).map((t: any) => ({
     id: String(t.id),
-    name: String(t.nama_lengkap ?? "Teknisi"),
-    inisial: String(t.inisial ?? (t.nama_lengkap?.[0] ?? "?")).toUpperCase(),
+    // 🔸 utamakan nama_panggilan untuk tampilan
+    name: String(t.nama_panggilan || t.nama_lengkap || "Teknisi"),
+    inisial: String(t.inisial ?? t.nama_lengkap?.[0] ?? "?").toUpperCase(),
     email: t.email ?? "",
     phone: t.telepon ?? "",
     joinDate: t.dibuat_pada ? String(t.dibuat_pada).slice(0, 10) : "",
@@ -60,7 +64,7 @@ export async function GET() {
 
 /**
  * POST /api/technicians
- * Body (bebas Inggris/Indonesia):
+ * Body:
  * { nama_lengkap* | name*, inisial?, email?, telepon?|phone?, aktif?|is_active?, nama_panggilan? }
  * - inisial: maks 2 huruf, akan di-UPPERCASE
  */
@@ -68,14 +72,18 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    // terima kedua gaya penamaan (Inggris/Indonesia)
-    const nama_lengkap: string = (body?.nama_lengkap ?? body?.name ?? "").trim();
-    const inisialRaw: string | null =
-      body?.inisial ?? body?.initials ?? null;
+    // Terima kedua gaya penamaan (Inggris/Indonesia)
+    const nama_lengkap: string = (
+      body?.nama_lengkap ??
+      body?.name ??
+      ""
+    ).trim();
+    const inisialRaw: string | null = body?.inisial ?? body?.initials ?? null;
     const email: string | null = body?.email ?? null;
-    const telepon: string | null = (body?.telepon ?? body?.phone) ?? null;
+    const telepon: string | null = body?.telepon ?? body?.phone ?? null;
     const aktif: boolean =
-      body?.aktif ?? (typeof body?.is_active === "boolean" ? body.is_active : true);
+      body?.aktif ??
+      (typeof body?.is_active === "boolean" ? body.is_active : true);
     const nama_panggilan: string | null = body?.nama_panggilan ?? null;
 
     if (!nama_lengkap) {
@@ -84,9 +92,13 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+
     let inisial: string | null = null;
     if (inisialRaw) {
-      const s = String(inisialRaw).toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2);
+      const s = String(inisialRaw)
+        .toUpperCase()
+        .replace(/[^A-Z]/g, "")
+        .slice(0, 2);
       if (s.length === 0) {
         return NextResponse.json(
           { error: "Inisial harus berupa huruf A–Z." },
@@ -108,11 +120,12 @@ export async function POST(request: Request) {
     const { data, error } = await supabaseAdmin
       .from("technicians")
       .insert(insertPayload)
-      .select("id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan")
+      .select(
+        "id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan"
+      )
       .single();
 
     if (error) {
-      // 23505: unique violation (mis. inisial bentrok)
       const msg =
         (error as any).code === "23505"
           ? "Inisial teknisi sudah digunakan."
@@ -121,15 +134,17 @@ export async function POST(request: Request) {
     }
 
     const shaped = {
-      id: String(data!.id),
-      name: data!.nama_lengkap,
-      inisial: String(data!.inisial ?? "").toUpperCase(),
-      email: data!.email ?? "",
-      phone: data!.telepon ?? "",
-      joinDate: data!.dibuat_pada ? String(data!.dibuat_pada).slice(0, 10) : "",
+      id: String((data as any)!.id),
+      name: (data as any)!.nama_lengkap,
+      inisial: String((data as any)!.inisial ?? "").toUpperCase(),
+      email: (data as any)!.email ?? "",
+      phone: (data as any)!.telepon ?? "",
+      joinDate: (data as any)!.dibuat_pada
+        ? String((data as any)!.dibuat_pada).slice(0, 10)
+        : "",
       status: "di_kantor" as const,
-      nama_panggilan: data!.nama_panggilan ?? "",
-      aktif: !!data!.aktif,
+      nama_panggilan: (data as any)!.nama_panggilan ?? "",
+      aktif: !!(data as any)!.aktif,
     };
 
     return NextResponse.json({ data: shaped });

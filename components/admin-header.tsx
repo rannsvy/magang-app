@@ -1,17 +1,22 @@
-"use client"
+"use client";
 
-import type React from "react"
-
-import { useRouter } from "next/navigation"
-import { Button } from "@/components/ui/button"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { LogOut, Settings, ArrowLeft, Menu } from "lucide-react"
+import type React from "react";
+import { supabase } from "@/lib/supabaseBrowser";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { LogOut, Settings, ArrowLeft, Menu } from "lucide-react";
 
 interface AdminHeaderProps {
-  title: string
-  showBackButton?: boolean
-  backUrl?: string
-  rightContent?: React.ReactNode
+  title: string;
+  showBackButton?: boolean;
+  backUrl?: string;
+  rightContent?: React.ReactNode;
 }
 
 export function AdminHeader({
@@ -20,28 +25,42 @@ export function AdminHeader({
   backUrl = "/admin/dashboard",
   rightContent,
 }: AdminHeaderProps) {
-  const router = useRouter()
+  const router = useRouter();
 
-  const handleLogout = () => {
-    // Simulate logout
-    router.push("/auth/login")
+  async function handleLogout() {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
+
+    const next = encodeURIComponent("/auth/login");
+    window.location.href = `/auth/login`;
   }
 
   const handleBack = () => {
-    router.push(backUrl)
-  }
+    router.push(backUrl);
+  };
 
   const handleSettings = () => {
     // Navigate to admin settings page (placeholder)
-    console.log("Navigate to admin settings")
-  }
+    console.log("Navigate to admin settings");
+  };
 
   return (
     <header className="bg-white shadow-sm border-b">
       <div className="px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
           {showBackButton && (
-            <Button variant="ghost" size="sm" onClick={handleBack} className="p-2 hover:bg-gray-100">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleBack}
+              className="p-2 hover:bg-gray-100"
+            >
               <ArrowLeft className="h-5 w-5" />
             </Button>
           )}
@@ -70,5 +89,5 @@ export function AdminHeader({
         </div>
       </div>
     </header>
-  )
+  );
 }

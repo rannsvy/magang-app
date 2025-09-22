@@ -69,7 +69,8 @@ export async function GET(req?: NextRequest) {
       jam_datang, jam_pulang,
       tanggal_mulai, tanggal_deadline,
       closed_at, completed_at,
-      created_at
+      created_at,
+      id_paket, id_npkt
     `
     )
     .lte("tanggal_mulai", queryDate)
@@ -162,6 +163,10 @@ export async function GET(req?: NextRequest) {
       assignment_count: 0,
       leader_count: 0,
       actual_man_days: actual.get(p.id) ?? 0,
+
+      // NEW: expose supaya UI bisa menampilkan badge/link kalau perlu
+      id_paket: p.id_paket ?? null,
+      id_npkt: p.id_npkt ?? null,
     };
   });
 
@@ -188,6 +193,10 @@ type InsertProjectRow = {
   template_key: string;
   durasi_minutes: number;
   insentif: number;
+
+  // NEW: penyimpanan external ID
+  id_paket?: string | null;
+  id_npkt?: string | null;
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -271,6 +280,10 @@ export async function POST(req: NextRequest) {
     durasiMinutes?: number | null;
     insentif?: number | null;
     paketDetails?: Array<{ seq: number; rw: string | null; rt: string | null }>;
+
+    // NEW: external IDs dari picker
+    idPaket?: string | null;
+    idNpkt?: string | null;
   };
 
   if (
@@ -281,6 +294,23 @@ export async function POST(req: NextRequest) {
   ) {
     return NextResponse.json(
       { error: "Data project tidak lengkap" },
+      { status: 400 }
+    );
+  }
+
+  // Validasi external id: hanya boleh salah satu
+  const idPaket =
+    typeof body.idPaket === "string" && body.idPaket.trim()
+      ? body.idPaket.trim()
+      : null;
+  const idNpkt =
+    typeof body.idNpkt === "string" && body.idNpkt.trim()
+      ? body.idNpkt.trim()
+      : null;
+
+  if (idPaket && idNpkt) {
+    return NextResponse.json(
+      { error: "Hanya boleh memilih salah satu: idPaket ATAU idNpkt" },
       { status: 400 }
     );
   }
@@ -309,6 +339,10 @@ export async function POST(req: NextRequest) {
     template_key: body.templateKey,
     durasi_minutes: durasi,
     insentif: insentif,
+
+    // NEW: akan ikut tersimpan
+    id_paket: idPaket,
+    id_npkt: idNpkt,
   };
 
   const paketList =
@@ -340,7 +374,7 @@ export async function POST(req: NextRequest) {
         : `${tgl} RW${rwPad}RT${rtPad}`;
 
       const result = await insertProjectWithRetries({
-        ...baseInsert,
+        ...baseInsert, // termasuk id_paket / id_npkt
         name,
         lokasi,
       });
@@ -406,6 +440,10 @@ export async function POST(req: NextRequest) {
         assignment_count: 0,
         leader_count: 0,
         actual_man_days: 0,
+
+        // NEW: ikut di respons
+        id_paket: p.id_paket ?? null,
+        id_npkt: p.id_npkt ?? null,
       };
     });
 
@@ -470,6 +508,10 @@ export async function POST(req: NextRequest) {
     assignment_count: 0,
     leader_count: 0,
     actual_man_days: 0,
+
+    // NEW: ikut di respons
+    id_paket: project.id_paket ?? null,
+    id_npkt: project.id_npkt ?? null,
   };
 
   return NextResponse.json({ data: shaped }, { status: 201 });

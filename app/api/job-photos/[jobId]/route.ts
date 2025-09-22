@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabaseServers"; // sesuaikan path jika berbeda
+import { supabaseServer } from "@/lib/supabaseServers";
 import { PHOTO_TEMPLATE } from "@/lib/photoTemplate";
 
 export const revalidate = 0;
@@ -78,13 +78,13 @@ function pickBestPhotoId(list: PhotoEntry[]): string | null {
   return best.id;
 }
 
-// ⬇️ NOTE: params adalah Promise → wajib di-await
+// NOTE: params adalah Promise → wajib di-await (sesuai Next 15 canary behavior)
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ jobId: string }> }
 ) {
   try {
-    const { jobId: raw } = await params; // ✅ await
+    const { jobId: raw } = await params;
     const jobId = decodeURIComponent(raw ?? "");
     if (!jobId) {
       return NextResponse.json({ error: "jobId required" }, { status: 400 });
@@ -105,7 +105,7 @@ export async function GET(
         pj.data.pending_since !== null ||
         pj.data.pending_reason !== null);
 
-    // ===== Ambil snapshot terbaru per kategori (job_photos) =====
+    // ===== Snapshot terbaru per kategori =====
     const { data: latest, error: eLatest } = await supabase
       .from("job_photos")
       .select(
@@ -122,7 +122,7 @@ export async function GET(
       latestByCat.set(String(r.category_id), r as LatestRow);
     }
 
-    // ===== Ambil semua entri riwayat (job_photo_entries) =====
+    // ===== Semua entri riwayat =====
     let entriesByCat = new Map<string, EntryRow[]>();
     try {
       const { data: entries, error: eEntries } = await supabase
@@ -146,12 +146,12 @@ export async function GET(
       // fallback silently
     }
 
-    // ===== Template (urutkan) =====
+    // ===== Template (urut) =====
     const template: TemplateItem[] = (PHOTO_TEMPLATE as TemplateItem[])
       .slice()
       .sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
 
-    // ===== Bangun daftar item untuk UI =====
+    // ===== Build items untuk UI =====
     const items: ApiItem[] = template.map((tpl) => {
       const latestRow = latestByCat.get(tpl.id);
 
@@ -166,7 +166,7 @@ export async function GET(
         uploadState: "uploaded" as const,
       }));
 
-      // fallback: jika riwayat kosong tetapi ada snapshot tunggal → buat satu item palsu
+      // fallback: riwayat kosong tapi ada snapshot tunggal
       if (!photos.length && (latestRow?.thumb_url || latestRow?.url)) {
         photos.push({
           id: `remote-${tpl.id}`,
@@ -196,7 +196,7 @@ export async function GET(
         requiresSerialNumber: tpl.type === "photo+sn",
         requiresCable: tpl.type === "photo+cable",
 
-        // kompat lama (tetap kirim)
+        // kompat lama
         photoThumb: latestRow?.thumb_url ?? null,
         photo: latestRow?.url ?? null,
 
@@ -222,6 +222,7 @@ export async function GET(
     const uploaded = complete;
     const percent = total ? Math.round((uploaded / total) * 100) : 0;
 
+    // Tambahkan progress.done agar frontend mudah konsumsi
     return NextResponse.json({
       items,
       status: isPending ? "pending" : "active",
@@ -231,6 +232,7 @@ export async function GET(
         total,
         complete,
         uploaded,
+        done: complete, // ← alias yang dipakai UI
         percent,
       },
     });

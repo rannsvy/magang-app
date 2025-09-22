@@ -1,7 +1,7 @@
 // /app/api/assignments/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServers"; // server-side client (RLS ON)
-import { supabaseAdmin, supabaseAdmins } from "@/lib/supabaseAdmin"; // admin client (service-role, RLS BYPASS)
+import { supabaseAdmin, supabaseAdmins } from "@/lib/supabaseAdmin"; // admin client (service-role, BYPASS RLS)
 
 type ShapedAssignment = {
   projectId: string;
@@ -44,6 +44,18 @@ function initialFrom(text: string) {
   return (ch || "?").toUpperCase();
 }
 
+/* Tampilan nama/inisial konsisten */
+const displayTechName = (
+  t?: { nama_panggilan?: string | null; nama_lengkap?: string | null } | null
+) =>
+  (t?.nama_panggilan && String(t.nama_panggilan).trim()) ||
+  (t?.nama_lengkap && String(t.nama_lengkap).trim()) ||
+  "";
+
+const displayInitial = (
+  t?: { inisial?: string | null; nama_lengkap?: string | null } | null
+) => String(t?.inisial || initialFrom(t?.nama_lengkap || "T")).toUpperCase();
+
 /* ====================================================================== */
 /* ===============================  GET  ================================ */
 /* ====================================================================== */
@@ -57,7 +69,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const sb = supabaseServer();
+  const sb = supabaseServer(); // RLS ON, untuk data user-scoped
+  const sa = supabaseAdmins(); // RLS BYPASS, untuk lookup meta yang aman
 
   // A) Ambil penugasan harian (gabungan)
   const { data: paDaily, error: paDailyErr } = await sb
@@ -76,50 +89,50 @@ export async function GET(req: NextRequest) {
     // kumpulkan id teknisi & kendaraan
     const techIds = Array.from(
       new Set(
-        paDaily
+        (paDaily ?? [])
           .filter((r) => r.technician_id)
           .map((r) => r.technician_id as string)
       )
     );
     const vehIds = Array.from(
       new Set(
-        paDaily.filter((r) => r.vehicle_id).map((r) => r.vehicle_id as string)
+        (paDaily ?? [])
+          .filter((r) => r.vehicle_id)
+          .map((r) => r.vehicle_id as string)
       )
     );
 
-    // meta teknisi
+    // meta teknisi (pakai admin client supaya tidak ke blok RLS)
     let techMap = new Map<string, { inisial: string; name: string }>();
     if (techIds.length) {
-      const { data: techs, error: tErr } = await sb
+      const { data: techs, error: tErr } = await sa
         .from("technicians")
         .select("id, inisial, nama_panggilan, nama_lengkap")
         .in("id", techIds);
       if (tErr)
         return NextResponse.json({ error: tErr.message }, { status: 500 });
-      for (const t of techs ?? []) {
-        techMap.set(t.id, {
-          inisial: String(t.inisial ?? "?").toUpperCase(),
-          name:
-            (t.nama_panggilan as string | null) ??
-            (t.nama_lengkap as string | null) ??
-            String(t.id),
+      for (const t of (techs ?? []) as any[]) {
+        const name = displayTechName(t) || t.id;
+        techMap.set(t.id as string, {
+          inisial: displayInitial(t),
+          name,
         });
       }
     }
 
-    // meta kendaraan
+    // meta kendaraan (pakai admin client)
     let vehMap = new Map<string, { code: string; model: string }>();
     if (vehIds.length) {
-      const { data: vehs, error: vErr } = await sb
+      const { data: vehs, error: vErr } = await sa
         .from("vehicles")
         .select("id, vehicle_code, model, name")
         .in("id", vehIds);
       if (vErr)
         return NextResponse.json({ error: vErr.message }, { status: 500 });
-      for (const v of vehs ?? []) {
-        vehMap.set(v.id, {
-          code: v.vehicle_code,
-          model: v.model ?? v.name ?? "",
+      for (const v of (vehs ?? []) as any[]) {
+        vehMap.set(v.id as string, {
+          code: v.vehicle_code as string,
+          model: (v.model as string) ?? (v.name as string) ?? "",
         });
       }
     }
@@ -127,32 +140,32 @@ export async function GET(req: NextRequest) {
     const shaped: ShapedAssignment[] = [];
     for (const r of paDaily ?? []) {
       if (r.technician_id) {
-        const meta = techMap.get(r.technician_id);
+        const meta = techMap.get(r.technician_id as string);
         shaped.push({
-          projectId: r.project_id,
-          technicianId: r.technician_id,
-          technicianName: meta?.name ?? r.technician_id,
+          projectId: r.project_id as string,
+          technicianId: r.technician_id as string,
+          technicianName: meta?.name ?? (r.technician_id as string),
           inisial: meta?.inisial ?? "?",
           isProjectLeader: !!r.is_leader,
           isSelected: true,
           supervisor: r.is_leader
             ? r.supervisor_id
               ? {
-                  id: r.supervisor_id,
-                  name: r.supervisor_name ?? "",
-                  nickname: r.supervisor_name ?? "",
+                  id: r.supervisor_id as string,
+                  name: (r.supervisor_name as string) ?? "",
+                  nickname: (r.supervisor_name as string) ?? "",
                 }
               : null
             : undefined,
         });
       } else if (r.vehicle_id) {
-        const meta = vehMap.get(r.vehicle_id);
+        const meta = vehMap.get(r.vehicle_id as string);
         const model = meta?.model ?? "";
         shaped.push({
-          projectId: r.project_id,
+          projectId: r.project_id as string,
           technicianId: meta?.code || "car-??",
           technicianName: model || (meta?.code ?? "Kendaraan"),
-          inisial: initialFrom(model || meta?.code || "C"),
+          inisial: initialFrom(model || (meta?.code ?? "C")),
           isProjectLeader: !!r.is_leader,
           isSelected: true,
         });
@@ -189,8 +202,8 @@ export async function GET(req: NextRequest) {
     const key = `${r.project_id}::${r.technician_id}`;
     selectedTodaySet.add(key);
     todayCountByProject.set(
-      r.project_id,
-      (todayCountByProject.get(r.project_id) ?? 0) + 1
+      r.project_id as string,
+      (todayCountByProject.get(r.project_id as string) ?? 0) + 1
     );
     if (r.project_leader) leaderTodaySet.add(key);
   }
@@ -204,12 +217,13 @@ export async function GET(req: NextRequest) {
     }>
   >();
   for (const r of attPrev ?? []) {
-    const arr = prevByProject.get(r.project_id) ?? [];
-    arr.push(r);
-    prevByProject.set(r.project_id, arr);
+    const arr = prevByProject.get(r.project_id as string) ?? [];
+    arr.push(r as any);
+    prevByProject.set(r.project_id as string, arr);
   }
 
-  const { data: pa, error: paErr } = await sb
+  // ⚠️ gunakan admin client agar join ke technicians tidak diblok RLS
+  const { data: pa, error: paErr } = await sa
     .from("project_assignments")
     .select(
       `
@@ -235,10 +249,12 @@ export async function GET(req: NextRequest) {
   }
 
   const candidateProjectIds = new Set<string>();
-  for (const r of pa ?? [])
+  for (const r of (pa ?? []) as any[])
     if (r.technician_id) candidateProjectIds.add(r.project_id);
-  for (const r of attToday ?? []) candidateProjectIds.add(r.project_id);
-  for (const r of attPrev ?? []) candidateProjectIds.add(r.project_id);
+  for (const r of attToday ?? [])
+    candidateProjectIds.add(r.project_id as string);
+  for (const r of attPrev ?? [])
+    candidateProjectIds.add(r.project_id as string);
   if (candidateProjectIds.size === 0) return NextResponse.json({ data: [] });
 
   const { data: projects, error: projErr } = await sb
@@ -254,15 +270,17 @@ export async function GET(req: NextRequest) {
   const activeProjectSet = new Set<string>();
   const completedTodayProjects = new Set<string>();
   for (const p of projects ?? []) {
-    if (p.project_status === "pending" || p.pending_reason) continue;
-    const completedWIB = toWIBDate(p.completed_at) ?? toWIBDate(p.closed_at);
+    if ((p as any).project_status === "pending" || (p as any).pending_reason)
+      continue;
+    const completedWIB =
+      toWIBDate((p as any).completed_at) ?? toWIBDate((p as any).closed_at);
     if (!completedWIB) {
-      activeProjectSet.add(p.id);
+      activeProjectSet.add((p as any).id);
       continue;
     }
     if (date <= completedWIB) {
-      activeProjectSet.add(p.id);
-      if (completedWIB === date) completedTodayProjects.add(p.id);
+      activeProjectSet.add((p as any).id);
+      if (completedWIB === date) completedTodayProjects.add((p as any).id);
     }
   }
   if (activeProjectSet.size === 0) return NextResponse.json({ data: [] });
@@ -283,7 +301,7 @@ export async function GET(req: NextRequest) {
     }
   }
   if (completedTodayProjects.size > 0) {
-    for (const row of pa ?? []) {
+    for (const row of (pa ?? []) as any[]) {
       if (!row.technician_id) continue;
       if (completedTodayProjects.has(row.project_id)) {
         const key = `${row.project_id}::${row.technician_id}`;
@@ -295,18 +313,20 @@ export async function GET(req: NextRequest) {
 
   type TechInfo = { id: string; inisial: string; name: string };
   const techInfoById = new Map<string, TechInfo>();
-  for (const row of pa ?? []) {
+  for (const row of (pa ?? []) as any[]) {
     if (!row.technician_id) continue;
     const tRaw: any = row.technicians;
     const t = Array.isArray(tRaw) ? tRaw[0] ?? null : tRaw;
+
     const id: string = String(t?.id ?? row.technician_id);
-    const inisial: string = String(t?.inisial ?? "?").toUpperCase();
     const name: string =
-      (t?.nama_panggilan as string | null) ??
-      (row.technician_name as string | null) ??
-      (t?.nama_lengkap as string | null) ??
+      displayTechName(t) ||
+      (row.technician_name as string | null) ||
+      (t?.nama_lengkap as string | null) ||
       id;
-    techInfoById.set(row.technician_id, { id, inisial, name });
+
+    const inisial: string = displayInitial(t);
+    techInfoById.set(row.technician_id as string, { id, inisial, name });
   }
 
   const shaped: ShapedAssignment[] = [];
@@ -410,7 +430,7 @@ export async function POST(req: NextRequest) {
 
   // Ambil status proyek
   const sb = supabaseServer();
-  const sa = supabaseAdmins(); // <-- penting: PANGGIL fungsinya
+  const sa = supabaseAdmins();
 
   const { data: projRows, error: projErr } = await sb
     .from("projects")
@@ -419,29 +439,32 @@ export async function POST(req: NextRequest) {
       "id",
       scopeProjectIds.length
         ? scopeProjectIds
-        : supItems.map((s) => s.projectId)
+        : supItems.map((s: any) => s.projectId)
     );
   if (projErr)
     return NextResponse.json({ error: projErr.message }, { status: 500 });
 
   const bastSet = new Set(
     (projRows ?? [])
-      .filter((p) => p?.project_status === "awaiting_bast")
-      .map((p) => p.id)
+      .filter((p: any) => p?.project_status === "awaiting_bast")
+      .map((p: any) => p.id)
   );
   const pendingSet = new Set(
     (projRows ?? [])
-      .filter((p) => p?.project_status === "pending" || p?.pending_reason)
-      .map((p) => p.id)
+      .filter((p: any) => p?.project_status === "pending" || p?.pending_reason)
+      .map((p: any) => p.id)
   );
   const completedSet = new Set(
-    (projRows ?? []).filter((p) => !!p?.completed_at).map((p) => p.id)
+    (projRows ?? []).filter((p: any) => !!p?.completed_at).map((p: any) => p.id)
   );
 
   const activeScopeProjectIds = (
-    scopeProjectIds.length ? scopeProjectIds : supItems.map((s) => s.projectId)
+    scopeProjectIds.length
+      ? scopeProjectIds
+      : supItems.map((s: any) => s.projectId)
   ).filter(
-    (id) => !pendingSet.has(id) && !completedSet.has(id) && !bastSet.has(id)
+    (id: string) =>
+      !pendingSet.has(id) && !completedSet.has(id) && !bastSet.has(id)
   );
 
   // Enforce tepat 1 leader per project (hanya untuk proyek yang disinkron assignment-nya)
@@ -458,14 +481,12 @@ export async function POST(req: NextRequest) {
   }
 
   /* ========= (BARU) Siapkan default supervisor untuk setiap LEADER ========= */
-  // Kumpulkan semua technician_id yang jadi leader di payload
   const leaderTechIds = Array.from(
     new Set(
       Array.from(byProject.values()).flatMap((b) => Array.from(b.techLeaders))
     )
   );
 
-  // Map: technician_id -> { id, name }
   type SupInfo = { id: string; name: string };
   const defaultSupByTech = new Map<string, SupInfo>();
 
@@ -482,11 +503,10 @@ export async function POST(req: NextRequest) {
       .in("technician_id", leaderTechIds)
       .is("removed_at", null);
 
-    if (stErr) {
+    if (stErr)
       return NextResponse.json({ error: stErr.message }, { status: 500 });
-    }
 
-    for (const r of stRows ?? []) {
+    for (const r of (stRows ?? []) as any[]) {
       const sRaw: any = r.supervisors;
       const s = Array.isArray(sRaw) ? sRaw[0] : sRaw;
       const name = (s?.nickname ?? s?.full_name ?? "") as string;
@@ -552,27 +572,29 @@ export async function POST(req: NextRequest) {
 
   /* ========= 2) Sinkron project_assignments (harian; teknisi & kendaraan) ========= */
   if (projectsWithAssignments.length && activeScopeProjectIds.length) {
-    // 2.a AMBIL DULU supervisor EXISTING per PROJECT (leader) untuk tanggal ini
-    const existingSupByProject = new Map<string, string>(); // project_id -> supervisor_id
+    // 2.a Ambil LEADER & SUPERVISOR EXISTING utk tanggal ini
+    //    -> dipakai hanya bila leader TIDAK BERUBAH; jika leader BERUBAH maka akan memakai DEFAULT supervisor leader baru.
+    const existingLeaderInfoByProject = new Map<
+      string,
+      { leaderTid: string | null; supervisorId: string | null }
+    >();
     {
       const { data: existingLeaders, error: exErr } = await sa
         .from("project_assignments")
-        .select("project_id, supervisor_id")
+        .select("project_id, technician_id, supervisor_id")
         .eq("work_date", date)
         .in("project_id", activeScopeProjectIds)
         .is("removed_at", null)
         .eq("is_leader", true);
 
-      if (exErr) {
+      if (exErr)
         return NextResponse.json({ error: exErr.message }, { status: 500 });
-      }
-      for (const row of existingLeaders ?? []) {
-        if (row.supervisor_id) {
-          existingSupByProject.set(
-            row.project_id as string,
-            row.supervisor_id as string
-          );
-        }
+
+      for (const row of (existingLeaders ?? []) as any[]) {
+        existingLeaderInfoByProject.set(row.project_id as string, {
+          leaderTid: (row.technician_id as string) ?? null,
+          supervisorId: (row.supervisor_id as string) ?? null,
+        });
       }
     }
 
@@ -585,15 +607,15 @@ export async function POST(req: NextRequest) {
     if (delPADayErr)
       return NextResponse.json({ error: delPADayErr.message }, { status: 500 });
 
-    // 2.c Vehicle code -> id (kode existing kamu)
+    // 2.c Vehicle code -> id
     const allVehicleCodes = Array.from(
       new Set(
-        items
+        (items as any[])
           .filter(
             (i) =>
               i.isSelected !== false && i.technicianId?.startsWith?.("car-")
           )
-          .map((i) => i.technicianId)
+          .map((i) => i.technicianId as string)
       )
     );
     const codeToVehId = new Map<string, string>();
@@ -604,7 +626,8 @@ export async function POST(req: NextRequest) {
         .in("vehicle_code", allVehicleCodes);
       if (vErr)
         return NextResponse.json({ error: vErr.message }, { status: 500 });
-      for (const v of vehs ?? []) codeToVehId.set(v.vehicle_code, v.id);
+      for (const v of (vehs ?? []) as any[])
+        codeToVehId.set(v.vehicle_code as string, v.id as string);
     }
 
     type PARow = {
@@ -626,14 +649,16 @@ export async function POST(req: NextRequest) {
       for (const tid of bucket?.techSelected ?? []) {
         const isLeader = !!bucket?.techLeaders?.has(tid);
 
-        // <-- INI KUNCI: kalau project ini sudah punya supervisor hasil pilihan manual,
-        // gunakan itu; kalau tidak ada, baru cek default mapping (supervisor_technicians)
         let supId: string | null = null;
         if (isLeader) {
-          supId =
-            existingSupByProject.get(pid) ??
-            defaultSupByTech.get(tid)?.id ??
-            null;
+          const existing = existingLeaderInfoByProject.get(pid);
+          // Leader TIDAK berubah -> pertahankan supervisor existing bila ada
+          if (existing && existing.leaderTid === tid && existing.supervisorId) {
+            supId = existing.supervisorId;
+          } else {
+            // Leader BERUBAH atau belum ada -> pakai default supervisor milik leader baru
+            supId = defaultSupByTech.get(tid)?.id ?? null;
+          }
         }
 
         paRows.push({
@@ -647,7 +672,7 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      // kendaraan (tanpa supervisor)
+      // kendaraan
       for (const code of bucket?.vehSelected ?? []) {
         const vid = codeToVehId.get(code);
         if (!vid) continue;
@@ -683,19 +708,17 @@ export async function POST(req: NextRequest) {
       .eq("is_leader", true)
       .is("supervisor_id", null);
 
-    if (leadersFetchErr) {
+    if (leadersFetchErr)
       return NextResponse.json(
         { error: leadersFetchErr.message },
         { status: 500 }
       );
-    }
 
     if ((leaderRows2?.length ?? 0) > 0) {
       const missingTechIds = Array.from(
-        new Set((leaderRows2 ?? []).map((r) => r.technician_id as string))
+        new Set((leaderRows2 ?? []).map((r: any) => r.technician_id as string))
       );
 
-      // Ambil mapping default supervisor (jika ada) dari bridge
       const mapByTech = new Map<string, { id: string; name: string }>();
       if (missingTechIds.length) {
         const { data: stRows, error: stErr } = await sb
@@ -710,15 +733,14 @@ export async function POST(req: NextRequest) {
           .in("technician_id", missingTechIds)
           .is("removed_at", null);
 
-        if (stErr) {
+        if (stErr)
           return NextResponse.json({ error: stErr.message }, { status: 500 });
-        }
 
-        for (const r of stRows ?? []) {
+        for (const r of (stRows ?? []) as any[]) {
           const sRaw: any = r.supervisors;
           const s = Array.isArray(sRaw) ? sRaw[0] : sRaw;
           mapByTech.set(
-            r.technician_id,
+            r.technician_id as string,
             s
               ? {
                   id: s.id as string,
@@ -729,17 +751,15 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Update satu per satu (aman terkait RLS karena pakai admin)
-      for (const row of leaderRows2 ?? []) {
+      for (const row of (leaderRows2 ?? []) as any[]) {
         const sup = mapByTech.get(row.technician_id as string);
         if (!sup) continue;
         const { error: upErr } = await sa
           .from("project_assignments")
           .update({ supervisor_id: sup.id }) // trigger akan isi supervisor_name
-          .eq("id", row.id);
-        if (upErr) {
+          .eq("id", row.id as string);
+        if (upErr)
           return NextResponse.json({ error: upErr.message }, { status: 500 });
-        }
       }
     }
   }
@@ -771,7 +791,7 @@ export async function POST(req: NextRequest) {
     const { error: upSupErr } = await sa
       .from("project_assignments")
       .update({ supervisor_id: sid }) // trigger isi supervisor_name
-      .eq("id", leaderRow.id);
+      .eq("id", (leaderRow as any).id);
 
     if (upSupErr)
       return NextResponse.json({ error: upSupErr.message }, { status: 500 });

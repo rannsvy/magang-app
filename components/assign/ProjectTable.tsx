@@ -18,6 +18,7 @@ import {
   ContextMenuSeparator,
 } from "@/components/ui/context-menu";
 
+/* ===================== Types ===================== */
 type Props = {
   tableRef: React.RefObject<HTMLTableElement>;
   techs: UITechnician[];
@@ -43,7 +44,7 @@ type Props = {
     color: string;
   };
 
-  /* NEW: supervisor integration */
+  /* supervisor integration */
   currentDate: string;
   supervisors: Array<{
     id: string;
@@ -64,7 +65,7 @@ async function setSupervisor(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       date,
-      assignments: [], // tidak mengubah teknisi
+      assignments: [],
       supervisors: [{ projectId, supervisorId }],
     }),
   });
@@ -72,6 +73,285 @@ async function setSupervisor(
   if (!res.ok) throw new Error(j?.error || "Gagal menyimpan supervisor");
 }
 
+/* ===================== Memoized subcomponents ===================== */
+const TechHeaderCell = React.memo(function TechHeaderCell({
+  tech,
+  trackNum,
+}: {
+  tech: UITechnician;
+  trackNum: number;
+}) {
+  return (
+    <th
+      className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-6 sticky top-0 bg-gray-100 h-32"
+      title={tech.name}
+    >
+      <div className="flex flex-col items-center justify-end h-full">
+        <div
+          className="text-xs font-bold whitespace-nowrap mb-2"
+          style={{
+            writingMode: "vertical-lr",
+            textOrientation: "mixed",
+            transform: "rotate(180deg)",
+            height: "70px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          {tech.name}
+        </div>
+        <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">
+          {trackNum}
+        </div>
+      </div>
+    </th>
+  );
+});
+
+type GridCellProps = {
+  project: UIProject;
+  tech: UITechnician;
+  assign?: CellAssignment;
+  disabled: boolean;
+  supervisors: Props["supervisors"];
+  currentDate: string;
+  onCellClick: (projectId: string, technicianId: string) => void;
+  onCellDoubleClick: (projectId: string, technicianId: string) => void;
+  onSupervisorAssigned?: () => void;
+};
+
+const GridCell = React.memo(function GridCell({
+  project,
+  tech,
+  assign,
+  disabled,
+  supervisors,
+  currentDate,
+  onCellClick,
+  onCellDoubleClick,
+  onSupervisorAssigned,
+}: GridCellProps) {
+  const isSel = !!assign?.isSelected;
+  const isLead = !!assign?.isProjectLeader;
+
+  let cellBg = "";
+  let textColor = "text-gray-900";
+  let disp = "";
+  if (isLead) {
+    cellBg = "bg-red-500";
+    textColor = "text-white";
+    disp = assign?.inisial || tech.inisial;
+  } else if (isSel) {
+    cellBg = "bg-blue-200";
+    textColor = "text-blue-900";
+    disp = assign?.inisial || tech.inisial;
+  }
+
+  const title = disabled
+    ? project.projectStatus === "pending"
+      ? "Proyek sedang pending"
+      : "Proyek telah selesai"
+    : isLead
+    ? `${tech.name} (Project Leader) — Klik kanan untuk pilih Supervisor`
+    : isSel
+    ? `${tech.name} (Assigned) - Single click: toggle attendance | Double click: set as leader`
+    : `Single click: assign ${tech.name} | Double click: set as project leader`;
+
+  const coreTd = (
+    <td
+      className={`px-1 py-1 text-center border-r border-gray-200 ${
+        disabled
+          ? "cursor-not-allowed opacity-60"
+          : "cursor-pointer hover:bg-blue-100"
+      } transition-colors ${cellBg}`}
+      onClick={() => !disabled && onCellClick(project.id, tech.id)}
+      onDoubleClick={() => !disabled && onCellDoubleClick(project.id, tech.id)}
+      title={title}
+    >
+      <div
+        className={`h-4 w-4 mx-auto flex items-center justify-center rounded font-bold text-xs ${textColor}`}
+      >
+        {disp}
+      </div>
+    </td>
+  );
+
+  if (!isLead) return coreTd;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{coreTd}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem disabled>
+          Set Supervisor • {project.name}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {supervisors.length === 0 && (
+          <ContextMenuItem disabled>Tidak ada data supervisor</ContextMenuItem>
+        )}
+        {supervisors.map((s) => (
+          <ContextMenuItem
+            key={s.id}
+            onClick={async () => {
+              try {
+                await setSupervisor(currentDate, project.id, s.id);
+                onSupervisorAssigned?.();
+              } catch (e: any) {
+                alert(e?.message || "Gagal set supervisor");
+              }
+            }}
+          >
+            {s.nickname} {s.role ? `— ${s.role}` : ""}
+          </ContextMenuItem>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+});
+
+/* 1 row project — memo agar tidak rerender kecuali props row berubah */
+const ProjectRow = React.memo(function ProjectRow({
+  idx,
+  project,
+  rowBg,
+  sigmaCurrent,
+  sigmaTarget,
+  progress,
+  manDisp,
+  manSt,
+  statusDisp,
+  isLockedRow,
+  techs,
+  supervisors,
+  getCellAssignment,
+  onCellClick,
+  onCellDoubleClick,
+  onStatusDoubleClick,
+  onProjectNameRightClick,
+  currentDate,
+  onSupervisorAssigned, // ⬅️ TAMBAH PROP
+}: {
+  idx: number;
+  project: UIProject;
+  rowBg: string;
+  sigmaCurrent: number;
+  sigmaTarget: number;
+  progress: ReturnType<typeof getProgressStatus>;
+  manDisp: ReturnType<typeof getManDaysDisplay>;
+  manSt: ReturnType<typeof getManDaysStatus>;
+  statusDisp: ReturnType<typeof getProjectStatusDisplay>;
+  isLockedRow: boolean;
+  techs: UITechnician[];
+  supervisors: Props["supervisors"];
+  getCellAssignment: Props["getCellAssignment"];
+  onCellClick: Props["onCellClick"];
+  onCellDoubleClick: Props["onCellDoubleClick"];
+  onStatusDoubleClick: Props["onStatusDoubleClick"];
+  onProjectNameRightClick: Props["onProjectNameRightClick"];
+  currentDate: string;
+  onSupervisorAssigned?: () => void; // ⬅️ TYPE
+}) {
+  const sigmaOver = sigmaCurrent > (sigmaTarget ?? 0);
+
+  return (
+    <tr className={rowBg}>
+      <td className={`px-1 py-1 border-r border-gray-200 font-medium ${rowBg}`}>
+        <div
+          className="text-xs font-semibold cursor-pointer hover:bg-blue-50 px-1 py-1 rounded transition-colors"
+          onContextMenu={(e) => onProjectNameRightClick(e, project)}
+          title={
+            project.jobId
+              ? "Klik kanan untuk shortcut Generate Laporan (DOCX)"
+              : "Job ID belum tersedia"
+          }
+        >
+          {project.name}
+        </div>
+        <div className="text-[9px] text-gray-500 leading-tight">
+          {project.jobId}
+        </div>
+      </td>
+
+      <td
+        className={`px-2 py-1 text-center border-r border-gray-200 font-semibold ${rowBg}`}
+      >
+        <div
+          className={`text-xs font-bold ${
+            sigmaOver ? "text-red-600 font-semibold" : "text-gray-900"
+          }`}
+        >
+          {sigmaCurrent}/{sigmaTarget ?? 0}
+        </div>
+      </td>
+
+      <td className={`px-2 py-1 text-center border-r border-gray-200 ${rowBg}`}>
+        <div
+          className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${manSt.bgColor} ${manSt.textColor}`}
+        >
+          <span>{manDisp.display}</span>
+        </div>
+      </td>
+
+      <td className={`px-2 py-1 text-center border-r border-gray-200 ${rowBg}`}>
+        <div
+          className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${progress.bgColor} ${progress.textColor}`}
+        >
+          <span>{progress.display}</span>
+        </div>
+      </td>
+
+      <td
+        className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBg}`}
+      >
+        {project.jamDatang}
+      </td>
+      <td
+        className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBg}`}
+      >
+        {project.jamPulang}
+      </td>
+
+      {techs.map((t) => (
+        <GridCell
+          key={`${project.id}-${t.id}`}
+          project={project}
+          tech={t}
+          assign={getCellAssignment(project.id, t.id)}
+          disabled={isLockedRow}
+          supervisors={supervisors}
+          currentDate={currentDate}
+          onCellClick={onCellClick}
+          onCellDoubleClick={onCellDoubleClick}
+          onSupervisorAssigned={onSupervisorAssigned} // ⬅️ FORWARD KE GRIDCELL
+        />
+      ))}
+
+      <td className={`px-1 py-1 text-center border-r border-gray-200 ${rowBg}`}>
+        <div
+          className={`px-2 py-1 rounded text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${statusDisp.bgColor} ${statusDisp.textColor}`}
+          title={
+            project.projectStatus === "pending" && project.pendingReason
+              ? project.pendingReason
+              : statusDisp.label
+          }
+          onDoubleClick={() => onStatusDoubleClick(project)}
+        >
+          {project.projectStatus === "pending" && project.pendingReason
+            ? truncateText(project.pendingReason)
+            : statusDisp.label}
+        </div>
+      </td>
+      <td className={`px-1 py-1 text-center border-r border-gray-200 ${rowBg}`}>
+        <div className="px-2 py-1 text-xs font-medium text-gray-700">
+          {project.sales ? truncateText(project.sales, 25) : "-"}
+        </div>
+      </td>
+    </tr>
+  );
+});
+
+/* ===================== Main table ===================== */
 export default function ProjectTable({
   tableRef,
   techs,
@@ -90,10 +370,49 @@ export default function ProjectTable({
   supervisors,
   onSupervisorAssigned,
 }: Props) {
-  const totalAssignments = assignments.filter(
-    (a) => a.isSelected || a.isProjectLeader
-  ).length;
+  /* ---- Stabilize big lists ---- */
+  const techsDeferred = React.useDeferredValue(techs);
+  const projectsDeferred = React.useDeferredValue(projects);
 
+  /* ---- Stable handlers (avoid new refs) ---- */
+  const handleCellClick = React.useCallback(onCellClick, [onCellClick]);
+  const handleCellDoubleClick = React.useCallback(onCellDoubleClick, [
+    onCellDoubleClick,
+  ]);
+  const handleStatusDoubleClick = React.useCallback(onStatusDoubleClick, [
+    onStatusDoubleClick,
+  ]);
+  const handleProjectNameRightClick = React.useCallback(
+    onProjectNameRightClick,
+    [onProjectNameRightClick]
+  );
+
+  /* ---- Precompute maps to O(1) lookup ---- */
+  const assignmentMap = React.useMemo(() => {
+    const m = new Map<string, CellAssignment>();
+    for (const a of assignments) {
+      m.set(`${a.projectId}::${a.technicianId}`, a);
+    }
+    return m;
+  }, [assignments]);
+
+  const fastGetCellAssignment = React.useCallback(
+    (pid: string, tid: string) => assignmentMap.get(`${pid}::${tid}`),
+    [assignmentMap]
+  );
+
+  const totalAssignments = React.useMemo(
+    () => assignments.filter((a) => a.isSelected || a.isProjectLeader).length,
+    [assignments]
+  );
+
+  /* ---- Cache frequently used per-render ---- */
+  const idleTechs = React.useMemo(
+    () => getIdleTechnicians(),
+    [getIdleTechnicians]
+  );
+
+  /* ---- Table ---- */
   return (
     <div className="bg-white rounded-lg shadow-sm overflow-hidden">
       <div className="overflow-x-auto">
@@ -123,33 +442,15 @@ export default function ProjectTable({
               <th className="px-2 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-14">
                 Pulang
               </th>
-              {techs.map((t) => (
-                <th
+
+              {techsDeferred.map((t) => (
+                <TechHeaderCell
                   key={t.id}
-                  className="px-1 py-4 text-center font-semibold text-gray-900 border-r border-gray-300 w-6 sticky top-0 bg-gray-100 h-32"
-                  title={t.name}
-                >
-                  <div className="flex flex-col items-center justify-end h-full">
-                    <div
-                      className="text-xs font-bold whitespace-nowrap mb-2"
-                      style={{
-                        writingMode: "vertical-lr",
-                        textOrientation: "mixed",
-                        transform: "rotate(180deg)",
-                        height: "70px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      {t.name}
-                    </div>
-                    <div className="text-xs font-bold bg-gray-200 rounded px-1 min-w-[18px] text-center">
-                      {getTechnicianTrackNumber(t.id)}
-                    </div>
-                  </div>
-                </th>
+                  tech={t}
+                  trackNum={getTechnicianTrackNumber(t.id)}
+                />
               ))}
+
               <th className="px-1 py-2 text-center font-semibold text-gray-900 border-r border-gray-300 w-20">
                 Status
               </th>
@@ -160,12 +461,11 @@ export default function ProjectTable({
           </thead>
 
           <tbody>
-            {projects.map((project, idx) => {
+            {projectsDeferred.map((project, idx) => {
               const rowBg = idx % 2 === 0 ? "bg-white" : "bg-gray-50";
               const progress = getProgressStatus(project);
               const sigmaCurrent = getProjectAssignmentCount(project.id);
               const sigmaTarget = project.sigmaTeknisi ?? 0;
-              const sigmaOver = sigmaCurrent > sigmaTarget;
               const manDisp = getManDaysDisplay(project);
               const manSt = getManDaysStatus(project);
               const statusDisp = getProjectStatusDisplay(project);
@@ -173,203 +473,36 @@ export default function ProjectTable({
                 project.projectStatus === "pending" ||
                 project.projectStatus === "awaiting_bast" ||
                 project.status === "completed";
-              const rowKey = `${project.id ?? "noid"}-${
-                project.jobId ?? "nojob"
-              }-${idx}`;
 
               return (
-                <tr key={rowKey} className={rowBg}>
-                  <td
-                    className={`px-1 py-1 border-r border-gray-200 font-medium ${rowBg}`}
-                  >
-                    <div
-                      className="text-xs font-semibold cursor-pointer hover:bg-blue-50 px-1 py-1 rounded transition-colors"
-                      onContextMenu={(e) => onProjectNameRightClick(e, project)}
-                      title={
-                        project.jobId
-                          ? "Klik kanan untuk shortcut Generate Laporan (DOCX)"
-                          : "Job ID belum tersedia"
-                      }
-                    >
-                      {project.name}
-                    </div>
-                    <div className="text-[9px] text-gray-500 leading-tight">
-                      {project.jobId}
-                    </div>
-                  </td>
-
-                  <td
-                    className={`px-2 py-1 text-center border-r border-gray-200 font-semibold ${rowBg}`}
-                  >
-                    <div
-                      className={`text-xs font-bold ${
-                        sigmaOver
-                          ? "text-red-600 font-semibold"
-                          : "text-gray-900"
-                      }`}
-                    >
-                      {sigmaCurrent}/{sigmaTarget}
-                    </div>
-                  </td>
-
-                  <td
-                    className={`px-2 py-1 text-center border-r border-gray-200 ${rowBg}`}
-                  >
-                    <div
-                      className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${manSt.bgColor} ${manSt.textColor}`}
-                    >
-                      <span>{manDisp.display}</span>
-                    </div>
-                  </td>
-
-                  <td
-                    className={`px-2 py-1 text-center border-r border-gray-200 ${rowBg}`}
-                  >
-                    <div
-                      className={`inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium ${progress.bgColor} ${progress.textColor}`}
-                    >
-                      <span>{progress.display}</span>
-                    </div>
-                  </td>
-
-                  <td
-                    className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBg}`}
-                  >
-                    {project.jamDatang}
-                  </td>
-                  <td
-                    className={`px-2 py-1 text-center border-r border-gray-200 text-xs ${rowBg}`}
-                  >
-                    {project.jamPulang}
-                  </td>
-
-                  {techs.map((t) => {
-                    const a = getCellAssignment(project.id, t.id);
-                    const isSel = a?.isSelected === true;
-                    const isLead = a?.isProjectLeader === true;
-
-                    let cellBg = rowBg;
-                    let textColor = "text-gray-900";
-                    let disp = "";
-                    if (isLead) {
-                      cellBg = "bg-red-500";
-                      textColor = "text-white";
-                      disp = a?.inisial || t.inisial;
-                    } else if (isSel) {
-                      cellBg = "bg-blue-200";
-                      textColor = "text-blue-900";
-                      disp = a?.inisial || t.inisial;
-                    }
-
-                    const disabledCell = isLockedRow;
-
-                    const coreTd = (
-                      <td
-                        key={`${project.id}-${t.id}`}
-                        className={`px-1 py-1 text-center border-r border-gray-200 ${
-                          disabledCell
-                            ? "cursor-not-allowed opacity-60"
-                            : "cursor-pointer hover:bg-blue-100"
-                        } transition-colors ${cellBg}`}
-                        onClick={() =>
-                          !disabledCell && onCellClick(project.id, t.id)
-                        }
-                        onDoubleClick={() =>
-                          !disabledCell && onCellDoubleClick(project.id, t.id)
-                        }
-                        title={
-                          disabledCell
-                            ? project.projectStatus === "pending"
-                              ? "Proyek sedang pending"
-                              : "Proyek telah selesai"
-                            : isLead
-                            ? `${t.name} (Project Leader) — Klik kanan untuk pilih Supervisor`
-                            : isSel
-                            ? `${t.name} (Assigned) - Single click: toggle attendance | Double click: set as leader`
-                            : `Single click: assign ${t.name} | Double click: set as project leader`
-                        }
-                      >
-                        <div
-                          className={`h-4 w-4 mx-auto flex items-center justify-center rounded font-bold text-xs ${textColor}`}
-                        >
-                          {disp}
-                        </div>
-                      </td>
-                    );
-
-                    if (!isLead) return coreTd;
-
-                    // Jika LEADER → bungkus dengan ContextMenu untuk pilih Supervisor
-                    return (
-                      <ContextMenu key={`${project.id}-${t.id}`}>
-                        <ContextMenuTrigger asChild>
-                          {coreTd}
-                        </ContextMenuTrigger>
-                        <ContextMenuContent>
-                          <ContextMenuItem disabled>
-                            Set Supervisor • {project.name}
-                          </ContextMenuItem>
-                          <ContextMenuSeparator />
-                          {supervisors.length === 0 && (
-                            <ContextMenuItem disabled>
-                              Tidak ada data supervisor
-                            </ContextMenuItem>
-                          )}
-                          {supervisors.map((s) => (
-                            <ContextMenuItem
-                              key={s.id}
-                              onClick={async () => {
-                                try {
-                                  await setSupervisor(
-                                    currentDate,
-                                    project.id,
-                                    s.id
-                                  );
-                                  onSupervisorAssigned?.();
-                                } catch (e: any) {
-                                  alert(e?.message || "Gagal set supervisor");
-                                }
-                              }}
-                            >
-                              {s.nickname} {s.role ? `— ${s.role}` : ""}
-                            </ContextMenuItem>
-                          ))}
-                        </ContextMenuContent>
-                      </ContextMenu>
-                    );
-                  })}
-
-                  <td
-                    className={`px-1 py-1 text-center border-r border-gray-200 ${rowBg}`}
-                  >
-                    <div
-                      className={`px-2 py-1 rounded text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity ${statusDisp.bgColor} ${statusDisp.textColor}`}
-                      title={
-                        project.projectStatus === "pending" &&
-                        project.pendingReason
-                          ? project.pendingReason
-                          : statusDisp.label
-                      }
-                      onDoubleClick={() => onStatusDoubleClick(project)}
-                    >
-                      {project.projectStatus === "pending" &&
-                      project.pendingReason
-                        ? truncateText(project.pendingReason)
-                        : statusDisp.label}
-                    </div>
-                  </td>
-                  <td
-                    className={`px-1 py-1 text-center border-r border-gray-200 ${rowBg}`}
-                  >
-                    <div className="px-2 py-1 text-xs font-medium text-gray-700">
-                      {project.sales ? truncateText(project.sales, 25) : "-"}
-                    </div>
-                  </td>
-                </tr>
+                <ProjectRow
+                  key={`${project.id ?? "noid"}-${
+                    project.jobId ?? "nojob"
+                  }-${idx}`}
+                  idx={idx}
+                  project={project}
+                  rowBg={rowBg}
+                  sigmaCurrent={sigmaCurrent}
+                  sigmaTarget={sigmaTarget}
+                  progress={progress}
+                  manDisp={manDisp}
+                  manSt={manSt}
+                  statusDisp={statusDisp}
+                  isLockedRow={isLockedRow}
+                  techs={techsDeferred}
+                  supervisors={supervisors}
+                  getCellAssignment={fastGetCellAssignment}
+                  onCellClick={handleCellClick}
+                  onCellDoubleClick={handleCellDoubleClick}
+                  onStatusDoubleClick={handleStatusDoubleClick}
+                  onProjectNameRightClick={handleProjectNameRightClick}
+                  currentDate={currentDate}
+                  onSupervisorAssigned={onSupervisorAssigned} // ⬅️ PASS KE ROW
+                />
               );
             })}
 
-            {getIdleTechnicians().length > 0 && (
+            {idleTechs.length > 0 && (
               <tr className="bg-blue-50 border-t-2 border-blue-200">
                 <td className="px-1 py-1 border-r border-gray-200 font-medium bg-blue-50">
                   <div className="text-xs font-semibold">Di Kantor</div>
@@ -378,9 +511,7 @@ export default function ProjectTable({
                   </div>
                 </td>
                 <td className="px-2 py-1 text-center border-r border-gray-200 font-semibold bg-blue-50">
-                  <div className="text-xs font-bold">
-                    {getIdleTechnicians().length}
-                  </div>
+                  <div className="text-xs font-bold">{idleTechs.length}</div>
                 </td>
                 <td className="px-2 py-1 text-center border-r border-gray-200 bg-blue-50">
                   <div className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
@@ -399,7 +530,7 @@ export default function ProjectTable({
                   -
                 </td>
 
-                {techs.map((t) => {
+                {techsDeferred.map((t) => {
                   const st = getTechnicianStatus(t.id);
                   const isIdle = st.status === "idle";
                   return (
