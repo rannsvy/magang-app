@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getIdList } from "@/lib/pogClient";
 
-// Tetap dynamic: in-memory cache ini tidak bergantung pada HTTP cache
 export const dynamic = "force-dynamic";
 
 /* ===================== Types ===================== */
@@ -14,19 +13,13 @@ type Item = {
 };
 
 /* ================== In-memory cache ================== */
-type CacheVal = {
-  ts: number;
-  items: Item[]; // sudah di-sort
-  normKeys: string[]; // normalized "id label type" utk search cepat
-};
+type CacheVal = { ts: number; items: Item[]; normKeys: string[] };
 type CacheMap = Map<string, CacheVal>;
-
 function getCache(): CacheMap {
   const g = globalThis as any;
   if (!g.__POG_IDS_CACHE) g.__POG_IDS_CACHE = new Map<string, CacheVal>();
   return g.__POG_IDS_CACHE as CacheMap;
 }
-
 const CACHE_TTL_MS = 60_000;
 
 /* ===================== Utils ===================== */
@@ -36,12 +29,10 @@ function norm(s: string) {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "");
 }
-
 function naturalNumFromId(id: string) {
   const n = Number(id.replace(/\D+/g, ""));
   return Number.isFinite(n) ? n : NaN;
 }
-
 function sortItems(a: Item, b: Item) {
   if (a.date && b.date) {
     const d = b.date.localeCompare(a.date);
@@ -55,16 +46,32 @@ function sortItems(a: Item, b: Item) {
 
   return b.id.localeCompare(a.id);
 }
-
 function makeCombinedKey(it: Item) {
   return norm(`${it.id} ${it.label ?? ""} ${it.type}`);
 }
 
-/* ===== Narrow helper utk type (tanpa 'as const' di ternary) ===== */
-function parseType(param: unknown): ExternalType {
-  const t = typeof param === "string" ? param.toLowerCase() : "";
-  // Ternary yang mengembalikan literal — TS menginfer union "npkt" | "paket"
-  return t === "npkt" ? "npkt" : "paket";
+/* ====== WIB date helpers (default: hari ini s/d 1 tahun ke belakang) ====== */
+const TZ = "Asia/Jakarta";
+const DAY_MS = 86_400_000;
+function ymdInTZ(date: Date, tz = TZ) {
+  const y = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+  }).format(date);
+  const m = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    month: "2-digit",
+  }).format(date);
+  const d = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    day: "2-digit",
+  }).format(date);
+  return `${y}-${m}-${d}`;
+}
+function defaultOneYearRange() {
+  const now = new Date();
+  const start = new Date(now.getTime() - 365 * DAY_MS);
+  return { tglAwal: ymdInTZ(start), tglAkhir: ymdInTZ(now) };
 }
 
 /* ============== Build / Read cache index ============== */
@@ -136,12 +143,8 @@ function shapeFields<K extends FieldKey>(
   fields?: K[]
 ): Item | Pick<Item, K> {
   if (!fields || fields.length === 0) return row;
-
   const shaped = {} as Pick<Item, K>;
-  for (const f of fields) {
-    // row[f] bertipe Item[K], konsisten dengan shaped[f]
-    shaped[f] = row[f] as Item[K];
-  }
+  for (const f of fields) shaped[f] = row[f] as Item[K];
   return shaped;
 }
 
@@ -150,13 +153,19 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
 
-    // ✅ Narrow menjadi literal union, bukan string
+    // tipe
     const typeParam = searchParams.get("type");
     const type: ExternalType =
       typeParam && typeParam.toLowerCase() === "npkt" ? "npkt" : "paket";
 
-    const tglAwal = searchParams.get("tglAwal") ?? "2025-03-01";
-    const tglAkhir = searchParams.get("tglAkhir") ?? "2025-09-01";
+    // default WIB: today .. today-365d
+    const def = defaultOneYearRange();
+    let tglAwal = searchParams.get("tglAwal") ?? def.tglAwal;
+    let tglAkhir = searchParams.get("tglAkhir") ?? def.tglAkhir;
+
+    // safety: kalau user kebalik, tukar
+    if (tglAwal > tglAkhir) [tglAwal, tglAkhir] = [tglAkhir, tglAwal];
+
     const q = searchParams.get("q") ?? "";
 
     const rawLimit = Number(searchParams.get("limit") ?? "");

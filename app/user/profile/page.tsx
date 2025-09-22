@@ -14,10 +14,17 @@ export default function TechnicianProfile() {
     router.push("/user/reset-password");
   };
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.replace("/auth/login");
-  };
+  async function handleLogout() {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
+    const next = encodeURIComponent("/auth/login");
+    window.location.href = `/auth/login`;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
