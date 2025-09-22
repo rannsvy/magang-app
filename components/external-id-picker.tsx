@@ -5,13 +5,11 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 
 type ExternalType = "paket" | "npkt";
-
 export type ExternalSelected = {
   type: ExternalType;
   id: string;
   label: string;
 } | null;
-
 type Item = {
   id: string;
   label: string;
@@ -29,7 +27,6 @@ async function fetchIdsOnce(
   signal?: AbortSignal
 ): Promise<Item[]> {
   const now = Date.now();
-
   const cached = clientCache.get(url);
   if (cached && now - cached.ts < CLIENT_TTL_MS) return cached.items;
 
@@ -49,11 +46,34 @@ async function fetchIdsOnce(
   return p;
 }
 
+/* ================= WIB date helpers ================= */
+const TZ = "Asia/Jakarta";
+const DAY_MS = 86_400_000;
+function ymdInTZ(date: Date, tz = TZ) {
+  const y = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+  }).format(date);
+  const m = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    month: "2-digit",
+  }).format(date);
+  const d = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    day: "2-digit",
+  }).format(date);
+  return `${y}-${m}-${d}`;
+}
+function oneYearRangeWIB() {
+  const now = new Date();
+  const start = new Date(now.getTime() - 365 * DAY_MS);
+  return { tglAwal: ymdInTZ(start), tglAkhir: ymdInTZ(now) };
+}
+
 /* ================= Utils ================= */
 function clsx(...s: Array<string | false | null | undefined>) {
   return s.filter(Boolean).join(" ");
 }
-
 function buildUrl(params: {
   type: ExternalType;
   tglAwal: string;
@@ -61,15 +81,15 @@ function buildUrl(params: {
   q: string;
 }) {
   const { type, tglAwal, tglAkhir, q } = params;
-  const u =
+  return (
     `/api/pog/ids` +
     `?type=${type}` +
     `&tglAwal=${encodeURIComponent(tglAwal)}` +
     `&tglAkhir=${encodeURIComponent(tglAkhir)}` +
     `&limit=50` +
     (q ? `&q=${encodeURIComponent(q)}` : "") +
-    `&fields=id,label,date,type`;
-  return u;
+    `&fields=id,label,date,type`
+  );
 }
 
 /* ================= Komponen ================= */
@@ -84,7 +104,6 @@ export function ExternalIdPicker(props: {
     props.defaultType ?? "paket"
   );
   const [q, setQ] = React.useState("");
-  // pakai deferred supaya render tidak tersendat saat user mengetik cepat
   const qDeferred = React.useDeferredValue(q);
 
   const [items, setItems] = React.useState<Item[]>([]);
@@ -94,61 +113,51 @@ export function ExternalIdPicker(props: {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   const inputRef = React.useRef<HTMLInputElement | null>(null);
   const didInitialFetch = React.useRef(false);
-  const reqIdRef = React.useRef(0); // guard untuk respon terlambat
+  const reqIdRef = React.useRef(0);
 
-  const tglAwal = props.tglAwal ?? "2025-03-01";
-  const tglAkhir = props.tglAkhir ?? "2025-09-01";
+  // Default range WIB: today .. today-365d, bisa di-override via props
+  const defaultRange = React.useMemo(oneYearRangeWIB, []);
+  const tglAwal = props.tglAwal ?? defaultRange.tglAwal;
+  const tglAkhir = props.tglAkhir ?? defaultRange.tglAkhir;
+
   const chosen = props.value;
 
   /* ===== Tutup dropdown saat klik di luar ===== */
   React.useEffect(() => {
     function onDocMouseDown(e: MouseEvent) {
       if (!rootRef.current) return;
-      if (!rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      if (!rootRef.current.contains(e.target as Node)) setOpen(false);
     }
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, []);
 
-  /* ===== Fetch data tanpa flicker =====
-     - Tidak pernah setItems([]) saat loading
-     - Render tetap pakai items lama, update mulus saat data baru tiba
-     - Hanya apply respon yang paling baru (reqId guard)
-  */
+  /* ===== Fetch data tanpa flicker ===== */
   React.useEffect(() => {
     if (!open) return;
     if (document.activeElement !== inputRef.current) return;
 
     const ctrl = new AbortController();
-    const wait = qDeferred ? 150 : 0; // debounce ringan saat ada query
+    const wait = qDeferred ? 150 : 0;
     const thisReqId = ++reqIdRef.current;
 
     const t = setTimeout(async () => {
       try {
         if (!qDeferred && didInitialFetch.current) return;
 
-        const url = buildUrl({
-          type,
-          tglAwal,
-          tglAkhir,
-          q: qDeferred,
-        });
+        const url = buildUrl({ type, tglAwal, tglAkhir, q: qDeferred });
 
         setLoading(true);
         const list = await fetchIdsOnce(url, ctrl.signal);
-        // hanya set kalau ini request terbaru
         if (thisReqId === reqIdRef.current && !ctrl.signal.aborted) {
           setItems(list);
           didInitialFetch.current = true;
         }
       } catch {
-        // diam—tetap render items lama (tidak flicker)
+        // silent; tetap render items lama
       } finally {
-        if (thisReqId === reqIdRef.current && !ctrl.signal.aborted) {
+        if (thisReqId === reqIdRef.current && !ctrl.signal.aborted)
           setLoading(false);
-        }
       }
     }, wait);
 
@@ -172,7 +181,6 @@ export function ExternalIdPicker(props: {
               setType("paket");
               setOpen(false);
               didInitialFetch.current = false;
-              // reset reqId supaya respon lama tidak meng-overwrite
               reqIdRef.current++;
             }}
           >
@@ -211,10 +219,7 @@ export function ExternalIdPicker(props: {
                 (e.currentTarget as HTMLInputElement).blur();
               }
             }}
-            onBlur={() => {
-              // kecilkan jeda agar klik item tetap masuk
-              setTimeout(() => setOpen(false), 120);
-            }}
+            onBlur={() => setTimeout(() => setOpen(false), 120)}
             placeholder={
               type === "paket" ? "Cari ID Paket..." : "Cari ID NPKT..."
             }
@@ -231,7 +236,6 @@ export function ExternalIdPicker(props: {
               className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow"
               role="listbox"
             >
-              {/* Progress bar tipis — tidak mengubah layout konten */}
               <div
                 className={clsx(
                   "h-0.5 w-full origin-left scale-x-0 transition-transform",
@@ -239,15 +243,12 @@ export function ExternalIdPicker(props: {
                   "bg-primary/70"
                 )}
               />
-
               <div className="max-h-64 overflow-auto">
-                {/* Tidak ada 'Memuat…' besar untuk mencegah flicker;
-                    tetap render items lama. */}
                 {items.map((it) => (
                   <button
                     key={`${it.type}-${it.id}`}
                     type="button"
-                    onMouseDown={(e) => e.preventDefault()} // cegah blur sebelum onClick
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
                       props.onChange({
                         type: it.type,
@@ -267,7 +268,6 @@ export function ExternalIdPicker(props: {
                     </div>
                   </button>
                 ))}
-
                 {!loading && items.length === 0 && (
                   <div className="px-3 py-2 text-xs text-muted-foreground">
                     Tidak ada data
@@ -288,7 +288,7 @@ export function ExternalIdPicker(props: {
             props.onChange(null);
             setOpen(false);
             didInitialFetch.current = false;
-            reqIdRef.current++; // batalkan respon lama
+            reqIdRef.current++;
           }}
         >
           Reset

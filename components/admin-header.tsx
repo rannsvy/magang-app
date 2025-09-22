@@ -27,10 +27,19 @@ export function AdminHeader({
 }: AdminHeaderProps) {
   const router = useRouter();
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.replace("/auth/login");
-  };
+  async function handleLogout() {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
+
+    const next = encodeURIComponent("/auth/login");
+    window.location.href = `/auth/login`;
+  }
 
   const handleBack = () => {
     router.push(backUrl);
