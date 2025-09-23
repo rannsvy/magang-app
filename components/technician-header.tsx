@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabaseBrowser";
 import {
@@ -16,7 +17,10 @@ import {
   UserCircle,
   AlertCircle,
   AlertTriangle,
+  Trophy,
 } from "lucide-react";
+
+const ALLOWED = new Set(["supervisor", "gm", "manager"]);
 
 interface TechnicianHeaderProps {
   title: string;
@@ -36,6 +40,24 @@ export function TechnicianHeader({
   onFilterChange,
 }: TechnicianHeaderProps) {
   const router = useRouter();
+  const [role, setRole] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .maybeSingle();
+        if (!error) setRole((data?.role || "").toLowerCase());
+      } catch {}
+    })();
+  }, []);
 
   async function handleLogout() {
     try {
@@ -45,25 +67,14 @@ export function TechnicianHeader({
       method: "POST",
       credentials: "include",
     }).catch(() => {});
-    const next = encodeURIComponent("/auth/login");
     window.location.href = `/auth/login`;
   }
 
-  const handleBack = () => {
-    router.push(backUrl);
-  };
-
-  const handleProfileClick = () => {
-    router.push("/user/profile");
-  };
-
-  const handleComplaintClick = () => {
-    router.push("/user/complain");
-  };
-
-  const handleDamageComplainClick = () => {
-    router.push("/user/damageComplain");
-  };
+  const handleBack = () => router.push(backUrl);
+  const handleProfileClick = () => router.push("/user/profile");
+  const handleComplaintClick = () => router.push("/user/complain");
+  const handleDamageComplainClick = () => router.push("/user/damageComplain");
+  const canSeeLeaderboard = role ? ALLOWED.has(role) : false;
 
   return (
     <header className="bg-white shadow-sm border-b">
@@ -118,11 +129,20 @@ export function TechnicianHeader({
                 <Menu className="h-6 w-6" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuItem onClick={handleProfileClick}>
                 <UserCircle className="h-4 w-4 mr-2" />
                 Profil
               </DropdownMenuItem>
+
+              {/* Hanya supervisor/gm/manager */}
+              {canSeeLeaderboard && (
+                <DropdownMenuItem onClick={() => router.push("/leaderboard")}>
+                  <Trophy className="h-4 w-4 mr-2 text-yellow-500" />
+                  Leaderboard Poin
+                </DropdownMenuItem>
+              )}
+
               <DropdownMenuItem onClick={handleDamageComplainClick}>
                 <AlertTriangle className="h-4 w-4 mr-2" />
                 Lapor Kerusakan

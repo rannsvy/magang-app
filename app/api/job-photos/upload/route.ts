@@ -1,11 +1,10 @@
 // app/api/job-photos/upload/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin"; // WAJIB: service role key (server)
-import { supabaseServer } from "@/lib/supabaseServers"; // untuk auth user & RBAC
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseServer } from "@/lib/supabaseServer";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
-
 const BUCKET = "job-photos";
 
 async function ensureBucketExists() {
@@ -20,30 +19,30 @@ async function ensureBucketExists() {
   }
 }
 
-// Guard: hanya teknisi yang boleh upload
-async function assertTechnician() {
+type GuardOK = { ok: true; uid: string; technicianId: string };
+type GuardNG = { ok: false; res: NextResponse };
+
+async function assertTechnician(): Promise<GuardOK | GuardNG> {
   const supabase = supabaseServer();
 
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
     };
   }
 
   const uid = auth.user.id;
-
-  // Cek profiles: ada technician_id => teknisi
   const { data: profile, error: profErr } = await supabase
     .from("profiles")
-    .select("technician_id, email")
+    .select("technician_id")
     .eq("id", uid)
     .maybeSingle();
 
   if (profErr) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json(
         { error: profErr.message || "Auth failed" },
         { status: 500 }
@@ -51,11 +50,10 @@ async function assertTechnician() {
     };
   }
 
-  const isTechnician = !!profile?.technician_id;
-
-  if (!isTechnician) {
+  const technicianId = profile?.technician_id as string | null;
+  if (!technicianId) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json(
         { error: "Forbidden: hanya teknisi yang dapat mengunggah foto." },
         { status: 403 }
@@ -63,14 +61,15 @@ async function assertTechnician() {
     };
   }
 
-  return { ok: true as const };
+  return { ok: true, uid, technicianId };
 }
 
 export async function POST(req: Request) {
   try {
-    // === Guard peran lebih dulu (sebelum baca multipart besar) ===
+    // === Guard peran (lebih awal) ===
     const guard = await assertTechnician();
     if (!guard.ok) return guard.res;
+    const { uid, technicianId } = guard;
 
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("multipart/form-data")) {
@@ -93,7 +92,7 @@ export async function POST(req: Request) {
     const meterStr = form.get("meter")?.toString();
     const serialNumber = form.get("serialNumber")?.toString();
 
-    // Optional token (kalau dikirim oleh client)
+    // Optional token (untuk de-dupe event)
     const tokenRaw = form.get("token")?.toString();
     const tokenNum = tokenRaw ? Number(tokenRaw) : null;
 
@@ -106,7 +105,7 @@ export async function POST(req: Request) {
 
     await ensureBucketExists();
 
-    // Path penyimpanan
+    // Path file
     const ts = Date.now();
     const basePath = `${encodeURIComponent(jobId)}/${encodeURIComponent(
       categoryId
@@ -127,7 +126,6 @@ export async function POST(req: Request) {
       .from(BUCKET)
       .upload(fullPath, photoBuf, { contentType: fullMime, upsert: true });
     if (up1.error) throw up1.error;
-
     const up2 = await supabaseAdmin.storage
       .from(BUCKET)
       .upload(thumbPath, thumbBuf, { contentType: thumbMime, upsert: true });
@@ -140,12 +138,9 @@ export async function POST(req: Request) {
       .from(BUCKET)
       .getPublicUrl(thumbPath);
 
-    // Siapkan metadata
-    const meterNum =
-      meterStr != null && meterStr !== "" ? Number(meterStr) : null;
-
-    // 1) Simpan ke tabel RIWAYAT (job_photo_entries) — tidak wajib ada (fallback jika tidak ada)
+    // Simpan entry riwayat (best-effort)
     const entryId = crypto.randomUUID();
+    let entryInserted = false;
     try {
       const { error: histErr } = await supabaseAdmin
         .from("job_photo_entries")
@@ -156,17 +151,15 @@ export async function POST(req: Request) {
           url: fullPub.publicUrl,
           thumb_url: thumbPub.publicUrl,
           created_at: new Date().toISOString(),
-          sharpness: null, // bisa dihitung di server jika ingin
+          sharpness: null,
           token: tokenNum,
         });
-      if (histErr) {
-        // Tidak fatal—lanjutkan ke snapshot
-      }
+      if (!histErr) entryInserted = true;
     } catch {
-      // tabel belum ada / RLS — abaikan demi kompatibilitas
+      /* ignore */
     }
 
-    // 2) Upsert snapshot terbaru ke job_photos
+    // Upsert snapshot terbaru ke job_photos
     const payload: any = {
       job_id: jobId,
       category_id: categoryId,
@@ -175,12 +168,13 @@ export async function POST(req: Request) {
       updated_at: new Date().toISOString(),
     };
     if (serialNumber) payload.serial_number = serialNumber;
+    const meterNum =
+      meterStr != null && meterStr !== "" ? Number(meterStr) : null;
     if (Number.isFinite(meterNum)) payload.cable_meter = meterNum;
 
-    // Jika skema mendukung selected_photo_id, set ke entryId yang baru
     let upsertOk = false;
     try {
-      payload.selected_photo_id = entryId;
+      payload.selected_photo_id = entryId; // jika tabel riwayat ada
       const { error: upErr1 } = await supabaseAdmin
         .from("job_photos")
         .upsert(payload, { onConflict: "job_id,category_id" })
@@ -189,7 +183,6 @@ export async function POST(req: Request) {
       if (upErr1) throw upErr1;
       upsertOk = true;
     } catch {
-      // Coba ulang tanpa selected_photo_id (untuk skema lama)
       const { selected_photo_id, ...fallbackPayload } = payload;
       const { error: upErr2 } = await supabaseAdmin
         .from("job_photos")
@@ -207,11 +200,26 @@ export async function POST(req: Request) {
       );
     }
 
+    // === Tambah 1 poin (WIB-aware, de-dupe by token) ===
+    try {
+      await supabaseAdmin.rpc("add_point_for_upload", {
+        p_technician_id: guard.technicianId,
+        p_user_id: guard.uid,
+        p_job_id: jobId,
+        p_category_id: categoryId,
+        p_entry_id: entryInserted ? entryId : null,
+        p_token: tokenNum ?? null,
+      });
+    } catch (e) {
+      console.warn("[points] award failed:", e);
+      // tidak mematikan flow upload
+    }
+
     return NextResponse.json({
       ok: true,
       photoUrl: fullPub.publicUrl,
       thumbUrl: thumbPub.publicUrl,
-      entryId, // id riwayat yang baru
+      entryId,
     });
   } catch (e: any) {
     console.error("[job-photos/upload] ERROR:", e);
