@@ -1,21 +1,36 @@
 // app/api/job-photos/upload/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin"; // service-role key (server-side)
-import { supabaseServer } from "@/lib/supabaseServers"; // auth user & RBAC (guard teknisi)
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseServer } from "@/lib/supabaseServer";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
-
 const BUCKET = "job-photos";
 
-/* ===================== Auth Guard (dari code 1) ===================== */
-async function assertTechnician() {
+/* ===================== Bucket helper ===================== */
+async function ensureBucketExists() {
+  const { data, error } = await supabaseAdmin.storage.listBuckets();
+  if (error) throw error;
+  if (!data?.some((b) => b.name === BUCKET)) {
+    const { error: cErr } = await supabaseAdmin.storage.createBucket(BUCKET, {
+      public: true,
+      fileSizeLimit: "20MB",
+    });
+    if (cErr) throw cErr;
+  }
+}
+
+/* ===================== Auth Guard (code 1) ===================== */
+type GuardOK = { ok: true; uid: string; technicianId: string };
+type GuardNG = { ok: false; res: NextResponse };
+
+async function assertTechnician(): Promise<GuardOK | GuardNG> {
   const supabase = supabaseServer();
 
   const { data: auth, error: authErr } = await supabase.auth.getUser();
   if (authErr || !auth?.user) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
     };
   }
@@ -23,13 +38,13 @@ async function assertTechnician() {
   const uid = auth.user.id;
   const { data: profile, error: profErr } = await supabase
     .from("profiles")
-    .select("technician_id, email")
+    .select("technician_id")
     .eq("id", uid)
     .maybeSingle();
 
   if (profErr) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json(
         { error: profErr.message || "Auth failed" },
         { status: 500 }
@@ -37,10 +52,10 @@ async function assertTechnician() {
     };
   }
 
-  const isTechnician = !!profile?.technician_id;
-  if (!isTechnician) {
+  const technicianId = (profile?.technician_id as string) || null;
+  if (!technicianId) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json(
         { error: "Forbidden: hanya teknisi yang dapat mengunggah foto." },
         { status: 403 }
@@ -48,10 +63,10 @@ async function assertTechnician() {
     };
   }
 
-  return { ok: true as const };
+  return { ok: true, uid, technicianId };
 }
 
-/* ===================== Helpers (dari code 2) ===================== */
+/* ===================== Upload helpers (code 2) ===================== */
 function extFromMime(mime?: string | null) {
   const m = (mime || "").toLowerCase();
   if (m.includes("png")) return "png";
@@ -72,18 +87,6 @@ function dataUrlToBuffer(
   const buf = Buffer.from(b64, "base64");
   const ext = extFromMime(mime);
   return { buf, mime, ext };
-}
-
-async function ensureBucketExists() {
-  const { data, error } = await supabaseAdmin.storage.listBuckets();
-  if (error) throw error;
-  if (!data?.some((b) => b.name === BUCKET)) {
-    const { error: cErr } = await supabaseAdmin.storage.createBucket(BUCKET, {
-      public: true,
-      fileSizeLimit: "20MB",
-    });
-    if (cErr) throw cErr;
-  }
 }
 
 async function uploadToSupabase(
@@ -114,22 +117,23 @@ async function uploadToSupabase(
 /* ===================== Handler ===================== */
 export async function POST(req: Request) {
   try {
-    // Guard teknisi (dari code 1) — lakukan sebelum baca body besar
+    // Guard teknisi dulu (code 1)
     const guard = await assertTechnician();
     if (!guard.ok) return guard.res;
+    const { uid, technicianId } = guard;
 
     await ensureBucketExists();
 
     const ct = req.headers.get("content-type") || "";
 
-    // nilai umum + opsional
+    // field umum + opsional
     let jobId = "";
     let categoryId = "";
     let serialNumber: string | null = null;
     let meterStr: string | null = null;
     let tokenRaw: string | null = null;
     let tokenNum: number | null = null;
-    let sharpnessStr: string | null = null; // NEW
+    let sharpnessStr: string | null = null;
 
     let photoUrl = "";
     let thumbUrl = "";
@@ -259,8 +263,9 @@ export async function POST(req: Request) {
         ? Number(sharpnessStr)
         : null;
 
-    // 1) Simpan ke tabel RIWAYAT (job_photo_entries) — tetap non-fatal bila gagal
+    // 1) Simpan RIWAYAT (job_photo_entries) — non-fatal
     const entryId = crypto.randomUUID();
+    let entryInserted = false;
     try {
       const { error: histErr } = await supabaseAdmin
         .from("job_photo_entries")
@@ -271,19 +276,17 @@ export async function POST(req: Request) {
           url: photoUrl,
           thumb_url: thumbUrl,
           created_at: new Date().toISOString(),
-          sharpness: sharpnessNum, // NEW: simpan nilai sharpness jika dikirim
+          sharpness: sharpnessNum, // simpan jika ada
           token: tokenNum,
         });
-      if (histErr) {
-        // abaikan agar proses tetap lanjut
-      }
+      if (!histErr) entryInserted = true;
     } catch {
-      // tabel belum ada / RLS — abaikan
+      /* ignore agar tetap lanjut */
     }
 
-    // 2) Upsert snapshot ke job_photos
-    //    • mirror url & thumb terbaru
-    //    • JANGAN menimpa selected_photo_id jika sudah ada (agar pilihan "foto utama" tidak hilang saat refresh)
+    // 2) Upsert snapshot ke job_photos:
+    //    - update url/thumb terbaru
+    //    - JANGAN menimpa selected_photo_id jika sudah ada (biar "foto utama" aman)
     const snapshotBase: any = {
       job_id: jobId,
       category_id: String(categoryId),
@@ -294,7 +297,7 @@ export async function POST(req: Request) {
     if (serialNumber) snapshotBase.serial_number = serialNumber;
     if (Number.isFinite(meterNum as number)) snapshotBase.cable_meter = meterNum;
 
-    // cek apakah sudah ada selected_photo_id
+    // cek apakah sudah punya selected_photo_id
     let includeSelectedForFirstPhoto = false;
     try {
       const { data: existing, error: exErr } = await supabaseAdmin
@@ -304,7 +307,7 @@ export async function POST(req: Request) {
         .eq("category_id", String(categoryId))
         .maybeSingle();
       if (exErr) {
-        includeSelectedForFirstPhoto = true; // kalau tidak bisa baca, asumsikan belum ada
+        includeSelectedForFirstPhoto = true;
       } else {
         includeSelectedForFirstPhoto =
           !existing || !existing.selected_photo_id;
@@ -336,7 +339,22 @@ export async function POST(req: Request) {
       }
     }
 
-    // Respons (digunakan SW untuk ACK & klien)
+    // 3) Tambah poin (leaderboard) — WIB-aware, de-dupe by token (code 1)
+    try {
+      await supabaseAdmin.rpc("add_point_for_upload", {
+        p_technician_id: technicianId,
+        p_user_id: uid,
+        p_job_id: jobId,
+        p_category_id: categoryId,
+        p_entry_id: entryInserted ? entryId : null,
+        p_token: tokenNum ?? null,
+      });
+    } catch (e) {
+      console.warn("[points] award failed:", e);
+      // tidak memblokir flow upload
+    }
+
+    // Respons untuk SW/klien
     return NextResponse.json({
       ok: true,
       photoUrl,
