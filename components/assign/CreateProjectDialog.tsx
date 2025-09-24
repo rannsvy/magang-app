@@ -68,7 +68,7 @@ export default function CreateProjectDialog({
     namaPresales: "",
     tanggalSpkUser: "",
     tanggalTerimaPo: "",
-    tanggalMulaiProject: "",
+    tanggalMulaiProject: "",        // ← tetap ada, tapi tidak wajib diisi
     tanggalDeadlineProject: "",
     sigmaManDays: "",
     sigmaHari: "",
@@ -153,7 +153,6 @@ export default function CreateProjectDialog({
     salesName?: string;
     namaPaket?: string;
   } {
-    // 1) Bentuk sudah di-shape oleh route /api/pog/detail
     if (anyResp && (anyResp.lokasi || anyResp.salesName || anyResp.meta)) {
       const lok = typeof anyResp.lokasi === "string" ? anyResp.lokasi : "";
       const sname =
@@ -165,20 +164,15 @@ export default function CreateProjectDialog({
       return { lokasi: lok, salesName: sname, namaPaket };
     }
 
-    // 2) Bentuk raw (status + data[]) atau data[]
     const list: any[] =
       (Array.isArray(anyResp?.data?.data) && anyResp.data.data) ||
       (Array.isArray(anyResp?.data) && anyResp.data) ||
       [];
 
     const first =
-      list[0] ||
-      // beberapa API mungkin menaruh langsung array di root
-      (Array.isArray(anyResp) ? anyResp[0] : undefined);
-
+      list[0] || (Array.isArray(anyResp) ? anyResp[0] : undefined);
     if (!first) return {};
 
-    // gabungkan instansi + alamatInstansi
     const instansi = first.instansi ? String(first.instansi).trim() : "";
     const alamat = first.alamatInstansi
       ? cleanupAddress(String(first.alamatInstansi))
@@ -360,7 +354,7 @@ export default function CreateProjectDialog({
       namaPresales: "",
       tanggalSpkUser: "",
       tanggalTerimaPo: "",
-      tanggalMulaiProject: "",
+      tanggalMulaiProject: "",      // ← tetap reset kosong
       tanggalDeadlineProject: "",
       sigmaManDays: "",
       sigmaHari: "",
@@ -408,11 +402,11 @@ export default function CreateProjectDialog({
     sales: (p as any).sales ?? p.sales_name ?? (p as any).nama_sales ?? "",
   });
 
-  // ====== Submit instalasi (gabungan: code 2 + auto-calc dari code 1) ======
+  // ====== Submit instalasi ======
   const submitInstalasi = async () => {
+    // ⬇️ Tanggal Mulai TIDAK lagi wajib
     if (
       !newProjectForm.namaProject ||
-      !newProjectForm.tanggalMulaiProject ||
       !newProjectForm.tanggalDeadlineProject ||
       !newProjectForm.sigmaHari ||
       !newProjectForm.sigmaTeknisi
@@ -423,9 +417,11 @@ export default function CreateProjectDialog({
       setTmplErr("Harap pilih tipe template");
       return;
     }
+
+    // Validasi tanggal fleksibel: jika start kosong, hanya cek deadline exist.
     if (
       !validateDates(
-        newProjectForm.tanggalMulaiProject,
+        newProjectForm.tanggalMulaiProject, // boleh kosong
         newProjectForm.tanggalDeadlineProject
       )
     )
@@ -447,16 +443,19 @@ export default function CreateProjectDialog({
 
     try {
       setIsSaving(true);
-      const payload = {
+      const payload: any = {
         namaProject: newProjectForm.namaProject || null,
         lokasi: newProjectForm.lokasi || null,
         namaSales: newProjectForm.namaSales || null,
         namaPresales: newProjectForm.namaPresales || null,
         tanggalSpkUser: newProjectForm.tanggalSpkUser || null,
         tanggalTerimaPo: newProjectForm.tanggalTerimaPo || null,
-        tanggalMulaiProject: newProjectForm.tanggalMulaiProject,
+        // ⬇️ Kirim hanya jika diisi; jika kosong → undefined (tidak terkirim)
+        ...(newProjectForm.tanggalMulaiProject
+          ? { tanggalMulaiProject: newProjectForm.tanggalMulaiProject }
+          : {}),
         tanggalDeadlineProject: newProjectForm.tanggalDeadlineProject,
-        sigmaManDays: md, // gunakan hasil kalkulasi
+        sigmaManDays: md,
         sigmaHari: Number(newProjectForm.sigmaHari),
         sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
         templateKey: newProjectForm.tipeTemplate,
@@ -497,7 +496,7 @@ export default function CreateProjectDialog({
     }
   };
 
-  // ====== Submit survey (gabungan: code 2 + auto-calc dari code 1) ======
+  // ====== Submit survey (tetap seperti semula; survey tetap mandatory start/end) ======
   const submitSurvey = async () => {
     if (
       !newSurveyProjectForm.namaProject ||
@@ -519,14 +518,12 @@ export default function CreateProjectDialog({
     )
       return;
 
-    // Recompute Man Days (defensive)
     const md = calcManDaysSurvey(
       newSurveyProjectForm.totalHari,
       newSurveyProjectForm.totalTeknisi
     );
     if (md <= 0) return;
 
-    // sinkronkan UI (opsional)
     if (String(md) !== newSurveyProjectForm.totalManDays) {
       setNewSurveyProjectForm((prev) => ({
         ...prev,
@@ -544,10 +541,9 @@ export default function CreateProjectDialog({
         tanggalDeadlineProject: newSurveyProjectForm.tanggalDeadlineProject,
         totalHari: Number(newSurveyProjectForm.totalHari),
         totalTeknisi: Number(newSurveyProjectForm.totalTeknisi),
-        totalManDays: md, // gunakan hasil kalkulasi
+        totalManDays: md,
         tipeTemplate: newSurveyProjectForm.tipeTemplate,
         roomDetails: newSurveyProjectForm.roomDetails ?? [],
-        // pertahankan integrasi code 2
         idPaket:
           externalSelected?.type === "paket" ? externalSelected.id : null,
         idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
@@ -578,7 +574,7 @@ export default function CreateProjectDialog({
     else submitInstalasi();
   };
 
-  // ====== Can create (pakai kalkulasi md dari code 1) ======
+  // ====== Can create (Instalasi: tanggal mulai TIDAK wajib) ======
   const canCreate =
     projectCategory === "survey"
       ? !!newSurveyProjectForm.namaProject &&
@@ -595,7 +591,7 @@ export default function CreateProjectDialog({
         !!newSurveyProjectForm.tipeTemplate &&
         !dateErr
       : !!newProjectForm.namaProject &&
-        !!newProjectForm.tanggalMulaiProject &&
+        /* tanggalMulaiProject tidak wajib */
         !!newProjectForm.tanggalDeadlineProject &&
         calcManDaysInstalasi(
           newProjectForm.sigmaHari,
@@ -701,7 +697,7 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
-            {/* Picker eksternal (pertahankan integrasi code 2) */}
+            {/* Picker eksternal */}
             <ExternalIdPicker
               value={externalSelected}
               onChange={(v) => {
@@ -864,13 +860,14 @@ export default function CreateProjectDialog({
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
                 </div>
+
+                {/* ⬇️ Tanggal Mulai Instalasi TIDAK mandatory: hilangkan '*' dan required */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label
                     htmlFor="tanggalMulaiProject"
                     className="min-w-[120px]"
                   >
-                    Tanggal Mulai Instalasi{" "}
-                    <span className="text-red-500">*</span>
+                    Tanggal Mulai Instalasi
                   </Label>
                   <input
                     id="tanggalMulaiProject"
@@ -887,9 +884,9 @@ export default function CreateProjectDialog({
                       );
                     }}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
                   />
                 </div>
+
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaTeknisi" className="min-w-[120px]">
                     Total Teknisi <span className="text-red-500">*</span>
@@ -1083,6 +1080,7 @@ export default function CreateProjectDialog({
         {/* ===== SURVEY ===== */}
         {projectCategory === "survey" && (
           <div className="grid gap-4 py-2">
+            {/* (bagian survey tetap sama / mandatory) */}
             {/* Nama, lokasi */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label htmlFor="surveyNamaProject" className="min-w-[140px]">
@@ -1149,7 +1147,7 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
-            {/* Picker eksternal (pertahankan integrasi code 2) */}
+            {/* Picker eksternal (pertahankan integrasi) */}
             <ExternalIdPicker
               value={externalSelected}
               onChange={(v) => {

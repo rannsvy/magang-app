@@ -11,6 +11,7 @@ import ProjectShortcutPopup from "@/components/assign/ProjectShortcutPopup";
 import EditProjectDialog from "@/components/assign/EditProjectDialog";
 import CreateProjectDialog from "@/components/assign/CreateProjectDialog";
 import AssignmentSummary from "@/components/assign/AssignmentSummary";
+import ManageProjectDialog from "@/components/assign/ManageProjectDialog"; // ⬅️ NEW
 
 import { Button } from "@/components/ui/button";
 import { CheckCircle } from "lucide-react";
@@ -93,12 +94,15 @@ export default function AssignScheduling() {
   const shortcutRef = useRef<HTMLDivElement>(null);
   const lastClickTimeRef = useRef<number>(0);
 
-  /* ===== Pager tampilan tabel: 1 = ProjectTable (teknisi), 2 = ProjectTableCars (kendaraan) ===== */
+  /* ===== Pager tampilan tabel ===== */
   const [tablePage, setTablePage] = useState<number>(1);
   const tablePageCount = 2;
   const onPrevTablePage = () => setTablePage((p) => Math.max(1, p - 1));
   const onNextTablePage = () =>
     setTablePage((p) => Math.min(tablePageCount, p + 1));
+
+  /* ===== NEW: Manage Project dialog state ===== */
+  const [openManage, setOpenManage] = useState(false);
 
   /* ===== NEW: supervisors ===== */
   const [supervisors, setSupervisors] = useState<SupervisorLite[]>([]);
@@ -258,7 +262,7 @@ export default function AssignScheduling() {
         );
         const status = p.status ?? p.progressStatus ?? "ongoing";
         const projectStatus =
-            p.project_status ?? p.projectStatus ?? "unassigned";
+          p.project_status ?? p.projectStatus ?? "unassigned";
         const mdCurrent = Number(
           p.actual_man_days ??
             p.actualManDays ??
@@ -326,7 +330,6 @@ export default function AssignScheduling() {
 
   const isVehicleId = (id: string) => id.startsWith("car-");
 
-  // Σ per proyek mengikuti tampilan aktif
   const getProjectAssignmentCount = (projectId: string) =>
     assignments.filter((a) => {
       const picked =
@@ -337,7 +340,6 @@ export default function AssignScheduling() {
         : !isVehicleId(a.technicianId);
     }).length;
 
-  // jumlah selected hanya untuk tampilan aktif (badge, tabel)
   const getSelectedCount = () =>
     assignments.filter(
       (a) =>
@@ -347,7 +349,6 @@ export default function AssignScheduling() {
           : !isVehicleId(a.technicianId))
     ).length;
 
-  // jumlah selected keseluruhan (semua tabel) — dipakai enable tombol & label simpan
   const getSelectedCountAll = () =>
     assignments.filter((a) => a.isSelected || a.isProjectLeader).length;
 
@@ -377,14 +378,12 @@ export default function AssignScheduling() {
     return { status: "assigned", color: "bg-green-200 text-green-900" };
   };
 
-  // Tentukan inisial untuk technicianId (untuk human tech: pakai inisial mereka; untuk kendaraan: kosong agar fallback ke kolom kendaraan)
   const getInitialForTechnicianId = (technicianId: string): string => {
     const t = techs.find((x) => x.id === technicianId);
     return t?.inisial ?? "";
   };
 
   /* ---------- Interaksi Grid ---------- */
-  // Klik/Double klik juga bekerja untuk kolom kendaraan (car-xx)
   const handleCellClick = (projectId: string, technicianId: string) => {
     const project = projectsData.find((p) => p.id === projectId);
     if (!project) return;
@@ -523,7 +522,6 @@ export default function AssignScheduling() {
     });
   };
 
-  // Ambil daftar kendaraan saat diperlukan (untuk Select All di halaman kendaraan)
   async function fetchVehicles(): Promise<VehicleUI[]> {
     try {
       const res = await fetch("/api/vehicles", { cache: "no-store" });
@@ -540,14 +538,11 @@ export default function AssignScheduling() {
     setSelectAll(checked);
 
     if (!checked) {
-      // sisakan leaders (baik teknisi maupun kendaraan)
       setAssignments((prev) => prev.filter((a) => a.isProjectLeader));
       return;
     }
 
-    // Build mass-assign sesuai halaman aktif
     if (tablePage === 1) {
-      // Mode teknisi
       const all: CellAssignment[] = [];
       projectsData.forEach((project) => {
         const locked =
@@ -566,19 +561,17 @@ export default function AssignScheduling() {
         });
       });
       setAssignments((prev) => {
-        // gabungkan dengan assignment kendaraan yang sudah ada
         const vehOnly = prev.filter((a) => a.technicianId.startsWith("car-"));
         return [...vehOnly, ...all];
       });
     } else {
-      // Mode kendaraan: ambil daftar kendaraan dari API
       const vehicles = await fetchVehicles();
       const allVeh: CellAssignment[] = [];
       projectsData.forEach((project) => {
         const locked =
           project.projectStatus === "pending" || project.status === "completed";
         vehicles.forEach((v) => {
-          const vid = v.id; // "car-xx"
+          const vid = v.id;
           const exist = assignments.find(
             (a) => a.projectId === project.id && a.technicianId === vid
           );
@@ -596,7 +589,6 @@ export default function AssignScheduling() {
         });
       });
       setAssignments((prev) => {
-        // gabungkan dengan assignment teknisi yang sudah ada
         const techOnly = prev.filter((a) => !a.technicianId.startsWith("car-"));
         return [...techOnly, ...allVeh];
       });
@@ -685,7 +677,7 @@ export default function AssignScheduling() {
           : techCodeToUuid[a.technicianId] ?? a.technicianId;
         return {
           projectId: a.projectId,
-          technicianId: id, // UUID teknisi ATAU "car-xx"
+          technicianId: id,
           isSelected: a.isSelected,
           isProjectLeader: !!a.isProjectLeader,
         };
@@ -831,6 +823,8 @@ export default function AssignScheduling() {
             tablePageCount={tablePageCount}
             onPrevTablePage={onPrevTablePage}
             onNextTablePage={onNextTablePage}
+            /* ⬇️ tombol Manage Project */
+            onOpenManageProject={() => setOpenManage(true)}
           />
 
           {tablePage === 1 ? (
@@ -860,7 +854,7 @@ export default function AssignScheduling() {
               currentDate={currentDate}
               supervisors={supervisors}
               onSupervisorAssigned={async () => {
-                await loadAssignments(currentDate); // refresh setelah set supervisor
+                await loadAssignments(currentDate);
               }}
             />
           ) : (
@@ -915,6 +909,19 @@ export default function AssignScheduling() {
         onCreated={(p) => {
           setProjectsData((prev) => [p, ...prev]);
           setShowProjectSuccess(true);
+        }}
+      />
+
+      {/* ⬇️ NEW: Manage Project dialog */}
+      <ManageProjectDialog
+        open={openManage}
+        onOpenChange={async (v) => {
+          setOpenManage(v);
+          // refresh data setelah dialog ditutup (misal habis "Simpan" jadwal)
+          if (!v) {
+            await loadProjects();
+            await loadAssignments(currentDate);
+          }
         }}
       />
 

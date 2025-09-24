@@ -73,6 +73,7 @@ export async function GET(req?: NextRequest) {
       id_paket, id_npkt
     `
     )
+    // catatan: ini secara implisit mengecualikan project waitlist (tanggal_mulai IS NULL) dari halaman assignment
     .lte("tanggal_mulai", queryDate)
     .order("created_at", { ascending: false });
 
@@ -175,6 +176,7 @@ export async function GET(req?: NextRequest) {
 
 /* =============== Helpers: Insert + retry unik lokasi/job_id =============== */
 
+// >>>>> Perhatikan: tanggal_mulai sekarang boleh null
 type InsertProjectRow = {
   name: string;
   lokasi: string | null;
@@ -182,15 +184,15 @@ type InsertProjectRow = {
   presales_name: string | null;
   tgl_spk_user: string | null;
   tgl_terima_po: string | null;
-  tanggal_mulai: string;
-  tanggal_deadline: string;
+  tanggal_mulai?: string | null;
+  tanggal_deadline: string | null;
   sigma_man_days: number;
   sigma_hari: number;
   sigma_teknisi: number;
   project_status: "unassigned";
   jam_datang: string;
   jam_pulang: string;
-  template_key: string;
+  template_key: string | null;
   durasi_minutes: number;
   insentif: number;
 
@@ -224,7 +226,7 @@ async function insertProjectWithRetries(
         (error as any).details || ""
       }`.toLowerCase();
 
-      // Bentrok lokasi (unique index: projects_code_key on (lokasi))
+      // Bentrok lokasi (unique index)
       if (msg.includes("projects_code_key") || msg.includes("(lokasi)")) {
         if (!triedLokasiAdjust) {
           triedLokasiAdjust = true;
@@ -269,7 +271,7 @@ export async function POST(req: NextRequest) {
     namaPresales?: string | null;
     tanggalSpkUser?: string | null;
     tanggalTerimaPo?: string | null;
-    tanggalMulaiProject: string;
+    tanggalMulaiProject?: string | null; // <<< opsional
     tanggalDeadlineProject: string;
     sigmaManDays: number;
     sigmaHari: number;
@@ -286,12 +288,8 @@ export async function POST(req: NextRequest) {
     idNpkt?: string | null;
   };
 
-  if (
-    !body.namaProject ||
-    !body.tanggalMulaiProject ||
-    !body.tanggalDeadlineProject ||
-    !body.templateKey
-  ) {
+  // tanggalMulaiProject tidak lagi wajib
+  if (!body.namaProject || !body.tanggalDeadlineProject || !body.templateKey) {
     return NextResponse.json(
       { error: "Data project tidak lengkap" },
       { status: 400 }
@@ -328,15 +326,17 @@ export async function POST(req: NextRequest) {
     presales_name: body.namaPresales ?? null,
     tgl_spk_user: body.tanggalSpkUser ?? null,
     tgl_terima_po: body.tanggalTerimaPo ?? null,
-    tanggal_mulai: body.tanggalMulaiProject,
-    tanggal_deadline: body.tanggalDeadlineProject,
+    tanggal_mulai: body.tanggalMulaiProject && body.tanggalMulaiProject.trim()
+      ? body.tanggalMulaiProject.trim()
+      : null, // <<< boleh null
+    tanggal_deadline: body.tanggalDeadlineProject || null,
     sigma_man_days: body.sigmaManDays ?? 0,
     sigma_hari: body.sigmaHari ?? 0,
     sigma_teknisi: body.sigmaTeknisi ?? 0,
     project_status: "unassigned",
     jam_datang: "08:00:00",
     jam_pulang: "17:00:00",
-    template_key: body.templateKey,
+    template_key: body.templateKey ?? null,
     durasi_minutes: durasi,
     insentif: insentif,
 
@@ -355,9 +355,9 @@ export async function POST(req: NextRequest) {
     const created: any[] = [];
     const errors: Array<{ seq: number; error: string }> = [];
 
-    // Agar unik(lokasi) aman, gunakan tanggal mulai + RW/RT
+    // Agar unik(lokasi) aman, gunakan tanggal label untuk lokasi (fallback ke hari ini bila start kosong).
     const baseLokasi = baseInsert.lokasi;
-    const tgl = body.tanggalMulaiProject; // YYYY-MM-DD
+    const tglLabel = body.tanggalMulaiProject || effectiveWIBDate(); // hanya label lokasi, bukan nilai DB
 
     for (const det of paketList) {
       const rw = (det.rw || "").trim();
@@ -366,15 +366,15 @@ export async function POST(req: NextRequest) {
       // Nama proyek TANPA kata "Paket"
       const name = `${baseInsert.name} (RW${rw || "-"} / RT${rt || "-"})`;
 
-      // Lokasi unik: <base> - <tgl> RWxxRTyy
+      // Lokasi unik: <base> - <tglLabel> RWxxRTyy
       const rwPad = (rw || "0").padStart(2, "0");
       const rtPad = (rt || "0").padStart(2, "0");
       const lokasi = baseLokasi
-        ? `${baseLokasi} - ${tgl} RW${rwPad}RT${rtPad}`
-        : `${tgl} RW${rwPad}RT${rtPad}`;
+        ? `${baseLokasi} - ${tglLabel} RW${rwPad}RT${rtPad}`
+        : `${tglLabel} RW${rwPad}RT${rtPad}`;
 
       const result = await insertProjectWithRetries({
-        ...baseInsert, // termasuk id_paket / id_npkt
+        ...baseInsert, // termasuk id_paket / id_npkt dan tanggal_mulai (bisa null)
         name,
         lokasi,
       });

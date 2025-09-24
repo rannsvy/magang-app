@@ -30,6 +30,7 @@ import {
   Loader2,
   CircleCheck,
   CircleX,
+  CalendarArrowDown,
 } from "lucide-react";
 
 interface TechnicianHeaderProps {
@@ -124,6 +125,7 @@ export function TechnicianHeader({
   const handleProfileClick = () => router.push("/user/profile");
   const handleComplaintClick = () => router.push("/user/complain");
   const handleDamageComplainClick = () => router.push("/user/damageComplain");
+  const handleOpenDailyReport = () => router.push("/user/dailyReport");
 
   /* Push notif */
   const supported = useMemo(
@@ -637,6 +639,16 @@ export function TechnicianHeader({
               >
                 <CircleX className="h-4 w-4 mr-2 text-black-500" /> Check
                 Out
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();   // cegah default Radix agar tidak terjadi race saat close menu
+                  handleOpenDailyReport();
+                }}
+                className="cursor-pointer"
+              >
+                <CalendarArrowDown className="h-4 w-4 mr-2 text-black-500" />
+                Daily Report
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleLogout} className="text-red-600">
                 <LogOut className="h-4 w-4 mr-2" /> Keluar
