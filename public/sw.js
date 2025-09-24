@@ -1,5 +1,5 @@
-/* public/sw.js — fast offline upload with timeout & ACK */
-const VERSION = "magang-app-v1.0.36"; // ⬅️ bump versi agar SW baru aktif
+/* public/sw.js — fast offline upload with timeout & ACK + Web Push (VAPID) */
+const VERSION = "magang-app-v1.0.37"; // ⬅️ bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -229,6 +229,88 @@ self.addEventListener("message", (e) => {
   if (e.data?.type === "persist-now") {
     notifyClients({ type: "persist-now" });
   }
+});
+
+/* ===== Web Push (VAPID) ===== */
+/**
+ * Payload yang dikirim server sebaiknya JSON:
+ * { title: string, body: string, url?: string, tag?: string, data?: any }
+ * - url default diarahkan ke "/user/dashboard"
+ * - tag dipakai agar notifikasi dengan tag yang sama bisa di-merge oleh browser
+ */
+  self.addEventListener("push", (e) => {
+    let data = {};
+    try { data = e.data ? e.data.json() : {}; } catch (_) {}
+
+    const title = data.title || "Magang App";
+    const body = data.body || "Anda mendapat pemberitahuan baru";
+    const url = data.url || "/user/dashboard";
+
+    // Gunakan tag unik (kalau dikirim dari server), fallback ke random per event
+    // sehingga tidak menimpa notifikasi lain.
+    const tag = data.tag || `assign-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    e.waitUntil(
+      self.registration.showNotification(title, {
+        body,
+        tag,
+        icon: "/icon-192x192.png",
+        badge: "/icon-192x192.png",
+        data: { url },
+        renotify: true,           // bunyikan ulang walau tag sama
+        requireInteraction: true, // tahan toast sampai user interaksi (desktop)
+        silent: false,
+        timestamp: Date.now(),    // bantu OS urutkan sebagai notifikasi baru
+      })
+    );
+  });
+
+// Klik notifikasi → fokuskan tab app kalau sudah ada, kalau tidak buka URL
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification && event.notification.data && event.notification.data.url) || "/user/dashboard";
+
+  event.waitUntil((async () => {
+    const allClients = await clients.matchAll({ type: "window", includeUncontrolled: true });
+
+    // Reuse tab yang sudah membuka app, utamakan yang mengandung path target
+    for (const client of allClients) {
+      try {
+        const hasUrl = typeof client.url === "string" ? client.url.includes(url) : false;
+        if (hasUrl && "focus" in client) {
+          await client.focus();
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // Jika tidak ada, fokuskan tab app manapun
+    for (const client of allClients) {
+      try {
+        if ("focus" in client) {
+          await client.focus();
+          // Optional: navigasikan jika perlu
+          if ("navigate" in client && !client.url.includes(url)) {
+            await client.navigate(url);
+          }
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // Terakhir, buka window baru
+    if (clients.openWindow) {
+      await clients.openWindow(url);
+    }
+  })());
+});
+
+// Opsional: tangkap event subscription berubah (mis. token invalidated)
+// SW tidak punya akses VAPID public key → minta client app untuk re-subscribe
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil((async () => {
+    await notifyClients({ type: "pushsubscriptionchange" });
+  })());
 });
 
 /* ===== Fetch ===== */

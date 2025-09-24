@@ -23,7 +23,7 @@ export type RawResponse = {
   status: boolean;
   data: RawItem[];
 };
-
+  
 const BASE = process.env.POG_API_BASE!;
 const KEY = process.env.POG_API_KEY!;
 

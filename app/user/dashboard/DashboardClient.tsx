@@ -10,6 +10,13 @@ import { Star } from "lucide-react";
 import { PWAInstallPrompt } from "@/components/pwa-install-prompt";
 import { createClient } from "@supabase/supabase-js";
 
+// ✅ NEW: import branding util
+import {
+  extractInstansi,
+  INSTANSI_COLORS,
+  autoTextColor,
+} from "@/lib/brandingInstance";
+
 /** ===================== Types ===================== **/
 type Job = {
   id: string; // projects.id (uuid)
@@ -36,6 +43,9 @@ type Job = {
   /** Progress hitungan item */
   progressDone?: number | null; // contoh: 1
   progressTotal?: number | null; // contoh: 50
+
+  /** (opsional) kalau BE nanti kirim langsung */
+  instansi?: "PPE" | "POS" | "POK" | "SGN" | "PPTI";
 };
 
 const supabase = createClient(
@@ -105,16 +115,9 @@ export default function TechnicianDashboard() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "progress fetch failed");
 
-      // Ambil percent
       const percent = toNum(json?.progress?.percent) ?? 0;
-
-      // Status pending/active
       const isPending = String(json?.status || "") === "pending";
 
-      // Robust ambil done/total dari beberapa kemungkinan field:
-      // - progress.done / progress.total (baru)
-      // - progress.complete / progress.total (sebelumnya)
-      // - uploaded / total (top-level, legacy)
       const done =
         toNum(json?.progress?.done) ??
         toNum(json?.progress?.complete) ??
@@ -170,7 +173,6 @@ export default function TechnicianDashboard() {
   }
 
   /** ==== Loader utama ==== */
-  // ganti bagian loadJobs()
   const loadJobs = async () => {
     try {
       setLoading(true);
@@ -212,8 +214,7 @@ export default function TechnicianDashboard() {
   // Load awal & saat query berubah
   useEffect(() => {
     loadJobs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** ==== Realtime Global (projects & assignments) ==== */
   useEffect(() => {
@@ -240,8 +241,7 @@ export default function TechnicianDashboard() {
         supabase.removeChannel(baseChannelRef.current);
       baseChannelRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** ==== Re-subscribe (projects) per daftar aktif ==== */
   function resubscribeProjects(projectIds: string[]) {
@@ -371,11 +371,12 @@ export default function TechnicianDashboard() {
     };
   };
 
-  const getCardBackground = (job: Job) => {
-    if (job.isPending) return "bg-amber-50 border-amber-200";
-    if ((job.progress ?? 0) >= 100) return "bg-green-50 border-green-200";
-    if ((job.progress ?? 0) > 0) return "bg-blue-50 border-blue-200";
-    return "bg-gray-50 border-gray-200";
+  // Dipertahankan: border indikatif progress (bukan background)
+  const getCardBorder = (job: Job) => {
+    if (job.isPending) return "border-amber-200";
+    if ((job.progress ?? 0) >= 100) return "border-green-200";
+    if ((job.progress ?? 0) > 0) return "border-blue-200";
+    return "border-gray-200";
   };
 
   /** ==== Navigasi card ==== */
@@ -431,7 +432,24 @@ export default function TechnicianDashboard() {
               <div className="space-y-1 mb-6">
                 {currentJobs.map((job) => {
                   const badge = getStatusDisplay(job);
-                  const bg = getCardBackground(job);
+
+                  // ✅ NEW: tentukan instansi & warna
+                  const instansi = extractInstansi(job);
+                  const bgHex = INSTANSI_COLORS[instansi];
+                  const fgHex = autoTextColor(bgHex);
+
+                  // kelas teks dinamis untuk kontras yang baik
+                  const strongText = fgHex === "#FFFFFF" ? "text-white" : "text-black";
+                  const subtleText = fgHex === "#FFFFFF" ? "text-white/85" : "text-black/75";
+                  const monoText = fgHex === "#FFFFFF" ? "text-white/70" : "text-black/65";
+
+                  const borderClass = getCardBorder(job);
+
+                  // gabungkan style agar card punya background instansi + teks kontras
+                  const cardStyle: React.CSSProperties = {
+                    backgroundColor: bgHex,
+                    color: fgHex, // fallback untuk elemen yang tidak di-override
+                  };
 
                   const vehicleList: string[] = (
                     job.vehicle_names?.length
@@ -444,30 +462,34 @@ export default function TechnicianDashboard() {
                   return (
                     <Card
                       key={job.id}
-                      className={`cursor-pointer transition-all hover:shadow-md ${bg}`}
+                      className={`cursor-pointer transition-all hover:shadow-md border ${borderClass}`}
+                      style={cardStyle}
                       onClick={() => handleJobClick(job)}
                     >
                       <CardContent className="px-2 py-1">
                         <div className="flex justify-between items-start mb-1">
                           <div className="flex-1 pr-2">
-                            <h3 className="font-bold text-sm text-gray-900 mb-0.5 leading-tight">
+                            {/* Instansi kecil di atas judul (opsional, membantu identifikasi cepat) */}
+                            <div className={`text-[10px] font-medium leading-none mb-0.5 ${monoText}`}>
+                              {instansi}
+                            </div>
+
+                            <h3 className={`font-bold text-sm mb-0.5 leading-tight ${strongText}`}>
                               {job.name}
                             </h3>
 
                             {job.type === "survey" && job.building_name ? (
-                              <p className="text-xs font-medium text-gray-700 leading-tight mb-0.5">
+                              <p className={`text-xs font-medium leading-tight mb-0.5 ${subtleText}`}>
                                 Nama Gedung: {job.building_name}
                               </p>
                             ) : null}
 
-                            <p className="text-xs text-gray-600 leading-tight mb-0.5">
+                            <p className={`text-xs leading-tight mb-0.5 ${subtleText}`}>
                               {job.lokasi ?? "-"}
                             </p>
 
-                            <div className="text-xs text-gray-600 mb-0.5">
-                              <span className="font-medium">
-                                Ditugaskan bersama:
-                              </span>
+                            <div className={`text-xs mb-0.5 ${subtleText}`}>
+                              <span className="font-medium">Ditugaskan bersama:</span>
                               <div className="mt-0.5">
                                 {job.assignedTechnicians.map((tech, idx) => (
                                   <div
@@ -509,29 +531,29 @@ export default function TechnicianDashboard() {
                               )}
                             </div>
 
-                            <div className="text-[10px] text-gray-500 font-mono leading-none">
+                            <div className={`text-[10px] font-mono leading-none ${monoText}`}>
                               {job.job_id}
                             </div>
 
                             {(job.supervisor_name || job.sales_name) && (
-                              <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
+                              <div className={`text-[10px] leading-tight text-right mt-0.5 ${subtleText}`}>
                                 <div>
-                                  SPV: <b>{job.supervisor_name ?? "-"}</b>
+                                  SPV: <b className={strongText}>{job.supervisor_name ?? "-"}</b>
                                 </div>
                                 <div>
-                                  Sales: <b>{job.sales_name ?? "-"}</b>
+                                  Sales: <b className={strongText}>{job.sales_name ?? "-"}</b>
                                 </div>
                               </div>
                             )}
 
                             {/* Kendaraan */}
-                            <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
+                            <div className={`text-[10px] leading-tight text-right mt-0.5 ${subtleText}`}>
                               {vehicleList.length === 0 ? (
                                 <div>Kendaraan : -</div>
                               ) : vehicleList.length === 1 ? (
                                 <div>
                                   Kendaraan : -{" "}
-                                  <b className="whitespace-nowrap">
+                                  <b className={`whitespace-nowrap ${strongText}`}>
                                     {vehicleList[0]}
                                   </b>
                                 </div>
@@ -545,7 +567,7 @@ export default function TechnicianDashboard() {
                                         className="flex items-center gap-1 justify-end"
                                       >
                                         <span>-</span>
-                                        <b className="whitespace-nowrap">{v}</b>
+                                        <b className={`whitespace-nowrap ${strongText}`}>{v}</b>
                                       </div>
                                     ))}
                                   </div>
