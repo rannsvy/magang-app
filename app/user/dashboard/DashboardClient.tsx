@@ -12,30 +12,22 @@ import { createClient } from "@supabase/supabase-js";
 
 /** ===================== Types ===================== **/
 type Job = {
-  id: string; // projects.id (uuid)
-  job_id: string; // projects.job_id (kode job)
+  id: string;
+  job_id: string;
   name: string;
   lokasi: string | null;
   status: "not-started" | "in-progress" | "completed";
-  progress?: number | null; // 0..100
-  isPending?: boolean; // dari /api/job-photos/[jobId]
+  progress?: number | null;
+  isPending?: boolean;
   assignedTechnicians: { name: string; isLeader: boolean }[];
-
-  /** Filter Survey/Instalasi (opsional, default "instalasi") */
   type?: "survey" | "instalasi";
   building_name?: string | null;
-
-  /** UI terbaru — opsional; tampil kalau disuplai API */
   supervisor_name?: string | null;
   sales_name?: string | null;
-
-  /** Kendaraan */
-  vehicle_name?: string | null; // mis. "Panther (L 1880 ZB)"
-  vehicle_names?: string[]; // mis. ["Panther (L 1880 ZB)","Grandmax (L 9636 BF)"]
-
-  /** Progress hitungan item */
-  progressDone?: number | null; // contoh: 1
-  progressTotal?: number | null; // contoh: 50
+  vehicle_name?: string | null;
+  vehicle_names?: string[];
+  progressDone?: number | null;
+  progressTotal?: number | null;
 };
 
 const supabase = createClient(
@@ -51,10 +43,37 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms = 250) {
     t = setTimeout(() => fn(...args), ms);
   };
 }
-
 function toNum(v: any): number | undefined {
   const n = Number(v);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/** ==== Who am I (sales?) ==== */
+type WhoLite = { isSales: boolean };
+async function whoLite(): Promise<WhoLite> {
+  const { data: u } = await supabase.auth.getUser();
+  const user = u?.user ?? null;
+  if (!user) return { isSales: false };
+  const email = (user.email || "").toLowerCase();
+
+  // Cek email_roles.sales
+  const { data: er } = await supabase
+    .from("email_roles")
+    .select("app_role")
+    .eq("email", email)
+    .limit(1);
+  let isSales = Array.isArray(er) && er[0]?.app_role === "sales";
+
+  // Fallback: tabel sales
+  if (!isSales) {
+    const { data: sr } = await supabase
+      .from("sales")
+      .select("id")
+      .eq("email", email)
+      .maybeSingle();
+    isSales = !!sr;
+  }
+  return { isSales };
 }
 
 /** ===================== Page ===================== **/
@@ -91,7 +110,14 @@ export default function TechnicianDashboard() {
   // cegah double PATCH completed
   const completedPostedRef = useRef<Set<string>>(new Set());
 
-  /** ==== Progress helper (ambil dari /api/job-photos/[jobId]) ==== */
+  const [who, setWho] = useState<WhoLite>({ isSales: false });
+  useEffect(() => {
+    whoLite()
+      .then(setWho)
+      .catch(() => setWho({ isSales: false }));
+  }, []);
+
+  /** ==== Progress helper ==== */
   async function getJobProgress(jobId: string): Promise<{
     percent: number;
     isPending: boolean;
@@ -105,21 +131,12 @@ export default function TechnicianDashboard() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "progress fetch failed");
 
-      // Ambil percent
       const percent = toNum(json?.progress?.percent) ?? 0;
-
-      // Status pending/active
       const isPending = String(json?.status || "") === "pending";
-
-      // Robust ambil done/total dari beberapa kemungkinan field:
-      // - progress.done / progress.total (baru)
-      // - progress.complete / progress.total (sebelumnya)
-      // - uploaded / total (top-level, legacy)
       const done =
         toNum(json?.progress?.done) ??
         toNum(json?.progress?.complete) ??
         toNum(json?.uploaded);
-
       const total = toNum(json?.progress?.total) ?? toNum(json?.total);
 
       return { percent, isPending, done, total };
@@ -134,14 +151,12 @@ export default function TechnicianDashboard() {
         const { percent, isPending, done, total } = await getJobProgress(
           j.job_id
         );
-
         const status: Job["status"] =
           percent >= 100
             ? "completed"
             : percent > 0
             ? "in-progress"
             : "not-started";
-
         return {
           ...j,
           progress: percent,
@@ -155,7 +170,6 @@ export default function TechnicianDashboard() {
     return enriched;
   }
 
-  /** ==== Tandai project selesai (auto-complete) ==== */
   async function markProjectCompleted(projectId: string) {
     try {
       await fetch("/api/projects/status", {
@@ -169,8 +183,6 @@ export default function TechnicianDashboard() {
     }
   }
 
-  /** ==== Loader utama ==== */
-  // ganti bagian loadJobs()
   const loadJobs = async () => {
     try {
       setLoading(true);
@@ -186,13 +198,16 @@ export default function TechnicianDashboard() {
       const withProgress = await attachProgress(json.items ?? []);
       setJobs(withProgress);
 
-      const candidates = withProgress.filter(
-        (j) => (j.progress ?? 0) >= 100 && !j.isPending
-      );
-      for (const j of candidates) {
-        if (!completedPostedRef.current.has(j.id)) {
-          completedPostedRef.current.add(j.id);
-          markProjectCompleted(j.id);
+      // ===== MATIKAN AUTO-PATCH COMPLETED UNTUK SALES =====
+      if (!who.isSales) {
+        const candidates = withProgress.filter(
+          (j) => (j.progress ?? 0) >= 100 && !j.isPending
+        );
+        for (const j of candidates) {
+          if (!completedPostedRef.current.has(j.id)) {
+            completedPostedRef.current.add(j.id);
+            markProjectCompleted(j.id);
+          }
         }
       }
 
@@ -209,16 +224,14 @@ export default function TechnicianDashboard() {
     }
   };
 
-  // Load awal & saat query berubah
   useEffect(() => {
     loadJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, [searchParams, who.isSales]); // reload saat info sales terdeteksi
 
-  /** ==== Realtime Global (projects & assignments) ==== */
+  /** ==== Realtime Global ==== */
   useEffect(() => {
     const debouncedReload = debounce(loadJobs, 200);
-
     const ch = supabase
       .channel("tech-dashboard-base")
       .on(
@@ -232,9 +245,7 @@ export default function TechnicianDashboard() {
         debouncedReload
       )
       .subscribe();
-
     baseChannelRef.current = ch;
-
     return () => {
       if (baseChannelRef.current)
         supabase.removeChannel(baseChannelRef.current);
@@ -243,19 +254,16 @@ export default function TechnicianDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** ==== Re-subscribe (projects) per daftar aktif ==== */
   function resubscribeProjects(projectIds: string[]) {
     if (projectsChannelRef.current) {
       supabase.removeChannel(projectsChannelRef.current);
       projectsChannelRef.current = null;
     }
     if (!projectIds.length) return;
-
     const isUuid = /^[0-9a-f-]{36}$/i.test(projectIds[0]);
     const inList = isUuid
       ? projectIds.map((x) => `"${x}"`).join(",")
       : projectIds.join(",");
-
     const ch = supabase
       .channel(`tech-dashboard-projects`)
       .on(
@@ -269,21 +277,16 @@ export default function TechnicianDashboard() {
         debounce(loadJobs, 150)
       )
       .subscribe();
-
     projectsChannelRef.current = ch;
   }
 
-  /** ==== Re-subscribe (job_photos) per daftar aktif ==== */
   function resubscribePhotos(jobIds: string[]) {
     if (photosChannelRef.current) {
       supabase.removeChannel(photosChannelRef.current);
       photosChannelRef.current = null;
     }
     if (!jobIds.length) return;
-
-    // job_id bertipe text → perlu di-quote & escape
     const q = jobIds.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
-
     const ch = supabase
       .channel(`tech-dashboard-photos`)
       .on(
@@ -297,11 +300,9 @@ export default function TechnicianDashboard() {
         debounce(loadJobs, 150)
       )
       .subscribe();
-
     photosChannelRef.current = ch;
   }
 
-  /** ==== Re-subscribe (project_survey_rooms) ==== */
   function resubscribeSurveyRooms(projectIds: string[]) {
     if (surveyRoomsChannelRef.current) {
       supabase.removeChannel(surveyRoomsChannelRef.current);
@@ -309,7 +310,6 @@ export default function TechnicianDashboard() {
     }
     if (!projectIds.length) return;
     const inList = projectIds.map((x) => `"${x}"`).join(",");
-
     const ch = supabase
       .channel("tech-dashboard-surveyrooms")
       .on(
@@ -323,7 +323,6 @@ export default function TechnicianDashboard() {
         debounce(loadJobs, 150)
       )
       .subscribe();
-
     surveyRoomsChannelRef.current = ch;
   }
 
@@ -345,7 +344,6 @@ export default function TechnicianDashboard() {
     const hasCount =
       typeof job.progressDone === "number" &&
       typeof job.progressTotal === "number";
-
     const countText = hasCount
       ? `${job.progressDone}/${job.progressTotal}`
       : null;
@@ -378,7 +376,6 @@ export default function TechnicianDashboard() {
     return "bg-gray-50 border-gray-200";
   };
 
-  /** ==== Navigasi card ==== */
   const handleJobClick = (job: Job) => {
     if (job.type === "survey") {
       router.push(`/user/survey/floors?jobId=${encodeURIComponent(job.id)}`);
@@ -432,7 +429,6 @@ export default function TechnicianDashboard() {
                 {currentJobs.map((job) => {
                   const badge = getStatusDisplay(job);
                   const bg = getCardBackground(job);
-
                   const vehicleList: string[] = (
                     job.vehicle_names?.length
                       ? job.vehicle_names
@@ -485,7 +481,6 @@ export default function TechnicianDashboard() {
                           </div>
 
                           <div className="flex flex-col items-end gap-0.5">
-                            {/* Badge persentase + Rasio 1/50 */}
                             <div className="flex items-center gap-1">
                               <div
                                 className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
@@ -497,7 +492,6 @@ export default function TechnicianDashboard() {
                               >
                                 {badge.text}
                               </div>
-
                               {badge.countText && (
                                 <div
                                   className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${badge.color}`}
@@ -524,7 +518,6 @@ export default function TechnicianDashboard() {
                               </div>
                             )}
 
-                            {/* Kendaraan */}
                             <div className="text-[10px] text-gray-600 leading-tight text-right mt-0.5">
                               {vehicleList.length === 0 ? (
                                 <div>Kendaraan : -</div>
@@ -564,8 +557,10 @@ export default function TechnicianDashboard() {
                 <Pagination
                   currentPage={currentPage}
                   totalPages={totalPages}
-                  onPrevPage={handlePrevPage}
-                  onNextPage={handleNextPage}
+                  onPrevPage={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  onNextPage={() =>
+                    setCurrentPage((p) => Math.min(totalPages, p + 1))
+                  }
                 />
               )}
             </>

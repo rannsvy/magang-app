@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabaseBrowser";
+import { LogoutButton } from "./ui/logout-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -58,17 +59,6 @@ export function TechnicianHeader({
       } catch {}
     })();
   }, []);
-
-  async function handleLogout() {
-    try {
-      await supabase.auth.signOut();
-    } catch {}
-    await fetch("/api/auth/logout", {
-      method: "POST",
-      credentials: "include",
-    }).catch(() => {});
-    window.location.href = `/auth/login`;
-  }
 
   const handleBack = () => router.push(backUrl);
   const handleProfileClick = () => router.push("/user/profile");
@@ -151,9 +141,8 @@ export function TechnicianHeader({
                 <AlertCircle className="h-4 w-4 mr-2" />
                 Ajukan Komplain
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600">
-                <LogOut className="h-4 w-4 mr-2" />
-                Keluar
+              <DropdownMenuItem className="text-red-600">
+                <LogoutButton/>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

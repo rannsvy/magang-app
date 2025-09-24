@@ -428,6 +428,7 @@ function formatDateOnly(epochMs: number) {
 type WhoAmI = {
   isTechnician: boolean;
   isSupervisor: boolean;
+  isSales: boolean; // <<< penting
   supervisorRole: "Supervisor" | "Manager" | "GM" | "General Manager" | null;
 };
 
@@ -435,9 +436,13 @@ async function fetchWhoAmI(): Promise<WhoAmI> {
   const { data: u } = await supabase.auth.getUser();
   const user = u?.user ?? null;
   if (!user)
-    return { isTechnician: false, isSupervisor: false, supervisorRole: null };
+    return {
+      isTechnician: false,
+      isSupervisor: false,
+      isSales: false,
+      supervisorRole: null,
+    };
 
-  // profiles
   const { data: prof } = await supabase
     .from("profiles")
     .select("technician_id, email, role")
@@ -445,12 +450,11 @@ async function fetchWhoAmI(): Promise<WhoAmI> {
     .maybeSingle();
 
   const isTechnician = !!prof?.technician_id;
-
-  // supervisors by email
   const email = (prof?.email || user.email || "").toLowerCase();
+
+  // supervisor by email
   let isSupervisor = false;
   let supervisorRole: WhoAmI["supervisorRole"] = null;
-
   if (email) {
     const { data: sup } = await supabase
       .from("supervisors")
@@ -471,7 +475,27 @@ async function fetchWhoAmI(): Promise<WhoAmI> {
     }
   }
 
-  return { isTechnician, isSupervisor, supervisorRole };
+  // sales by email_roles or sales table
+  let isSales = false;
+  if (email) {
+    const { data: erows } = await supabase
+      .from("email_roles")
+      .select("app_role")
+      .eq("email", email)
+      .limit(1);
+    isSales = Array.isArray(erows) && erows[0]?.app_role === "sales";
+
+    if (!isSales) {
+      const { data: srow } = await supabase
+        .from("sales")
+        .select("id")
+        .eq("email", email)
+        .maybeSingle();
+      isSales = !!srow;
+    }
+  }
+
+  return { isTechnician, isSupervisor, isSales, supervisorRole };
 }
 
 /* ================= Page (UI code 2 + fitur code 1) ================= */
@@ -486,6 +510,7 @@ export default function UploadFotoPage() {
   const [who, setWho] = useState<WhoAmI>({
     isTechnician: false,
     isSupervisor: false,
+    isSales: false, // <<< tambahkan default
     supervisorRole: null,
   });
 
@@ -494,9 +519,11 @@ export default function UploadFotoPage() {
       const me = await fetchWhoAmI();
       setWho(me);
       // Default:
-      // - Technician  => edit ON
+      // - Technician => edit ON
       // - Supervisor/GM/Manager => view-only (edit OFF) bisa toggle
+      // - Sales => view-only (edit OFF) dan TIDAK bisa toggle
       setEditable(me.isTechnician ? true : false);
+      if (me.isSales) setEditable(false); // <<< kunci untuk Sales
       setAccessLoaded(true);
     })();
   }, []);
@@ -1387,32 +1414,33 @@ export default function UploadFotoPage() {
         backUrl="/user/dashboard"
       />
 
-      {/* Switch Mode Edit: tampil untuk Supervisor/GM/Manager (non-teknisi) */}
-      {accessLoaded && (who.isSupervisor || !who.isTechnician) && (
-        <div className="px-3 pt-2 flex items-center justify-end">
-          <label className="flex items-center gap-2 text-xs text-gray-700 select-none">
-            <span>Mode Edit</span>
-            <button
-              type="button"
-              onClick={() => setEditable((v) => !v)}
-              className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
-                editable ? "bg-blue-600" : "bg-gray-300"
-              }`}
-              aria-pressed={editable}
-              title={editable ? "Matikan edit (view-only)" : "Nyalakan edit"}
-            >
-              <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-                  editable ? "translate-x-4" : "translate-x-1"
+      {/* Switch Mode Edit: tampil untuk Supervisor/GM/Manager (non-teknisi), TAPI tersembunyi untuk Sales */}
+      {accessLoaded &&
+        (who.isSupervisor || (!who.isTechnician && !who.isSales)) && (
+          <div className="px-3 pt-2 flex items-center justify-end">
+            <label className="flex items-center gap-2 text-xs text-gray-700 select-none">
+              <span>Mode Edit</span>
+              <button
+                type="button"
+                onClick={() => setEditable((v) => !v)}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
+                  editable ? "bg-blue-600" : "bg-gray-300"
                 }`}
-              />
-            </button>
-            <span className="ml-1 text-[11px] text-gray-500">
-              {editable ? "ON" : "OFF"}
-            </span>
-          </label>
-        </div>
-      )}
+                aria-pressed={editable}
+                title={editable ? "Matikan edit (view-only)" : "Nyalakan edit"}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+                    editable ? "translate-x-4" : "translate-x-1"
+                  }`}
+                />
+              </button>
+              <span className="ml-1 text-[11px] text-gray-500">
+                {editable ? "ON" : "OFF"}
+              </span>
+            </label>
+          </div>
+        )}
 
       <main className="p-2">
         <div className="max-w-4xl mx-auto">

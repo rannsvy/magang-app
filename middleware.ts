@@ -22,7 +22,8 @@ function decodeBase64Web(b64: string) {
     return atob(b64);
   } catch {
     try {
-      /* @ts-ignore */ return Buffer.from(b64, "base64").toString("utf8");
+      // @ts-ignore
+      return Buffer.from(b64, "base64").toString("utf8");
     } catch {
       return "";
     }
@@ -54,14 +55,14 @@ function isJwtExpired(token: string, skewMs = 10_000): boolean {
 function readAccessToken(req: NextRequest): string | null {
   const c = req.cookies;
 
-  // 1) httpOnly cookies yang kita set lewat /api/auth/set
+  // 1) httpOnly cookies custom
   const raw = c.get("access_token")?.value;
   if (raw) return raw;
   const alt =
     c.get("sb-access-token")?.value || c.get("supabase-access-token")?.value;
   if (alt) return alt;
 
-  // 2) storage cookie auth-helpers: sb-<ref>-auth-token (format BARU: JSON { currentSession, expiresAt })
+  // 2) storage cookie auth-helpers: sb-<ref>-auth-token
   const ref = projectRefFromUrl(process.env.NEXT_PUBLIC_SUPABASE_URL);
   if (ref) {
     const name = `sb-${ref}-auth-token`;
@@ -70,12 +71,9 @@ function readAccessToken(req: NextRequest): string | null {
       let text = v;
       // kompat lama: "base64-<json>"
       if (text.startsWith("base64-")) text = decodeBase64Web(text.slice(7));
-      // kalau bukan base64, coba parse langsung (format baru)
       const obj = safeJsonParse<any>(text) || {};
-      // format baru:
       if (obj?.currentSession?.access_token)
         return obj.currentSession.access_token as string;
-      // kompat lama (beberapa varian simpan langsung access_token di root)
       if (obj?.access_token) return obj.access_token as string;
     }
   }
@@ -83,19 +81,41 @@ function readAccessToken(req: NextRequest): string | null {
 }
 
 function readRefreshToken(req: NextRequest): string | null {
-  return req.cookies.get("refresh_token")?.value || null;
+  return (
+    req.cookies.get("sb-refresh-token")?.value ||
+    req.cookies.get("refresh_token")?.value ||
+    null
+  );
 }
 
-function setAuthCookies(res: NextResponse, access: string, refresh?: string) {
+/* =============== Cookie writers (fixed) =============== */
+function setAuthCookies(
+  req: NextRequest,
+  res: NextResponse,
+  access: string,
+  refresh?: string
+) {
   let maxAge = 3600;
   try {
     const p = decodeJwtPayload(access);
     if (p?.exp) maxAge = Math.max(5, p.exp - Math.floor(Date.now() / 1000));
   } catch {}
-  const url = new URL(res.url);
-  const xfProto = (res.headers.get("x-forwarded-proto") || "").toLowerCase();
-  const proto = xfProto || url.protocol.replace(":", "");
-  const host = (res.headers.get("host") || url.host).toLowerCase();
+
+  // Ambil proto/host dari REQUEST (bukan dari response)
+  const xfProto =
+    req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase() ||
+    "";
+  const xfHost =
+    req.headers.get("x-forwarded-host")?.split(",")[0]?.trim().toLowerCase() ||
+    "";
+  const proto = (
+    xfProto || req.nextUrl.protocol.replace(":", "")
+  ).toLowerCase();
+  const host =
+    xfHost ||
+    req.headers.get("host")?.toLowerCase() ||
+    req.nextUrl.host.toLowerCase();
+
   const isLocal =
     proto === "http" ||
     host.startsWith("localhost") ||
@@ -150,7 +170,7 @@ async function isTokenActive(token: string): Promise<boolean> {
       headers: { apikey: anon, Authorization: `Bearer ${token}` },
       cache: "no-store",
     });
-    // 5xx → anggap OK supaya tidak nge-loop saat dev/ jaringan
+    // 5xx → anggap OK supaya tidak nge-loop saat dev/jaringan
     if (res.status >= 500) return true;
     return res.ok;
   } catch {
@@ -236,8 +256,10 @@ export async function middleware(req: NextRequest) {
     const refreshed = await refreshAccessTokenByRefresh(refresh);
     if (!refreshed?.access_token) return redirectToLogin(req);
     access = refreshed.access_token;
+
     res = NextResponse.next();
-    setAuthCookies(res, refreshed.access_token, refreshed.refresh_token);
+    // FIX: gunakan req untuk menentukan atribut cookie
+    setAuthCookies(req, res, refreshed.access_token, refreshed.refresh_token);
   }
 
   // 3) validasi ringan ke Supabase (toleran error jaringan)
@@ -274,6 +296,27 @@ export async function middleware(req: NextRequest) {
       return NextResponse.redirect(new URL("/403", req.url));
     }
   }
+
+  console.log(
+    "[MW] access?",
+    !!access,
+    "refresh?",
+    !!refresh,
+    "path=",
+    pathname
+  );
+  console.log(
+    "[MW] uid",
+    userId,
+    "email",
+    email,
+    "role",
+    role,
+    "isAdminPanel?",
+    isAdmin,
+    "isLB",
+    isLeaderboard
+  );
 
   return res ?? NextResponse.next();
 }

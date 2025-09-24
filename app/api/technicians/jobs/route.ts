@@ -34,7 +34,6 @@ function todayWIB() {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-// "Model/Name/Code (PLATE)" — jika plate ada
 function vehicleLabel(v?: {
   model?: string | null;
   name?: string | null;
@@ -48,19 +47,54 @@ function vehicleLabel(v?: {
   return plate ? `${base} (${plate})` : base;
 }
 
+/** Cek apakah email adalah sales, dan ambil identitas sales (nama & panggilan) */
+async function fetchSalesIdentity(
+  supabase: Awaited<ReturnType<typeof supabaseServers>>,
+  email: string
+): Promise<{
+  isSales: boolean;
+  namaLengkap?: string | null;
+  namaPanggilan?: string | null;
+}> {
+  const em = (email || "").toLowerCase();
+
+  // 1) Cek email_roles
+  const { data: erows } = await supabase
+    .from("email_roles")
+    .select("app_role")
+    .eq("email", em)
+    .limit(1);
+  const fromRole = Array.isArray(erows) && erows[0]?.app_role === "sales";
+
+  // 2) Cek tabel sales (berdasarkan email)
+  const { data: srow } = await supabase
+    .from("sales")
+    .select("nama_lengkap, nama_panggilan, email")
+    .eq("email", em)
+    .maybeSingle();
+
+  const fromSalesTable = !!srow;
+
+  return {
+    isSales: fromRole || fromSalesTable,
+    namaLengkap: srow?.nama_lengkap ?? null,
+    namaPanggilan: srow?.nama_panggilan ?? null,
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     const supabase = await supabaseServers();
     const url = new URL(req.url);
 
-    // ===== Autentikasi
+    // ===== Auth
     const { data: u } = await supabase.auth.getUser();
     const user = u?.user;
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // ===== Profil (role & mapping teknisi)
+    // ===== Profile
     const { data: profile, error: pErr } = await supabase
       .from("profiles")
       .select("role, technician_id, email")
@@ -68,11 +102,11 @@ export async function GET(req: NextRequest) {
       .maybeSingle();
     if (pErr) throw pErr;
 
-    const role = profile?.role ?? "user";
+    const role = (profile?.role ?? "user").toLowerCase();
     const myTechId = profile?.technician_id ?? null;
-
-    // ===== Cari supervisor (by email; jika nanti ada profiles.supervisor_id bisa tambahkan)
     const email = (profile?.email || user.email || "").toLowerCase();
+
+    // ===== Supervisor (by email)
     let mySupervisor: {
       id: string;
       role: string;
@@ -97,7 +131,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ===== Hak akses
+    // ===== Sales (by email_roles / sales table)
+    const { isSales, namaLengkap, namaPanggilan } = await fetchSalesIdentity(
+      supabase,
+      email
+    );
+
+    // ===== Admin like
     const isAdminEmail = (user.email ?? "").toLowerCase().includes("admin");
     const isAdmin = role === "admin" || isAdminEmail;
 
@@ -107,26 +147,25 @@ export async function GET(req: NextRequest) {
       supRole === "general manager" ||
       supRole === "manager";
 
-    // Admin-like: admin || GM || Manager
     const isAdminLike = isAdmin || isManagerTier;
 
     // ===== Query params
     const workDate = url.searchParams.get("date") || todayWIB();
     const technicianParam = url.searchParams.get("technician");
-    const debugAll = url.searchParams.get("debug") === "1"; // efektif hanya untuk admin-like
+    const debugAll = url.searchParams.get("debug") === "1"; // hanya efektif untuk admin-like
 
-    // ===== Tentukan target filter
+    // ===== Tentukan filter akses
     let filterByTechnicianId: string | null = null;
     let filterBySupervisorId: string | null = null;
     let filterBySupervisorName: string | null = null;
+    let filterBySalesNames: string[] = [];
 
     if (isAdminLike) {
-      // Admin-like boleh override via ?technician= (uuid/inisial/email teknisi)
       if (technicianParam) {
         if (isUuid(technicianParam)) {
           filterByTechnicianId = technicianParam;
         } else {
-          const { data: t, error: tErr } = await supabase
+          const { data: t } = await supabase
             .from("technicians")
             .select("id, inisial, email")
             .or(
@@ -135,35 +174,40 @@ export async function GET(req: NextRequest) {
               ).toUpperCase()},email.eq.${technicianParam}`
             )
             .maybeSingle();
-          if (tErr) throw tErr;
           if (t?.id) filterByTechnicianId = String(t.id);
         }
       }
-      // tanpa ?technician= dan tanpa debugAll → lihat semua assignment hari itu
+      // admin-like tanpa filter → semua assignment hari itu (debugAll tak mengubah banyak)
     } else {
-      // Bukan admin-like:
-      //   - Jika akun mapped ke teknisi → filter teknisi
-      //   - Else jika akun mapped ke supervisor → filter supervisor leader
+      // Non admin-like:
       if (myTechId) {
-        filterByTechnicianId = myTechId;
+        filterByTechnicianId = myTechId; // teknisi → job miliknya
       } else if (mySupervisor) {
+        // supervisor → proyek yang dipimpin
         filterBySupervisorId = mySupervisor.id;
-        // fallback nama (nickname > full_name > display name)
         const nick =
           mySupervisor.nickname ||
           mySupervisor.full_name ||
           (user.user_metadata as any)?.name ||
           (user.email || "").split("@")[0];
         filterBySupervisorName = nick ? String(nick).trim() : null;
+      } else if (isSales) {
+        // SALES → view-only, lihat proyek miliknya (sales_name mengandung nama / panggilan / email)
+        const guesses = new Set<string>();
+        if (namaLengkap) guesses.add(namaLengkap);
+        if (namaPanggilan) guesses.add(namaPanggilan);
+        if (email) guesses.add(email);
+        if (email.includes("@")) guesses.add(email.split("@")[0]); // local part
+        filterBySalesNames = [...guesses].filter(Boolean);
       } else {
         return NextResponse.json(
-          { error: "Akun belum terhubung ke teknisi/supervisor." },
+          { error: "Akun belum terhubung ke teknisi/supervisor/sales." },
           { status: 403 }
         );
       }
     }
 
-    // ===== Query projects + assignments (harian)
+    // ===== Query projects
     let q = supabase
       .from("projects")
       .select(
@@ -192,12 +236,13 @@ export async function GET(req: NextRequest) {
       .is("project_assignments.removed_at", null)
       .order("created_at", { ascending: false });
 
-    // Terapkan filter
+    // Terapkan filter akses
     if (
       !isAdminLike ||
       filterByTechnicianId ||
       filterBySupervisorId ||
-      filterBySupervisorName
+      filterBySupervisorName ||
+      filterBySalesNames.length
     ) {
       if (filterByTechnicianId) {
         q = q.eq("project_assignments.technician_id", filterByTechnicianId);
@@ -209,15 +254,16 @@ export async function GET(req: NextRequest) {
         q = q
           .eq("project_assignments.is_leader", true)
           .ilike("project_assignments.supervisor_name", filterBySupervisorName);
-      } else {
-        // non-admin-like tanpa mapping? sudah di-block di atas
+      } else if (filterBySalesNames.length) {
+        const sanitize = (s: string) =>
+          s.replace(/,/g, " ").replace(/\*/g, "").trim();
+        const clauses = filterBySalesNames.map(
+          (s) => `sales_name.ilike.*${sanitize(s)}*`
+        );
+        if (clauses.length) q = q.or(clauses.join(","));
       }
     } else {
-      // isAdminLike & tidak ada filter teknisi & tidak debugAll ⇒ tetap semua assignment tanggal tsb
-      // (sudah difilter work_date & removed_at)
-      if (!debugAll) {
-        // no-op
-      }
+      // admin-like tanpa filter → biarkan semua untuk tanggal tsb
     }
 
     const { data, error } = await q;
@@ -226,7 +272,7 @@ export async function GET(req: NextRequest) {
     const projects = (data ?? []) as any[];
     const projectIds = projects.map((p) => String(p.id));
 
-    // ===== Crew teknisi aktif (badge)
+    // ===== Crew teknisi aktif
     const crewByProject = new Map<
       string,
       Array<{ name: string; isLeader: boolean }>
@@ -281,7 +327,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ===== Ambil supervisor_name dari baris LEADER pada tanggal ini
+    // ===== Supervisor name (leader hari ini)
     const supervisorNameByProject = new Map<string, string>();
     if (projectIds.length) {
       const { data: spvRows, error: spvErr } = await supabase
@@ -312,7 +358,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ===== Deteksi "survey" via keberadaan ruangan survey
+    // ===== Deteksi survey
     const surveySet = new Set<string>();
     if (projectIds.length) {
       const rs = await supabase
@@ -323,7 +369,7 @@ export async function GET(req: NextRequest) {
       for (const r of rs.data ?? []) surveySet.add(String(r.project_id));
     }
 
-    // ===== Bentuk respon UI
+    // ===== Bentuk respon
     const items: UiJob[] = projects.map((p) => {
       const uiStatus: UiJob["status"] = p.closed_at
         ? "completed"
