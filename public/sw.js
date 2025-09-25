@@ -1,5 +1,5 @@
 /* public/sw.js */
-const VERSION = "magang-app-v1.0.41";
+const VERSION = "magang-app-v1.0.42";
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -394,6 +394,12 @@ self.addEventListener("fetch", (e) => {
         }
       })()
     );
+    return;
+  }
+
+  // Non-GET requests fallback to network so cache.put isn't fed unsupported methods
+  if (req.method !== "GET") {
+    e.respondWith(fetch(req));
     return;
   }
 

@@ -56,6 +56,7 @@ export async function GET(req?: NextRequest) {
   const url = req ? new URL(req.url) : null;
   const queryDate = url?.searchParams.get("date") || todayWIB;
 
+  // Termasuk project yang tanggal_mulai-nya NULL
   const { data: projects, error: pErr } = await supabaseAdmin
     .from("projects")
     .select(
@@ -70,10 +71,11 @@ export async function GET(req?: NextRequest) {
       tanggal_mulai, tanggal_deadline,
       closed_at, completed_at,
       created_at,
-      id_paket, id_npkt
+      id_paket, id_npkt,
+      template_key, template_lokasi
     `
     )
-    .lte("tanggal_mulai", queryDate)
+    .or(`tanggal_mulai.lte.${queryDate},tanggal_mulai.is.null`)
     .order("created_at", { ascending: false });
 
   if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
@@ -108,7 +110,7 @@ export async function GET(req?: NextRequest) {
     const isPending = p.project_status === "pending" || !!p.pending_reason;
 
     const days_elapsed = computeDaysElapsed({
-      start: p.tanggal_mulai,
+      start: p.tanggal_mulai ?? null,
       today: queryDate,
       deadline: p.tanggal_deadline,
       isPending,
@@ -167,6 +169,10 @@ export async function GET(req?: NextRequest) {
       // NEW: expose supaya UI bisa menampilkan badge/link kalau perlu
       id_paket: p.id_paket ?? null,
       id_npkt: p.id_npkt ?? null,
+
+      // (opsional) berguna untuk halaman upload memilih template lokasi
+      template_key: p.template_key ?? null,
+      template_lokasi: p.template_lokasi ?? null,
     };
   });
 
@@ -182,7 +188,7 @@ type InsertProjectRow = {
   presales_name: string | null;
   tgl_spk_user: string | null;
   tgl_terima_po: string | null;
-  tanggal_mulai: string;
+  tanggal_mulai: string | null; // <- BOLEH NULL
   tanggal_deadline: string;
   sigma_man_days: number;
   sigma_hari: number;
@@ -190,7 +196,8 @@ type InsertProjectRow = {
   project_status: "unassigned";
   jam_datang: string;
   jam_pulang: string;
-  template_key: string;
+  template_key: string | null; // <- BOLEH NULL
+  template_lokasi: string | null; // <- NEW
   durasi_minutes: number;
   insentif: number;
 
@@ -269,14 +276,15 @@ export async function POST(req: NextRequest) {
     namaPresales?: string | null;
     tanggalSpkUser?: string | null;
     tanggalTerimaPo?: string | null;
-    tanggalMulaiProject: string;
+    tanggalMulaiProject?: string | null; // <- opsional
     tanggalDeadlineProject: string;
     sigmaManDays: number;
     sigmaHari: number;
     sigmaTeknisi: number;
-    templateKey: string;
+    templateKey?: string | null; // <- opsional
 
     // NEW
+    templateLokasi?: string | null; // <-- dari UI
     durasiMinutes?: number | null;
     insentif?: number | null;
     paketDetails?: Array<{ seq: number; rw: string | null; rt: string | null }>;
@@ -286,12 +294,8 @@ export async function POST(req: NextRequest) {
     idNpkt?: string | null;
   };
 
-  if (
-    !body.namaProject ||
-    !body.tanggalMulaiProject ||
-    !body.tanggalDeadlineProject ||
-    !body.templateKey
-  ) {
+  // Longgarkan validasi: tanggalMulaiProject & templateKey tidak wajib
+  if (!body.namaProject || !body.tanggalDeadlineProject) {
     return NextResponse.json(
       { error: "Data project tidak lengkap" },
       { status: 400 }
@@ -328,15 +332,20 @@ export async function POST(req: NextRequest) {
     presales_name: body.namaPresales ?? null,
     tgl_spk_user: body.tanggalSpkUser ?? null,
     tgl_terima_po: body.tanggalTerimaPo ?? null,
-    tanggal_mulai: body.tanggalMulaiProject,
+
+    tanggal_mulai: body.tanggalMulaiProject || null, // <- boleh null
     tanggal_deadline: body.tanggalDeadlineProject,
+
     sigma_man_days: body.sigmaManDays ?? 0,
     sigma_hari: body.sigmaHari ?? 0,
     sigma_teknisi: body.sigmaTeknisi ?? 0,
     project_status: "unassigned",
     jam_datang: "08:00:00",
     jam_pulang: "17:00:00",
-    template_key: body.templateKey,
+
+    template_key: (body.templateKey || null) as string | null, // <- boleh null
+    template_lokasi: body.templateLokasi?.trim() || null, // <- ikut tersimpan
+
     durasi_minutes: durasi,
     insentif: insentif,
 
@@ -355,9 +364,12 @@ export async function POST(req: NextRequest) {
     const created: any[] = [];
     const errors: Array<{ seq: number; error: string }> = [];
 
-    // Agar unik(lokasi) aman, gunakan tanggal mulai + RW/RT
+    // Agar unik(lokasi) aman, gunakan tanggal (mulai||deadline||hari ini) + RW/RT
     const baseLokasi = baseInsert.lokasi;
-    const tgl = body.tanggalMulaiProject; // YYYY-MM-DD
+    const baseTgl =
+      body.tanggalMulaiProject ||
+      body.tanggalDeadlineProject ||
+      effectiveWIBDate(); // YYYY-MM-DD fallback
 
     for (const det of paketList) {
       const rw = (det.rw || "").trim();
@@ -370,11 +382,11 @@ export async function POST(req: NextRequest) {
       const rwPad = (rw || "0").padStart(2, "0");
       const rtPad = (rt || "0").padStart(2, "0");
       const lokasi = baseLokasi
-        ? `${baseLokasi} - ${tgl} RW${rwPad}RT${rtPad}`
-        : `${tgl} RW${rwPad}RT${rtPad}`;
+        ? `${baseLokasi} - ${baseTgl} RW${rwPad}RT${rtPad}`
+        : `${baseTgl} RW${rwPad}RT${rtPad}`;
 
       const result = await insertProjectWithRetries({
-        ...baseInsert, // termasuk id_paket / id_npkt
+        ...baseInsert, // termasuk id_paket / id_npkt & template_lokasi
         name,
         lokasi,
       });

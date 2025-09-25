@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const BUCKET = "job-photos";
+const MAX_OBJ = 20 * 1024 * 1024; // 20MB = limit objek di storage
 
 async function ensureBucketExists() {
   const admin = supabaseAdmin();
@@ -24,12 +25,70 @@ async function ensureBucketExists() {
   }
 }
 
-/** Ambil user dari Bearer token atau cookie Supabase */
+/** Peta bantu mime <-> ext */
+const MIME_TO_EXT: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/bmp": "bmp",
+  "image/tiff": "tiff",
+  "image/x-icon": "ico",
+  "image/vnd.microsoft.icon": "ico",
+  "image/heic": "heic",
+  "image/heif": "heif",
+  "image/svg+xml": "svg",
+};
+const EXT_TO_MIME: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  ico: "image/x-icon",
+  cur: "image/x-icon",
+  heic: "image/heic",
+  heif: "image/heif",
+  svg: "image/svg+xml",
+};
+function sanitizeExt(e?: string | null): string | null {
+  if (!e) return null;
+  const ext = e.toLowerCase().replace(/^\./, "");
+  if (ext === "jpeg") return "jpg";
+  if (EXT_TO_MIME[ext]) return ext;
+  return null;
+}
+function inferImageMimeAndExt(
+  file: File
+): { mime: string; ext: string } | null {
+  const t = (file.type || "").toLowerCase();
+  if (t.startsWith("image/")) {
+    const ext = MIME_TO_EXT[t] || t.split("/")[1]?.replace("+xml", "") || "jpg";
+    const normalized = sanitizeExt(ext) || "jpg";
+    const mime = EXT_TO_MIME[normalized] || t;
+    return { mime, ext: normalized };
+  }
+  const name = (file.name || "").toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot > -1) {
+    const extRaw = name.slice(dot + 1);
+    const ext = sanitizeExt(extRaw);
+    if (ext) {
+      const mime = EXT_TO_MIME[ext];
+      if (mime?.startsWith("image/")) return { mime, ext };
+    }
+  }
+  return null;
+}
+
 async function getUserFromRequest(req: Request): Promise<User | null> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
 
-  // 1) Authorization: Bearer <token>
   const authz = req.headers.get("authorization") || "";
   const bearer = authz.startsWith("Bearer ") ? authz.slice(7) : null;
   if (bearer) {
@@ -40,13 +99,11 @@ async function getUserFromRequest(req: Request): Promise<User | null> {
     if (data?.user) return data.user;
   }
 
-  // 2) Cookie access token
-  const c = await cookies(); // sync
+  const cookieStore = await cookies();
   const accessCookie =
-    c.get("sb-access-token")?.value ??
-    c.get("supabase-auth-token")?.value ?? // jaga-jaga nama lain
+    cookieStore.get("sb-access-token")?.value ??
+    cookieStore.get("supabase-auth-token")?.value ??
     null;
-
   if (accessCookie) {
     const supa = createClient(url, anon, {
       global: { headers: { Authorization: `Bearer ${accessCookie}` } },
@@ -54,90 +111,47 @@ async function getUserFromRequest(req: Request): Promise<User | null> {
     const { data } = await supa.auth.getUser();
     if (data?.user) return data.user;
   }
-
   return null;
 }
 
-type GuardOK = {
-  ok: true;
-  uid: string;
-  technicianId?: string | null;
-  role: "technician" | "supervisor";
-};
+type GuardOK = { ok: true; uid: string; technicianId: string };
 type GuardNG = { ok: false; res: NextResponse };
 
-/** Izinkan teknisi ATAU supervisor */
-async function assertUploader(req: Request): Promise<GuardOK | GuardNG> {
+async function assertTechnician(req: Request): Promise<GuardOK | GuardNG> {
   const admin = supabaseAdmin();
   const user = await getUserFromRequest(req);
-
-  if (!user) {
+  if (!user)
     return {
       ok: false,
       res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
     };
-  }
 
-  // Ambil profile (cek technician_id) + email untuk cek supervisor
-  const { data: profile, error: profErr } = await admin
+  const { data: profile, error } = await admin
     .from("profiles")
-    .select("technician_id, email")
+    .select("technician_id")
     .eq("id", user.id)
     .maybeSingle();
 
-  if (profErr) {
+  if (error)
     return {
       ok: false,
       res: NextResponse.json(
-        { error: profErr.message || "Auth profile failed" },
+        { error: error.message || "Auth failed" },
         { status: 500 }
       ),
     };
-  }
 
-  const isTechnician = !!profile?.technician_id;
-  if (isTechnician) {
+  const technicianId = (profile?.technician_id as string) || null;
+  if (!technicianId)
     return {
-      ok: true,
-      uid: user.id,
-      technicianId: profile?.technician_id || null,
-      role: "technician",
+      ok: false,
+      res: NextResponse.json(
+        { error: "Forbidden: hanya teknisi yang dapat mengunggah foto." },
+        { status: 403 }
+      ),
     };
-  }
 
-  // Cek supervisor berdasarkan email
-  const email = (profile?.email || user.email || "").toLowerCase();
-  if (email) {
-    const { data: supv, error: sErr } = await admin
-      .from("supervisors")
-      .select("email")
-      .eq("email", email)
-      .maybeSingle();
-
-    if (sErr) {
-      return {
-        ok: false,
-        res: NextResponse.json(
-          { error: sErr.message || "Auth supervisor failed" },
-          { status: 500 }
-        ),
-      };
-    }
-    if (supv?.email) {
-      return { ok: true, uid: user.id, technicianId: null, role: "supervisor" };
-    }
-  }
-
-  return {
-    ok: false,
-    res: NextResponse.json(
-      {
-        error:
-          "Forbidden: hanya teknisi atau supervisor yang dapat mengunggah foto.",
-      },
-      { status: 403 }
-    ),
-  };
+  return { ok: true, uid: user.id, technicianId };
 }
 
 function toNumOrNull(v: unknown): number | null {
@@ -147,12 +161,11 @@ function toNumOrNull(v: unknown): number | null {
 }
 
 export async function POST(req: Request) {
-  console.log("[job-photos/upload] hit", new Date().toISOString());
   const admin = supabaseAdmin();
-
   try {
-    const guard = await assertUploader(req);
+    const guard = await assertTechnician(req);
     if (!guard.ok) return (guard as GuardNG).res;
+    const { uid, technicianId } = guard as GuardOK;
 
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("multipart/form-data")) {
@@ -184,9 +197,47 @@ export async function POST(req: Request) {
       );
     }
 
+    // ⇨ Validasi ukuran maksimal
+    if (photo.size > MAX_OBJ) {
+      return NextResponse.json(
+        {
+          error: `Ukuran foto (${Math.round(
+            photo.size / 1024 / 1024
+          )}MB) melebihi batas 20MB. Silakan crop/kompres lebih kecil.`,
+        },
+        { status: 413 }
+      );
+    }
+    if (thumb.size > MAX_OBJ) {
+      return NextResponse.json(
+        {
+          error: `Ukuran thumbnail (${Math.round(
+            thumb.size / 1024 / 1024
+          )}MB) melebihi batas 20MB.`,
+        },
+        { status: 413 }
+      );
+    }
+
+    // ⇨ Validasi tipe gambar (mendukung banyak mime)
+    const photoIE = inferImageMimeAndExt(photo);
+    const thumbIE = inferImageMimeAndExt(thumb);
+    if (!photoIE || !photoIE.mime.startsWith("image/")) {
+      return NextResponse.json(
+        { error: "File 'photo' bukan file gambar yang valid (image/*)." },
+        { status: 415 }
+      );
+    }
+    if (!thumbIE || !thumbIE.mime.startsWith("image/")) {
+      return NextResponse.json(
+        { error: "File 'thumb' bukan file gambar yang valid (image/*)." },
+        { status: 415 }
+      );
+    }
+
     await ensureBucketExists();
 
-    // Parent snapshot untuk FK job_photo_entries → job_photos
+    // (0) pastikan parent ada
     {
       const { error } = await admin
         .from("job_photos")
@@ -194,21 +245,17 @@ export async function POST(req: Request) {
           { job_id: jobId, category_id: categoryId },
           { onConflict: "job_id,category_id" }
         );
-      if (error) {
-        return NextResponse.json(
-          { error: `Snapshot upsert failed: ${error.message}` },
-          { status: 500 }
-        );
-      }
+      if (error)
+        return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Upload ke storage
+    // (1) upload ke storage dengan ekstensi & mime asli
     const ts = Date.now();
     const basePath = `${encodeURIComponent(jobId)}/${encodeURIComponent(
       categoryId
     )}`;
-    const fullPath = `${basePath}/${ts}.jpg`;
-    const thumbPath = `${basePath}/${ts}-thumb.jpg`;
+    const fullPath = `${basePath}/${ts}.${photoIE.ext}`;
+    const thumbPath = `${basePath}/${ts}-thumb.${thumbIE.ext}`;
 
     const [photoBuf, thumbBuf] = await Promise.all([
       photo.arrayBuffer().then((ab) => Buffer.from(ab)),
@@ -216,13 +263,13 @@ export async function POST(req: Request) {
     ]);
 
     const up1 = await admin.storage.from(BUCKET).upload(fullPath, photoBuf, {
-      contentType: photo.type || "image/jpeg",
+      contentType: photoIE.mime,
       upsert: true,
     });
     if (up1.error) throw up1.error;
 
     const up2 = await admin.storage.from(BUCKET).upload(thumbPath, thumbBuf, {
-      contentType: thumb.type || "image/jpeg",
+      contentType: thumbIE.mime,
       upsert: true,
     });
     if (up2.error) throw up2.error;
@@ -232,7 +279,7 @@ export async function POST(req: Request) {
       .from(BUCKET)
       .getPublicUrl(thumbPath);
 
-    // Insert riwayat (job_photo_entries)
+    // (2) insert riwayat
     const entryId = crypto.randomUUID();
     const { error: histErr } = await admin.from("job_photo_entries").insert({
       id: entryId,
@@ -251,7 +298,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Update snapshot (job_photos)
+    // (3) update snapshot
     const payload: any = {
       job_id: jobId,
       category_id: categoryId,
@@ -268,21 +315,19 @@ export async function POST(req: Request) {
       .from("job_photos")
       .upsert(payload, { onConflict: "job_id,category_id" });
     if (upErr1) {
-      // fallback tanpa selected_photo_id (kalau FK belum siap di skema)
       const { selected_photo_id, ...fallback } = payload;
       const { error: upErr2 } = await admin
         .from("job_photos")
         .upsert(fallback, { onConflict: "job_id,category_id" });
-      if (upErr2) {
+      if (upErr2)
         return NextResponse.json({ error: upErr2.message }, { status: 500 });
-      }
     }
 
-    // Poin (best-effort)
+    // (4) poin (best-effort)
     try {
       await admin.rpc("add_point_for_upload", {
-        p_technician_id: guard.technicianId ?? null,
-        p_user_id: guard.uid,
+        p_technician_id: technicianId,
+        p_user_id: uid,
         p_job_id: jobId,
         p_category_id: categoryId,
         p_entry_id: entryId,
@@ -294,7 +339,6 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      role: guard.role,
       jobId,
       categoryId,
       photoUrl: fullPub.publicUrl,

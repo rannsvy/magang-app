@@ -1,4 +1,4 @@
-// CreateProjectDialog.tsx
+// components/assign/CreateProjectDialog.tsx
 "use client";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -25,6 +25,24 @@ import {
 } from "@/components/external-id-picker";
 import { calcManDaysInstalasi, calcManDaysSurvey } from "./helpers";
 import { LOKASI_OPTIONS } from "@/lib/photoTemplate.bali";
+/* ===================== Normalisasi Opsi Lokasi ===================== */
+type LokasiOptInput = string | { value: string; label?: string };
+
+function coerceLokasiOptions(
+  src: unknown
+): Array<{ value: string; label: string }> {
+  if (!Array.isArray(src)) return [];
+  return (src as LokasiOptInput[])
+    .map((it) =>
+      typeof it === "string"
+        ? { value: it, label: it }
+        : {
+            value: String((it as any)?.value ?? ""),
+            label: String((it as any)?.label ?? (it as any)?.value ?? ""),
+          }
+    )
+    .filter((o) => !!o.value);
+}
 
 type Props = {
   open: boolean;
@@ -98,7 +116,10 @@ export default function CreateProjectDialog({
       tipeTemplate: "",
     });
 
-  // ===== (NEW - from code 1) Auto Man Days: Instalasi =====
+  // Opsi lokasi siap pakai untuk <select>
+  const lokasiOpts = coerceLokasiOptions(LOKASI_OPTIONS);
+
+  // ===== Auto Man Days: Instalasi =====
   useEffect(() => {
     const md = calcManDaysInstalasi(
       newProjectForm.sigmaHari,
@@ -110,7 +131,7 @@ export default function CreateProjectDialog({
     }));
   }, [newProjectForm.sigmaHari, newProjectForm.sigmaTeknisi]);
 
-  // ===== (NEW - from code 1) Auto Man Days: Survey =====
+  // ===== Auto Man Days: Survey =====
   useEffect(() => {
     const md = calcManDaysSurvey(
       newSurveyProjectForm.totalHari,
@@ -134,7 +155,7 @@ export default function CreateProjectDialog({
     })();
   }, []);
 
-  // ====== Picker eksternal (paket/npkt) [keep from code 2] ======
+  // ====== Picker eksternal (paket/npkt) ======
   const [externalSelected, setExternalSelected] =
     useState<ExternalSelected>(null);
 
@@ -155,7 +176,7 @@ export default function CreateProjectDialog({
     salesName?: string;
     namaPaket?: string;
   } {
-    // 1) Bentuk sudah di-shape oleh route /api/pog/detail
+    // 1) Sudah di-shape oleh route /api/pog/detail
     if (anyResp && (anyResp.lokasi || anyResp.salesName || anyResp.meta)) {
       const lok = typeof anyResp.lokasi === "string" ? anyResp.lokasi : "";
       const sname =
@@ -173,14 +194,10 @@ export default function CreateProjectDialog({
       (Array.isArray(anyResp?.data) && anyResp.data) ||
       [];
 
-    const first =
-      list[0] ||
-      // beberapa API mungkin menaruh langsung array di root
-      (Array.isArray(anyResp) ? anyResp[0] : undefined);
+    const first = list[0] || (Array.isArray(anyResp) ? anyResp[0] : undefined);
 
     if (!first) return {};
 
-    // gabungkan instansi + alamatInstansi
     const instansi = first.instansi ? String(first.instansi).trim() : "";
     const alamat = first.alamatInstansi
       ? cleanupAddress(String(first.alamatInstansi))
@@ -195,7 +212,7 @@ export default function CreateProjectDialog({
     return { lokasi, salesName, namaPaket };
   }
 
-  // Ambil detail POG segera saat user memilih ID (paket/npkt)
+  // Ambil detail POG saat user memilih ID (paket/npkt)
   useEffect(() => {
     if (!externalSelected?.id || !externalSelected?.type) {
       lastApplied.current = null;
@@ -219,7 +236,7 @@ export default function CreateProjectDialog({
 
         const { lokasi, salesName } = parseDetail(resp);
 
-        // Autofill form Instalasi (TANPA menyentuh namaProject)
+        // Autofill Instalasi (tanpa sentuh namaProject)
         setNewProjectForm((prev) => {
           const next = { ...prev };
           if ((!lokasiTouched.current || !prev.lokasi) && lokasi) {
@@ -231,7 +248,7 @@ export default function CreateProjectDialog({
           return next;
         });
 
-        // Autofill form Survey (TANPA menyentuh namaProject)
+        // Autofill Survey (tanpa sentuh namaProject)
         setNewSurveyProjectForm((prev) => {
           const next = { ...prev };
           if (!prev.lokasi && lokasi) next.lokasi = lokasi;
@@ -411,21 +428,15 @@ export default function CreateProjectDialog({
     sales: (p as any).sales ?? p.sales_name ?? (p as any).nama_sales ?? "",
   });
 
-  // ====== Submit instalasi (gabungan: code 2 + auto-calc dari code 1) ======
+  // ====== Submit instalasi ======
   const submitInstalasi = async () => {
     if (
       !newProjectForm.namaProject ||
-      !newProjectForm.tanggalMulaiProject ||
       !newProjectForm.tanggalDeadlineProject ||
       !newProjectForm.sigmaHari ||
       !newProjectForm.sigmaTeknisi
     )
       return;
-
-    if (!newProjectForm.tipeTemplate) {
-      setTmplErr("Harap pilih tipe template");
-      return;
-    }
     if (
       !validateDates(
         newProjectForm.tanggalMulaiProject,
@@ -434,14 +445,12 @@ export default function CreateProjectDialog({
     )
       return;
 
-    // Recompute Man Days (defensive)
     const md = calcManDaysInstalasi(
       newProjectForm.sigmaHari,
       newProjectForm.sigmaTeknisi
     );
     if (md <= 0) return;
 
-    // sinkronkan UI (opsional)
     if (String(md) !== newProjectForm.sigmaManDays) {
       setNewProjectForm((prev) => ({ ...prev, sigmaManDays: String(md) }));
     }
@@ -459,10 +468,11 @@ export default function CreateProjectDialog({
         tanggalTerimaPo: newProjectForm.tanggalTerimaPo || null,
         tanggalMulaiProject: newProjectForm.tanggalMulaiProject,
         tanggalDeadlineProject: newProjectForm.tanggalDeadlineProject,
-        sigmaManDays: md, // gunakan hasil kalkulasi
+        sigmaManDays: md,
         sigmaHari: Number(newProjectForm.sigmaHari),
         sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
         templateKey: newProjectForm.tipeTemplate,
+        templateLokasi: newProjectForm.templateLokasi || null,
         durasiMinutes: newProjectForm.durasi
           ? Number(newProjectForm.durasi)
           : undefined,
@@ -475,7 +485,6 @@ export default function CreateProjectDialog({
             rw: p.rw || null,
             rt: p.rt || null,
           })) ?? [],
-        // pertahankan integrasi code 2
         idPaket:
           externalSelected?.type === "paket" ? externalSelected.id : null,
         idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
@@ -500,7 +509,7 @@ export default function CreateProjectDialog({
     }
   };
 
-  // ====== Submit survey (gabungan: code 2 + auto-calc dari code 1) ======
+  // ====== Submit survey ======
   const submitSurvey = async () => {
     if (
       !newSurveyProjectForm.namaProject ||
@@ -522,14 +531,12 @@ export default function CreateProjectDialog({
     )
       return;
 
-    // Recompute Man Days (defensive)
     const md = calcManDaysSurvey(
       newSurveyProjectForm.totalHari,
       newSurveyProjectForm.totalTeknisi
     );
     if (md <= 0) return;
 
-    // sinkronkan UI (opsional)
     if (String(md) !== newSurveyProjectForm.totalManDays) {
       setNewSurveyProjectForm((prev) => ({
         ...prev,
@@ -547,10 +554,9 @@ export default function CreateProjectDialog({
         tanggalDeadlineProject: newSurveyProjectForm.tanggalDeadlineProject,
         totalHari: Number(newSurveyProjectForm.totalHari),
         totalTeknisi: Number(newSurveyProjectForm.totalTeknisi),
-        totalManDays: md, // gunakan hasil kalkulasi
+        totalManDays: md,
         tipeTemplate: newSurveyProjectForm.tipeTemplate,
         roomDetails: newSurveyProjectForm.roomDetails ?? [],
-        // pertahankan integrasi code 2
         idPaket:
           externalSelected?.type === "paket" ? externalSelected.id : null,
         idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
@@ -581,13 +587,12 @@ export default function CreateProjectDialog({
     else submitInstalasi();
   };
 
-  // ====== Can create (pakai kalkulasi md dari code 1) ======
+  // ====== Can create ======
   const canCreate =
     projectCategory === "survey"
       ? !!newSurveyProjectForm.namaProject &&
         !!newSurveyProjectForm.namaGedung &&
         !!newSurveyProjectForm.lokasi &&
-        !!newSurveyProjectForm.tanggalMulaiProject &&
         !!newSurveyProjectForm.tanggalDeadlineProject &&
         calcManDaysSurvey(
           newSurveyProjectForm.totalHari,
@@ -598,7 +603,6 @@ export default function CreateProjectDialog({
         !!newSurveyProjectForm.tipeTemplate &&
         !dateErr
       : !!newProjectForm.namaProject &&
-        !!newProjectForm.tanggalMulaiProject &&
         !!newProjectForm.tanggalDeadlineProject &&
         calcManDaysInstalasi(
           newProjectForm.sigmaHari,
@@ -606,7 +610,6 @@ export default function CreateProjectDialog({
         ) > 0 &&
         !!newProjectForm.sigmaHari &&
         !!newProjectForm.sigmaTeknisi &&
-        !!newProjectForm.tipeTemplate &&
         !dateErr;
 
   return (
@@ -704,7 +707,37 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
-            {/* Picker eksternal (pertahankan integrasi code 2) */}
+            {/* Template Lokasi (opsional) */}
+            <div className="flex flex-col md:flex-row md:items-start gap-2">
+              <Label htmlFor="templateLokasi" className="min-w-[120px] md:mt-2">
+                Template Lokasi
+              </Label>
+              <div className="flex-1">
+                <select
+                  id="templateLokasi"
+                  value={newProjectForm.templateLokasi}
+                  onChange={(e) =>
+                    setNewProjectForm({
+                      ...newProjectForm,
+                      templateLokasi: e.target.value,
+                    })
+                  }
+                  className="flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm border-input"
+                >
+                  <option value="">Default</option>
+                  {lokasiOpts.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Opsional — pilih variasi template berdasarkan lokasi.
+                </p>
+              </div>
+            </div>
+
+            {/* Picker eksternal */}
             <ExternalIdPicker
               value={externalSelected}
               onChange={(v) => {
@@ -870,7 +903,6 @@ export default function CreateProjectDialog({
                     className="min-w-[120px]"
                   >
                     Tanggal Mulai Instalasi{" "}
-                    <span className="text-red-500">*</span>
                   </Label>
                   <input
                     id="tanggalMulaiProject"
@@ -887,7 +919,6 @@ export default function CreateProjectDialog({
                       );
                     }}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    required
                   />
                 </div>
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
@@ -1023,7 +1054,7 @@ export default function CreateProjectDialog({
                     htmlFor="tipeTemplate"
                     className="min-w-[120px] md:mt-2"
                   >
-                    Tipe Template <span className="text-red-500">*</span>
+                    Tipe Template
                   </Label>
                   <div className="flex-1">
                     <select
@@ -1039,7 +1070,6 @@ export default function CreateProjectDialog({
                       className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
                         tmplErr ? "border-red-500" : "border-input"
                       }`}
-                      required
                     >
                       <option value="" disabled>
                         Pilih Tipe Template
@@ -1149,7 +1179,7 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
-            {/* Picker eksternal (pertahankan integrasi code 2) */}
+            {/* Picker eksternal */}
             <ExternalIdPicker
               value={externalSelected}
               onChange={(v) => {

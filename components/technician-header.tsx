@@ -326,42 +326,43 @@ export function TechnicianHeader({
         const email = authRes?.user?.email ?? undefined;
         if (!uid && !email) return;
 
-        // by auth_user_id
-        let q1 = await supabase
-          .from("technicians")
-          .select("id")
-          .eq("auth_user_id", uid || "__no_uid__")
-          .limit(1)
-          .single();
-        if (!q1.error && q1.data?.id) {
-          if (alive) setTechIdAuto(q1.data.id);
-          return;
-        }
+        // prefer mapping via profiles first
+        let profTechId: string | null = null;
+        let profileEmail: string | undefined = undefined;
 
-        // fallback by user_id
-        let q2 = await supabase
-          .from("technicians")
-          .select("id")
-          .eq("user_id", uid || "__no_uid__")
-          .limit(1)
-          .single();
-        if (!q2.error && q2.data?.id) {
-          if (alive) setTechIdAuto(q2.data.id);
-          return;
-        }
+        if (uid) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("technician_id, email")
+            .eq("id", uid)
+            .maybeSingle();
 
-        // fallback by email
-        if (email) {
-          let q3 = await supabase
-            .from("technicians")
-            .select("id")
-            .eq("email", email)
-            .limit(1)
-            .single();
-          if (!q3.error && q3.data?.id) {
-            if (alive) setTechIdAuto(q3.data.id);
-            return;
+          if (profile?.technician_id) {
+            profTechId = String(profile.technician_id);
           }
+          if (profile?.email) {
+            const trimmed = String(profile.email).trim();
+            if (trimmed) profileEmail = trimmed;
+          }
+        }
+
+        if (profTechId) {
+          if (alive) setTechIdAuto(profTechId);
+          return;
+        }
+
+        const lookupEmail = profileEmail ?? email;
+        if (!lookupEmail) return;
+
+        const { data: techByEmail, error: techByEmailError } = await supabase
+          .from("technicians")
+          .select("id")
+          .eq("email", lookupEmail)
+          .maybeSingle();
+
+        if (!techByEmailError && techByEmail?.id) {
+          if (alive) setTechIdAuto(techByEmail.id);
+          return;
         }
       } catch {}
     })();

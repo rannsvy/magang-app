@@ -25,7 +25,6 @@ export async function safeUpload(opts: {
 
     const headers: Record<string, string> = {};
     if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
-    // bypass SW saat development supaya gampang tracing
     if (process.env.NODE_ENV !== "production") headers["x-sw-bypass"] = "1";
 
     const res = await fetch(endpoint, {
@@ -34,7 +33,7 @@ export async function safeUpload(opts: {
       credentials: "include",
       headers,
       cache: "no-store",
-      keepalive: true,
+      // ⛔️ JANGAN pakai keepalive untuk FormData besar
     });
 
     let json: any = null;
