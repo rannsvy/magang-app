@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const BUCKET = "job-photos";
+const MAX_OBJ = 20 * 1024 * 1024; // 20MB
 
 /* ===================== Bucket helper ===================== */
 async function ensureBucketExists() {
@@ -23,6 +24,86 @@ async function ensureBucketExists() {
     });
     if (cErr) throw cErr;
   }
+}
+
+/* ===================== MIME/EXT helpers ===================== */
+const MIME_TO_EXT: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/bmp": "bmp",
+  "image/tiff": "tiff",
+  "image/x-icon": "ico",
+  "image/vnd.microsoft.icon": "ico",
+  "image/heic": "heic",
+  "image/heif": "heif",
+  "image/svg+xml": "svg",
+};
+const EXT_TO_MIME: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+  ico: "image/x-icon",
+  cur: "image/x-icon",
+  heic: "image/heic",
+  heif: "image/heif",
+  svg: "image/svg+xml",
+};
+function sanitizeExt(e?: string | null): string | null {
+  if (!e) return null;
+  const ext = e.toLowerCase().replace(/^\./, "");
+  if (ext === "jpeg") return "jpg";
+  if (EXT_TO_MIME[ext]) return ext;
+  return null;
+}
+function inferImageMimeAndExt(file: File): { mime: string; ext: string } | null {
+  const t = (file.type || "").toLowerCase();
+  if (t.startsWith("image/")) {
+    const ext = MIME_TO_EXT[t] || t.split("/")[1]?.replace("+xml", "") || "jpg";
+    const normalized = sanitizeExt(ext) || "jpg";
+    const mime = EXT_TO_MIME[normalized] || t;
+    return { mime, ext: normalized };
+  }
+  const name = (file.name || "").toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot > -1) {
+    const extRaw = name.slice(dot + 1);
+    const ext = sanitizeExt(extRaw);
+    if (ext) {
+      const mime = EXT_TO_MIME[ext];
+      if (mime?.startsWith("image/")) return { mime, ext };
+    }
+  }
+  return null;
+}
+
+function extFromMime(mime?: string | null) {
+  const m = (mime || "").toLowerCase();
+  if (m.includes("png")) return "png";
+  if (m.includes("webp")) return "webp";
+  if (m.includes("gif")) return "gif";
+  if (m.includes("bmp")) return "bmp";
+  if (m.includes("jpeg") || m.includes("jpg")) return "jpg";
+  return "jpg";
+}
+
+function dataUrlToBuffer(
+  dataUrl: string
+): { buf: Buffer; mime: string; ext: string } {
+  const m = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+  if (!m) throw new Error("Invalid dataUrl");
+  const mime = m[1];
+  const b64 = m[2];
+  const buf = Buffer.from(b64, "base64");
+  const ext = extFromMime(mime);
+  return { buf, mime, ext };
 }
 
 /* ===================== Auth helpers ===================== */
@@ -63,15 +144,12 @@ type GuardOK =
   | { ok: true; uid: string; role: "supervisor"; technicianId: null };
 type GuardNG = { ok: false; res: NextResponse };
 
-/** Izinkan teknisi ATAU supervisor.
- * Coba session server (supabaseServer) lalu fallback ke Authorization/cookie.
- * Pakai supabaseAdmin untuk cek profile/supervisors agar bebas RLS.
- */
+/** Izinkan teknisi ATAU supervisor. */
 async function assertUploader(req: Request): Promise<GuardOK | GuardNG> {
   let uid: string | null = null;
   let email: string | null = null;
 
-  // 1) Coba via supabaseServer (session dari cookies di request)
+  // 1) Coba via supabaseServer (cookie session)
   try {
     const supa = supabaseServer();
     const { data: auth, error: authErr } = await supa.auth.getUser();
@@ -80,7 +158,7 @@ async function assertUploader(req: Request): Promise<GuardOK | GuardNG> {
       email = auth.user.email ?? null;
     }
   } catch {
-    // ignore
+    /* ignore */
   }
 
   // 2) Fallback ke Authorization/cookie
@@ -113,12 +191,12 @@ async function assertUploader(req: Request): Promise<GuardOK | GuardNG> {
     };
   }
 
-  const technicianId = profile?.technician_id as string | null;
+  const technicianId = (profile?.technician_id as string) || null;
   if (technicianId) {
     return { ok: true, uid, role: "technician", technicianId };
   }
 
-  // Cek supervisor berdasar email (dari profile atau auth)
+  // Supervisor berdasarkan email
   const mail = (profile?.email || email || "").toLowerCase();
   if (mail) {
     const { data: supv, error: sErr } = await supabaseAdmin
@@ -145,39 +223,18 @@ async function assertUploader(req: Request): Promise<GuardOK | GuardNG> {
     ok: false,
     res: NextResponse.json(
       {
-        error: "Forbidden: hanya teknisi atau supervisor yang dapat mengunggah foto.",
+        error:
+          "Forbidden: hanya teknisi atau supervisor yang dapat mengunggah foto.",
       },
       { status: 403 }
     ),
   };
 }
 
-/* ===================== Upload helpers ===================== */
-function extFromMime(mime?: string | null) {
-  const m = (mime || "").toLowerCase();
-  if (m.includes("png")) return "png";
-  if (m.includes("webp")) return "webp";
-  if (m.includes("gif")) return "gif";
-  if (m.includes("bmp")) return "bmp";
-  if (m.includes("jpeg") || m.includes("jpg")) return "jpg";
-  return "jpg";
-}
-
-function dataUrlToBuffer(
-  dataUrl: string
-): { buf: Buffer; mime: string; ext: string } {
-  const m = dataUrl.match(/^data:(.+?);base64,(.+)$/);
-  if (!m) throw new Error("Invalid dataUrl");
-  const mime = m[1];
-  const b64 = m[2];
-  const buf = Buffer.from(b64, "base64");
-  const ext = extFromMime(mime);
-  return { buf, mime, ext };
-}
-
+/* ===================== Upload helper ===================== */
 async function uploadToSupabase(
   jobId: string,
-  categoryId: string,
+  categoryId: string | number,
   fileBuf: Buffer,
   mime: string,
   ts: number,
@@ -212,11 +269,11 @@ export async function POST(req: Request) {
 
     await ensureBucketExists();
 
-    const ct = req.headers.get("content-type") || "";
+    const ct = (req.headers.get("content-type") || "").toLowerCase();
 
-    // field umum + opsional
+    // Field umum & opsional
     let jobId = "";
-    let categoryId = "";
+    let categoryId: string | number = "";
     let serialNumber: string | null = null;
     let meterStr: string | null = null;
     let tokenRaw: string | null = null;
@@ -251,22 +308,71 @@ export async function POST(req: Request) {
         );
       }
 
+      // ⇨ Validasi ukuran maksimal
+      if (photo.size > MAX_OBJ) {
+        return NextResponse.json(
+          {
+            error: `Ukuran foto (${Math.round(
+              photo.size / 1024 / 1024
+            )}MB) melebihi batas 20MB. Silakan crop/kompres lebih kecil.`,
+          },
+          { status: 413 }
+        );
+      }
+      if (thumb.size > MAX_OBJ) {
+        return NextResponse.json(
+          {
+            error: `Ukuran thumbnail (${Math.round(
+              thumb.size / 1024 / 1024
+            )}MB) melebihi batas 20MB.`,
+          },
+          { status: 413 }
+        );
+      }
+
+      // ⇨ Validasi tipe gambar (mendukung banyak mime)
+      const photoIE = inferImageMimeAndExt(photo);
+      const thumbIE = inferImageMimeAndExt(thumb);
+      if (!photoIE || !photoIE.mime.startsWith("image/")) {
+        return NextResponse.json(
+          { error: "File 'photo' bukan file gambar yang valid (image/*)." },
+          { status: 415 }
+        );
+      }
+      if (!thumbIE || !thumbIE.mime.startsWith("image/")) {
+        return NextResponse.json(
+          { error: "File 'thumb' bukan file gambar yang valid (image/*)." },
+          { status: 415 }
+        );
+      }
+
       // File → Buffer
       const [photoBuf, thumbBuf] = await Promise.all([
         photo.arrayBuffer().then((ab) => Buffer.from(ab)),
         thumb.arrayBuffer().then((ab) => Buffer.from(ab)),
       ]);
 
-      const photoMime = photo.type || "image/jpeg";
-      const thumbMime = thumb.type || "image/jpeg";
-      const photoExt = extFromMime(photoMime);
-      const thumbExt = extFromMime(thumbMime);
-
       // Upload
-      photoUrl = await uploadToSupabase(jobId, categoryId, photoBuf, photoMime, ts, "full", photoExt);
-      thumbUrl = await uploadToSupabase(jobId, categoryId, thumbBuf, thumbMime, ts, "thumb", thumbExt);
+      photoUrl = await uploadToSupabase(
+        jobId,
+        categoryId,
+        photoBuf,
+        photoIE.mime,
+        ts,
+        "full",
+        photoIE.ext
+      );
+      thumbUrl = await uploadToSupabase(
+        jobId,
+        categoryId,
+        thumbBuf,
+        thumbIE.mime,
+        ts,
+        "thumb",
+        thumbIE.ext
+      );
     } else if (ct.includes("application/json")) {
-      // === MODE: JSON dataUrl (kompat) ===
+      // === MODE: JSON dataUrl (kompat PWA) ===
       const body = await req.json();
       jobId = String(body.jobId || body.j || "");
       categoryId = String(body.categoryId || body.c || "");
@@ -274,11 +380,13 @@ export async function POST(req: Request) {
       const thumbDataUrl: string | undefined = body.thumbDataUrl;
 
       // opsional
-      serialNumber = body.serialNumber != null ? String(body.serialNumber) : null;
+      serialNumber =
+        body.serialNumber != null ? String(body.serialNumber) : null;
       meterStr = body.meter != null ? String(body.meter) : null;
       tokenRaw = body.token != null ? String(body.token) : null;
       tokenNum = tokenRaw ? Number(tokenRaw) : null;
-      sharpnessStr = body.sharpness != null ? String(body.sharpness) : null;
+      sharpnessStr =
+        body.sharpness != null ? String(body.sharpness) : null;
 
       if (!jobId || !categoryId || !dataUrl || !thumbDataUrl) {
         return NextResponse.json(
@@ -290,8 +398,46 @@ export async function POST(req: Request) {
       const full = dataUrlToBuffer(dataUrl);
       const th = dataUrlToBuffer(thumbDataUrl);
 
-      photoUrl = await uploadToSupabase(jobId, categoryId, full.buf, full.mime, ts, "full", full.ext);
-      thumbUrl = await uploadToSupabase(jobId, categoryId, th.buf, th.mime, ts, "thumb", th.ext);
+      // size guard for dataUrl payloads
+      if (full.buf.length > MAX_OBJ) {
+        return NextResponse.json(
+          {
+            error: `Ukuran foto (${Math.round(
+              full.buf.length / 1024 / 1024
+            )}MB) melebihi batas 20MB.`,
+          },
+          { status: 413 }
+        );
+      }
+      if (th.buf.length > MAX_OBJ) {
+        return NextResponse.json(
+          {
+            error: `Ukuran thumbnail (${Math.round(
+              th.buf.length / 1024 / 1024
+            )}MB) melebihi batas 20MB.`,
+          },
+          { status: 413 }
+        );
+      }
+
+      photoUrl = await uploadToSupabase(
+        jobId,
+        categoryId,
+        full.buf,
+        full.mime,
+        ts,
+        "full",
+        full.ext
+      );
+      thumbUrl = await uploadToSupabase(
+        jobId,
+        categoryId,
+        th.buf,
+        th.mime,
+        ts,
+        "thumb",
+        th.ext
+      );
     } else {
       // Content-Type tidak didukung → kasih clue
       const peek = (await req.text()).slice(0, 80);
@@ -306,20 +452,17 @@ export async function POST(req: Request) {
     }
 
     // Konversi meter & sharpness
-    const meterNum =
-      meterStr != null && meterStr !== "" && !Number.isNaN(Number(meterStr))
-        ? Number(meterStr)
-        : null;
-    const sharpnessNum =
-      sharpnessStr != null && sharpnessStr !== "" && !Number.isNaN(Number(sharpnessStr))
-        ? Number(sharpnessStr)
-        : null;
+    const meterNum = toNumOrNull(meterStr);
+    const sharpnessNum = toNumOrNull(sharpnessStr);
 
     // (Opsional) pastikan parent snapshot ada (untuk FK/relasi tertentu)
     try {
       await supabaseAdmin
         .from("job_photos")
-        .upsert({ job_id: jobId, category_id: String(categoryId) }, { onConflict: "job_id,category_id" });
+        .upsert(
+          { job_id: jobId, category_id: String(categoryId) },
+          { onConflict: "job_id,category_id" }
+        );
     } catch {
       /* best-effort */
     }
@@ -328,16 +471,18 @@ export async function POST(req: Request) {
     const entryId = crypto.randomUUID();
     let entryInserted = false;
     try {
-      const { error: histErr } = await supabaseAdmin.from("job_photo_entries").insert({
-        id: entryId,
-        job_id: jobId,
-        category_id: String(categoryId),
-        url: photoUrl,
-        thumb_url: thumbUrl,
-        created_at: new Date().toISOString(),
-        sharpness: sharpnessNum,
-        token: tokenNum,
-      });
+      const { error: histErr } = await supabaseAdmin
+        .from("job_photo_entries")
+        .insert({
+          id: entryId,
+          job_id: jobId,
+          category_id: String(categoryId),
+          url: photoUrl,
+          thumb_url: thumbUrl,
+          created_at: new Date().toISOString(),
+          sharpness: sharpnessNum, // may be null
+          token: tokenNum, // may be null
+        });
       if (!histErr) entryInserted = true;
     } catch {
       /* ignore agar tetap lanjut */
@@ -387,7 +532,10 @@ export async function POST(req: Request) {
         .from("job_photos")
         .upsert(fallbackPayload, { onConflict: "job_id,category_id" });
       if (upErr2) {
-        return NextResponse.json({ error: "Failed to save snapshot" }, { status: 500 });
+        return NextResponse.json(
+          { error: "Failed to save snapshot" },
+          { status: 500 }
+        );
       }
     }
 

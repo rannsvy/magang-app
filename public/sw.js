@@ -1,5 +1,5 @@
 /* public/sw.js — merged: fast offline upload with timeout & ACK + auth/api bypass + survey + replay w/ cookies */
-const VERSION = "magang-app-v1.0.61"; // bump versi agar SW baru aktif
+const VERSION = "magang-app-v1.0.70"; // bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -27,7 +27,7 @@ const QUEUE_STORE = "requests";
 const UPLOAD_PATH = "/api/job-photos/upload";
 const META_PATH = "/api/job-photos/meta";
 
-// 🔥 Survey endpoints (optional additional flows)
+// 🔥 Survey endpoints (opsional tambahan)
 const SURVEY_UPLOAD_PATH = "/api/survey/uploads";
 // const SURVEY_META_PATH = "/api/survey/meta";
 
@@ -301,7 +301,7 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
-  // Manual bypass untuk debugging
+  // Manual bypass untuk debugging (X-SW-Bypass: 1)
   if (req.headers.get("x-sw-bypass") === "1") return;
 
   // 🔐 BYPASS: semua rute auth → biarkan browser handle (cookie ikut)
@@ -312,7 +312,7 @@ self.addEventListener("fetch", (e) => {
       url.pathname.startsWith("/auth/callback") ||
       url.pathname === "/auth/confirm" ||
       url.pathname.startsWith("/auth/confirm") ||
-      url.pathname.startsWith("/auth/")
+      url.pathname.startsWith("/auth/") // umumkan semua /auth/**
     )
   ) {
     return; // no intercept
