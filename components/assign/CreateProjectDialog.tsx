@@ -67,6 +67,172 @@ type ShapedDetail = {
   [k: string]: any;
 };
 
+/* ======= SearchableSelect (combobox sederhana) ======= */
+type SOption = { value: string; label: string };
+
+type SearchableSelectProps = {
+  id?: string;
+  value: string; // nilai yang tersimpan (value)
+  options: SOption[]; // sumber pilihan
+  onChange: (val: string) => void; // return value yang dipilih
+  placeholder?: string;
+  includeDefault?: boolean; // tampilkan baris "Default" (value = "")
+};
+
+function SearchableSelect({
+  id,
+  value,
+  options,
+  onChange,
+  placeholder = "Cari…",
+  includeDefault = true,
+}: SearchableSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [inputVal, setInputVal] = useState("");
+  const [hlIdx, setHlIdx] = useState(0);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  // sinkronkan tampilan input dengan value terpilih
+  useEffect(() => {
+    const found = options.find((o) => o.value === value);
+    setInputVal(found ? found.label : "");
+  }, [value, options]);
+
+  const q = inputVal.trim().toLowerCase();
+  const filtered =
+    q.length === 0
+      ? options
+      : options.filter(
+          (o) =>
+            o.label.toLowerCase().includes(q) ||
+            o.value.toLowerCase().includes(q)
+        );
+
+  const finalList: Array<{ _k: string; opt: SOption | null }> = [
+    ...(includeDefault
+      ? [{ _k: "__default__", opt: null as SOption | null }]
+      : []),
+    ...filtered.map((o) => ({ _k: o.value, opt: o })),
+  ];
+
+  useEffect(() => {
+    // reset highlight ketika list berubah / dibuka
+    setHlIdx(0);
+  }, [q, open]);
+
+  // tutup saat klik di luar
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!boxRef.current) return;
+      if (!boxRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const pick = (opt: SOption | null) => {
+    if (!opt) {
+      onChange("");
+      setInputVal("");
+    } else {
+      onChange(opt.value);
+      setInputVal(opt.label);
+    }
+    setOpen(false);
+  };
+
+  const onKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
+    if (!open && (e.key === "ArrowDown" || e.key === "Enter")) {
+      setOpen(true);
+      return;
+    }
+    if (!open) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHlIdx((i) => Math.min(i + 1, finalList.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHlIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const item = finalList[hlIdx];
+      if (item) pick(item.opt);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div ref={boxRef} className="relative">
+      <div className="flex items-center gap-2">
+        <input
+          id={id}
+          value={inputVal}
+          onChange={(e) => {
+            setInputVal(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder={placeholder}
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          autoComplete="off"
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={id ? `${id}-listbox` : undefined}
+        />
+        {value !== "" && (
+          <button
+            type="button"
+            onClick={() => pick(null)}
+            className="text-xs px-2 py-1 rounded-md border border-input hover:bg-gray-100"
+            title="Set ke Default"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div
+          id={id ? `${id}-listbox` : undefined}
+          role="listbox"
+          className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-input bg-popover shadow-md"
+        >
+          {finalList.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-gray-500">
+              Tidak ada hasil
+            </div>
+          ) : (
+            finalList.map((row, idx) => {
+              const isActive = idx === hlIdx;
+              const isDefault = row.opt === null;
+              return (
+                <button
+                  key={row._k}
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  onMouseEnter={() => setHlIdx(idx)}
+                  onMouseDown={(e) => e.preventDefault()} // jangan hilang fokus
+                  onClick={() => pick(row.opt)}
+                  className={`w-full text-left px-3 py-2 text-sm ${
+                    isActive ? "bg-accent" : ""
+                  } ${
+                    isDefault ? "text-gray-700 font-medium" : "text-foreground"
+                  }`}
+                >
+                  {isDefault ? "Default" : row.opt!.label}
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CreateProjectDialog({
   open,
   onOpenChange,
@@ -713,26 +879,22 @@ export default function CreateProjectDialog({
                 Template Lokasi
               </Label>
               <div className="flex-1">
-                <select
+                <SearchableSelect
                   id="templateLokasi"
-                  value={newProjectForm.templateLokasi}
-                  onChange={(e) =>
-                    setNewProjectForm({
-                      ...newProjectForm,
-                      templateLokasi: e.target.value,
-                    })
+                  value={newProjectForm.templateLokasi ?? ""} // <-- COERCE KE STRING
+                  options={lokasiOpts}
+                  onChange={(val) =>
+                    setNewProjectForm((prev) => ({
+                      ...prev,
+                      templateLokasi: val,
+                    }))
                   }
-                  className="flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm border-input"
-                >
-                  <option value="">Default</option>
-                  {lokasiOpts.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+                  placeholder="Cari lokasi template…"
+                  includeDefault={true}
+                />
                 <p className="text-xs text-gray-500 mt-1">
-                  Opsional — pilih variasi template berdasarkan lokasi.
+                  Opsional — pilih variasi template berdasarkan lokasi. Ketik
+                  untuk mencari.
                 </p>
               </div>
             </div>
