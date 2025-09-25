@@ -487,13 +487,13 @@ async function fetchWhoAmI(): Promise<WhoAmI> {
   return { isTechnician, isSupervisor, isSales, supervisorRole };
 }
 
-/* ================= Page (code 2 + perizinan code 1) ================= */
+/* ================= Page (gabungan dengan perbaikan penyimpanan saat cropping) ================= */
 export default function UploadFotoPage() {
   const sp = useSearchParams();
   const qJob = sp.get("job") ?? "";
   const [jobId, setJobId] = useState<string>(qJob);
 
-  // >>> Mode Edit / View-only (merge dari code 1)
+  // Mode Edit / View-only
   const [editable, setEditable] = useState<boolean>(false);
   const [accessLoaded, setAccessLoaded] = useState(false);
   const [who, setWho] = useState<WhoAmI>({
@@ -928,7 +928,7 @@ export default function UploadFotoPage() {
     if (el) el.value = "";
   };
 
-  // Behavior klik kartu (merge): di view-only tidak bisa ambil foto baru
+  // Klik kartu → (view-only: hanya review jika ada foto)
   const handleCardClick = (cat: PhotoCategory) => {
     const thumbSel = getSelectedThumb(cat);
     if (editable) {
@@ -955,7 +955,7 @@ export default function UploadFotoPage() {
     setReviewOpen(true);
   };
 
-  // Tambah foto dari dalam Review — tidak menutup Review
+  // Tambah foto dari Review — tidak menutup Review
   const handleAddPhotoFromReview = (catId: string) => {
     fileInputRefs.current[catId]?.click();
   };
@@ -1064,29 +1064,89 @@ export default function UploadFotoPage() {
     onImageLoaded(imgRef.current);
   }, [aspect]);
 
-  /* ============== KONFIRM CROP (merge dengan versi terbaru) ============== */
+  // Kompresi sebelum upload agar aman <~8MB
+  async function compressForUpload(
+    srcBlob: Blob,
+    maxSide = 3000,
+    targetMaxBytes = 8 * 1024 * 1024
+  ): Promise<Blob> {
+    const dataUrl = await new Promise<string>((res) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result as string);
+      fr.readAsDataURL(srcBlob);
+    });
+
+    const img = await new Promise<HTMLImageElement>((res, rej) => {
+      const im = new Image();
+      (im as any).decoding = "async";
+      im.onload = () => res(im);
+      im.onerror = rej;
+      im.src = dataUrl;
+    });
+
+    const scale = Math.min(
+      1,
+      maxSide / Math.max(img.naturalWidth, img.naturalHeight)
+    );
+    const W = Math.max(1, Math.round(img.naturalWidth * scale));
+    const H = Math.max(1, Math.round(img.naturalHeight * scale));
+
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const ctx = c.getContext("2d")!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, W, H);
+
+    let q = 0.9;
+    let out = await new Promise<Blob>((ok) =>
+      c.toBlob((b) => ok(b!), "image/jpeg", q)
+    );
+    while (out.size > targetMaxBytes && q > 0.5) {
+      q -= 0.1;
+      out = await new Promise<Blob>((ok) =>
+        c.toBlob((b) => ok(b!), "image/jpeg", q)
+      );
+    }
+    return out;
+  }
+
+  /* ============== KONFIRM CROP (gabungan dengan perbaikan penyimpanan & kompresi) ============== */
   const handleConfirmCrop = async () => {
-    if (!imgRef.current || !completedCrop || !pendingCategoryId) return;
+    // Bekukan ID agar tidak terpengaruh re-render ketika upload berlangsung
+    const categoryId = pendingCategoryId;
+    const stableJobId = jobId;
+
+    if (!imgRef.current || !completedCrop || !categoryId || !stableJobId)
+      return;
+
     setSavingCrop(true);
 
-    // 1) Blob & kualitas
-    const fullBlob = await cropElToBlob(imgRef.current, completedCrop);
+    // 1) Crop → kompres → thumbnail
+    let fullBlob = await cropElToBlob(imgRef.current, completedCrop);
+    fullBlob = await compressForUpload(fullBlob, 3000, 8 * 1024 * 1024); // ~<=8MB
     const thumbBlob = await makeThumbnail(fullBlob, 640, true, 0.8);
 
+    // Guard: cegah crop terlalu kecil
+    if (fullBlob.size < 1024) {
+      setSavingCrop(false);
+      return;
+    }
+
+    // 2) Data URL untuk UI + skor ketajaman
     const [fullDataUrl, thumbDataUrl] = await Promise.all([
       blobToDataUrl(fullBlob),
       blobToDataUrl(thumbBlob),
     ]);
     const sharpness = await computeSharpnessFromDataUrl(thumbDataUrl);
 
-    // 2) Entri baru & best
+    // 3) Siapkan entri & update UI (pre-commit ke cache lokal)
     const token = Date.now();
     const photoId = uid();
     const initialState: UploadState = online ? "uploading" : "queued";
 
-    const catBefore = categoriesRef.current.find(
-      (c) => c.id === pendingCategoryId
-    );
+    const catBefore = categoriesRef.current.find((c) => c.id === categoryId);
     const existing = catBefore?.photos ?? [];
     const newEntry: PhotoEntry = {
       id: photoId,
@@ -1101,7 +1161,6 @@ export default function UploadFotoPage() {
 
     let best = nextPhotos[0];
     for (const it of nextPhotos) if (it.sharpness > best.sharpness) best = it;
-
     const bestIsThisNew = best.id === photoId;
 
     const meterVal =
@@ -1111,10 +1170,9 @@ export default function UploadFotoPage() {
         ? Number(cableMeterDraft)
         : catBefore?.meter;
 
-    // 3) Update lokal
     setCategories((prev) => {
       const next = prev.map((c) =>
-        c.id !== pendingCategoryId
+        c.id !== categoryId
           ? c
           : {
               ...c,
@@ -1138,7 +1196,7 @@ export default function UploadFotoPage() {
       !Number.isNaN(Number(cableMeterDraft))
     ) {
       try {
-        await saveMeta(jobId, pendingCategoryId, {
+        await saveMeta(stableJobId, categoryId, {
           meter: Number(cableMeterDraft),
         });
       } catch {}
@@ -1148,18 +1206,22 @@ export default function UploadFotoPage() {
     (async () => {
       try {
         const fd = new FormData();
-        const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`;
+        const fileName = `job-${stableJobId}-cat-${categoryId}-${token}.jpg`;
 
-        fd.append("photo", new File([fullBlob], fileName, { type: "image/jpeg" }));
-        fd.append("thumb", new File([thumbBlob], `thumb-${fileName}`, { type: "image/jpeg" }));
-        fd.append("jobId", jobId);
-        fd.append("categoryId", pendingCategoryId);
+        fd.append(
+          "photo",
+          new File([fullBlob], fileName, { type: "image/jpeg" })
+        );
+        fd.append(
+          "thumb",
+          new File([thumbBlob], `thumb-${fileName}`, { type: "image/jpeg" })
+        );
+        fd.append("jobId", stableJobId);
+        fd.append("categoryId", categoryId);
         fd.append("token", String(token));
         fd.append("sharpness", String(sharpness));
 
-        const catSnap = categoriesRef.current.find(
-          (x) => x.id === pendingCategoryId
-        );
+        const catSnap = categoriesRef.current.find((x) => x.id === categoryId);
         if (typeof catSnap?.meter === "number") {
           fd.append("meter", String(catSnap.meter));
         }
@@ -1170,15 +1232,17 @@ export default function UploadFotoPage() {
         const result: any = await safeUpload({
           endpoint: UPLOAD_ENDPOINT,
           formData: fd,
-          meta: { jobId, categoryId: pendingCategoryId, token, photoId },
+          meta: { jobId: stableJobId, categoryId, token, photoId },
         });
 
-        // state upload
+        if (!result || result?.error)
+          throw new Error(result?.error || "upload failed");
+
         setCategories((prev) => {
+          const resultState: UploadState =
+            result?.status === "queued" ? "queued" : "uploaded";
           const next = prev.map((c) => {
-            if (c.id !== pendingCategoryId || !c.photos?.length) return c;
-            const resultState: UploadState =
-              result?.status === "queued" ? "queued" : "uploaded";
+            if (c.id !== categoryId || !c.photos?.length) return c;
             const photos = c.photos.map((p) =>
               p.id === photoId
                 ? {
@@ -1196,30 +1260,30 @@ export default function UploadFotoPage() {
           return next;
         });
 
-        // Persist pilihan "Utama" ke server bila foto baru memang terbaik dan server mengembalikan entryId
+        // Persist pilihan "Utama" jika foto baru memang terbaik & server mengembalikan entryId
         if (online && bestIsThisNew && result?.entryId) {
           try {
-            await saveMeta(jobId, pendingCategoryId, {
+            await saveMeta(stableJobId, categoryId, {
               selectedPhotoId: result.entryId,
               ocrStatus: "selected",
             });
           } catch {}
         }
-      } catch {
-        // gagal → tandai queued (nanti di-replay oleh SW)
+      } catch (e: any) {
+        // Gagal di luar skenario offline-queue → beri status error agar terlihat
         setCategories((prev) => {
           const next = prev.map((c) => {
-            if (c.id !== pendingCategoryId || !c.photos?.length) return c;
+            if (c.id !== categoryId || !c.photos?.length) return c;
             const photos = c.photos.map((p) =>
               p.id === photoId
                 ? {
                     ...p,
-                    uploadState: "queued" as UploadState,
-                    uploadError: undefined,
+                    uploadState: "error" as UploadState,
+                    uploadError: e?.message || "Upload gagal",
                   }
                 : p
             );
-            return { ...c, photos, uploadState: "queued" as UploadState };
+            return { ...c, photos, uploadState: "error" as UploadState };
           });
           persistSnapshotNow(cacheKey, next);
           return next;
@@ -1227,8 +1291,8 @@ export default function UploadFotoPage() {
       }
     })();
 
-    // 6) Validasi SN jika perlu
-    const cat = categoriesRef.current.find((c) => c.id === pendingCategoryId);
+    // 6) Validasi SN jika perlu (gunakan crop diperlebar)
+    const cat = categoriesRef.current.find((c) => c.id === categoryId);
     const needSN = cat?.requiresSerialNumber && !cat.serialNumber;
     if (needSN) {
       const expandedCropDataUrl = await cropElToDataUrl(
@@ -1248,7 +1312,7 @@ export default function UploadFotoPage() {
     }
 
     // 7) Reset UI modal
-    if (pendingCategoryId) resetFileInput(pendingCategoryId);
+    resetFileInput(categoryId);
     setCropOpen(false);
     setSrcToCrop(null);
     setPendingCategoryId(null);
@@ -1986,7 +2050,7 @@ export default function UploadFotoPage() {
               );
             })()}
 
-            {/* Hidden inputs untuk tambah foto dari Review & dari card kosong — hanya render saat editable */}
+            {/* Hidden inputs (review) — hanya saat editable */}
             {editable &&
               categories.map((c) => (
                 <input
@@ -2003,7 +2067,7 @@ export default function UploadFotoPage() {
         </div>
       )}
 
-      {/* Hidden inputs untuk semua kategori (dipakai saat card kosong diklik) — hanya saat editable */}
+      {/* Hidden inputs bawah — hanya saat editable */}
       {editable &&
         categories.map((c) => (
           <input
