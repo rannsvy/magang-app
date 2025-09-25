@@ -77,6 +77,7 @@ export interface NewProjectForm {
   insentif?: string;
   paketCount?: number;
   paketDetails?: Array<{ rw: string; rt: string }>;
+  templateLokasi?: string;
 }
 
 export interface NewSurveyProjectForm {
