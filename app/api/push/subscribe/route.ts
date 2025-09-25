@@ -16,10 +16,7 @@ export async function POST(req: NextRequest) {
       !subscription?.keys?.auth
     ) {
       return NextResponse.json(
-        {
-          error:
-            "Bad payload: require { email, subscription{endpoint, keys{p256dh,auth}} }",
-        },
+        { error: "Bad payload: require { email, subscription{endpoint, keys{p256dh,auth}} }" },
         { status: 400 }
       );
     }
@@ -28,17 +25,19 @@ export async function POST(req: NextRequest) {
     // Pastikan tabel push_subscriptions punya kolom:
     // endpoint (text, UNIQUE), p256dh (text), auth (text),
     // user_email (text), user_agent (text, nullable), updated_at (timestamptz)
-    const { error } = await sa.from("push_subscriptions").upsert(
-      {
-        endpoint: subscription.endpoint,
-        p256dh: subscription.keys.p256dh,
-        auth: subscription.keys.auth,
-        user_email: email,
-        user_agent: userAgent || null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "endpoint" }
-    );
+    const { error } = await sa
+      .from("push_subscriptions")
+      .upsert(
+        {
+          endpoint: subscription.endpoint,
+          p256dh: subscription.keys.p256dh,
+          auth: subscription.keys.auth,
+          user_email: email,
+          user_agent: userAgent || null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "endpoint" }
+      );
 
     if (error) {
       console.error("[push/subscribe] upsert error:", error);

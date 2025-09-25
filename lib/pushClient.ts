@@ -94,9 +94,7 @@ export async function getExistingSubscription(): Promise<PushSubscription | null
 }
 
 /** Unsubscribe (opsional: beritahu server di kemudian hari) */
-export async function unsubscribePush(
-  removeFromServer = true
-): Promise<boolean> {
+export async function unsubscribePush(removeFromServer = true): Promise<boolean> {
   try {
     const sub = await getExistingSubscription();
     if (!sub) return true;
@@ -122,9 +120,7 @@ export async function unsubscribePush(
 /* =========================================================================
  * ensurePushSubscription: pastikan ada subscription & simpan ke server
  * ========================================================================= */
-export async function ensurePushSubscription(
-  options: EnsureOptions
-): Promise<EnsureResult> {
+export async function ensurePushSubscription(options: EnsureOptions): Promise<EnsureResult> {
   const {
     subscribeEndpoint = DEFAULT_SUBSCRIBE_ENDPOINT,
     onDenied,
@@ -209,10 +205,7 @@ export async function ensurePushSubscription(
     return { ok: true };
   } catch (e) {
     onError?.(e);
-    return {
-      ok: false,
-      reason: `subscribe_failed: ${String((e as any)?.message || e)}`,
-    };
+    return { ok: false, reason: `subscribe_failed: ${String((e as any)?.message || e)}` };
   }
 }
 

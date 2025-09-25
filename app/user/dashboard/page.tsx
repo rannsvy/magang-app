@@ -1,13 +1,13 @@
-// app/user/dashboard/page.tsx  (SERVER COMPONENT — jangan pakai "use client")
+// app/user/dashboard/page.tsx
 import { Suspense } from "react";
-import DashboardClient from "./_components/dashboard-client";
+import DashboardClient from "./DashboardClient";
 
-export const dynamic = "force-static"; // app-shell bisa diprerender & dicache PWA
-export const revalidate = 60;          // opsional, aman buat CDN
+export const dynamic = "force-dynamic"; // boleh di Server file
+export const revalidate = 0;
 
 export default function Page() {
   return (
-    <Suspense fallback={<div className="p-4">Memuat…</div>}>
+    <Suspense fallback={<div className="p-6">Memuat dashboard…</div>}>
       <DashboardClient />
     </Suspense>
   );

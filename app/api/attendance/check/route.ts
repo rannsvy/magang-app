@@ -1,3 +1,4 @@
+// app/api/attendance/route.ts
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -9,7 +10,7 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// WIB: dapatkan rentang awal–akhir hari ini (UTC ISO) untuk filter timestamp
+// WIB: dapatkan rentang awal–akhir hari ini (UTC ISO) untuk filter timestamp (masih disimpan bila butuh)
 function todayWIBWindow() {
   const nowUtcMs = Date.now();
   const wibMs = nowUtcMs + 7 * 60 * 60 * 1000; // UTC+7
@@ -48,15 +49,10 @@ function nowJakarta() {
 
 /**
  * Ambil daftar project aktif yang di-assign ke teknisi KHUSUS assignment “hari ini” (WIB).
- * - projects!inner join untuk ambil projects.id & name
- * - Filter: assignment aktif (removed_at IS NULL)
- * - Filter: project belum selesai (completed_at IS NULL)
- * - Filter tanggal_mulai ≤ hari ini (WIB)
- * - Filter assignment timestamp di rentang WIB hari ini (created_at)
- * - TANPA de-dupe
+ * Revisi: gunakan kolom `work_date = today` (bukan window `created_at`),
+ * agar assignment yang dibuat sebelumnya namun bertanggal kerja hari ini ikut terambil.
  */
 async function getTodayAssignmentsWithNames(technicianId: string) {
-  const { startISO, endISO } = todayWIBWindow();
   const todayWIBDate = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Jakarta",
     year: "numeric",
@@ -74,25 +70,25 @@ async function getTodayAssignmentsWithNames(technicianId: string) {
         completed_at,
         tanggal_mulai
       ),
-      created_at,
+      work_date,
       removed_at
     `
     )
     .eq("technician_id", technicianId)
+    .eq("work_date", todayWIBDate) // ⬅️ pakai work_date HARI INI (WIB)
     .is("removed_at", null)
     .is("projects.completed_at", null)
-    .lte("projects.tanggal_mulai", todayWIBDate)
-    .gte("created_at", startISO)
-    .lt("created_at", endISO);
+    .lte("projects.tanggal_mulai", todayWIBDate);
 
   if (error) throw new Error(error.message);
 
-  const list = (data ?? [])
-    .map((r: any) => ({
-      project_id: r?.projects?.id ? String(r.projects.id) : "",
-      name: r?.projects?.name ? String(r.projects.name) : null,
-    }))
-    .filter((x) => x.project_id);
+  const list =
+    (data ?? [])
+      .map((r: any) => ({
+        project_id: r?.projects?.id ? String(r.projects.id) : "",
+        name: r?.projects?.name ? String(r.projects.name) : null,
+      }))
+      .filter((x) => x.project_id) || [];
 
   return list;
 }
@@ -118,6 +114,170 @@ async function emitRealtimeEvent(params: {
   }
 }
 
+/* =========================
+   GET: Ambil koordinat hari ini
+   Query:
+     - technicianId (wajib, HARUS technicians.id)
+     - projectId (opsional) ATAU jobId (opsional)
+========================= */
+export async function GET(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const technicianId =
+      url.searchParams.get("technicianId") ||
+      url.searchParams.get("technician_id");
+    const projectIdQ =
+      url.searchParams.get("projectId") || url.searchParams.get("project_id");
+    const jobIdQ =
+      url.searchParams.get("jobId") || url.searchParams.get("job_id");
+
+    if (!technicianId) {
+      return NextResponse.json(
+        { error: "technicianId wajib." },
+        { status: 400 }
+      );
+    }
+
+    const { date: work_date } = nowJakarta();
+
+    // ==== Tentukan effProjectId persis seperti POST ====
+    let effProjectId: string | null = null;
+    const todayAssignments = await getTodayAssignmentsWithNames(technicianId);
+
+    // 1) projectId langsung
+    if (projectIdQ) {
+      const found = todayAssignments.find(
+        (a) => a.project_id === String(projectIdQ)
+      );
+      if (!found) {
+        return NextResponse.json(
+          {
+            error:
+              "Project itu tidak ada di assignment HARI INI untuk teknisi ini.",
+          },
+          { status: 403 }
+        );
+      }
+      effProjectId = String(projectIdQ);
+    }
+
+    // 2) jobId → resolve projects.id lalu cek
+    if (!effProjectId && jobIdQ) {
+      const { data: proj, error: projErr } = await supabaseAdmin
+        .from("projects")
+        .select("id")
+        .eq("job_id", jobIdQ)
+        .maybeSingle();
+      if (projErr)
+        return NextResponse.json({ error: projErr.message }, { status: 500 });
+
+      const resolved = proj?.id ?? null;
+      if (!resolved)
+        return NextResponse.json(
+          { error: "jobId tidak ditemukan." },
+          { status: 404 }
+        );
+
+      const found = todayAssignments.find(
+        (a) => a.project_id === String(resolved)
+      );
+      if (!found) {
+        return NextResponse.json(
+          {
+            error:
+              "Project dari jobId itu tidak ada di assignment HARI INI untuk teknisi ini.",
+          },
+          { status: 403 }
+        );
+      }
+      effProjectId = String(resolved);
+    }
+
+    // 3) tidak kirim apa-apa → fallback ke daftar “hari ini”
+    if (!effProjectId) {
+      if (todayAssignments.length === 0) {
+        return NextResponse.json(
+          { error: "Tidak ada penugasan HARI INI untuk akun teknisi ini." },
+          { status: 409 }
+        );
+      }
+      if (todayAssignments.length > 1) {
+        return NextResponse.json(
+          {
+            error:
+              "Lebih dari satu penugasan HARI INI. Mohon pilih project terlebih dahulu.",
+            activeProjects: todayAssignments.map((a) => ({
+              id: a.project_id,
+              name: a.name,
+            })),
+          },
+          { status: 409 }
+        );
+      }
+      effProjectId = todayAssignments[0].project_id;
+    }
+
+    // ==== Ambil koordinat dari attendance hari ini ====
+    const { data: rows, error: selErr } = await supabaseAdmin
+      .from("attendance")
+      .select(
+        "check_in_latitude, check_in_longitude, check_out_latitude, check_out_longitude"
+      )
+      .eq("project_id", effProjectId)
+      .eq("technician_id", technicianId)
+      .eq("work_date", work_date)
+      .limit(1);
+
+    if (selErr)
+      return NextResponse.json({ error: selErr.message }, { status: 500 });
+
+    const r = rows?.[0] || null;
+
+    const payload = {
+      data: {
+        check_in: r
+          ? {
+              lat:
+                typeof (r as any).check_in_latitude === "number"
+                  ? (r as any).check_in_latitude
+                  : null,
+              lng:
+                typeof (r as any).check_in_longitude === "number"
+                  ? (r as any).check_in_longitude
+                  : null,
+            }
+          : null,
+        check_out: r
+          ? {
+              lat:
+                typeof (r as any).check_out_latitude === "number"
+                  ? (r as any).check_out_latitude
+                  : null,
+              lng:
+                typeof (r as any).check_out_longitude === "number"
+                  ? (r as any).check_out_longitude
+                  : null,
+            }
+          : null,
+        project_id: effProjectId,
+        technician_id: technicianId,
+        work_date,
+      },
+    };
+
+    return NextResponse.json(payload);
+  } catch (e: any) {
+    return NextResponse.json(
+      { error: e?.message || "Internal error" },
+      { status: 500 }
+    );
+  }
+}
+
+/* =========================
+   POST: Check In / Check Out
+   (FUNGSI LAMA — TIDAK DIUBAH)
+========================= */
 export async function POST(req: Request) {
   try {
     const url = new URL(req.url);
@@ -158,7 +318,6 @@ export async function POST(req: Request) {
 
     // ==== Tentukan project_id efektif (HANYA dari assignment “hari ini”) ====
     let effProjectId: string | null = null;
-
     const todayAssignments = await getTodayAssignmentsWithNames(technicianId);
 
     // 1) projectId dikirim → cek di daftar “hari ini”
