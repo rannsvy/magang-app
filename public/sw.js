@@ -1,9 +1,9 @@
-/* public/sw.js — fast offline upload with timeout & ACK + Web Push (VAPID) */
-const VERSION = "magang-app-v1.0.51"; // ⬅️ bump versi agar SW baru aktif
+/* public/sw.js — merged: fast offline upload with timeout & ACK + auth/api bypass + survey + replay w/ cookies */
+const VERSION = "magang-app-v1.0.60"; // bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
-/* ===== App Shell (gabungan) ===== */
+/* ===== App Shell (union) ===== */
 const APP_SHELL = [
   "/",
   "/user/dashboard",
@@ -15,6 +15,7 @@ const APP_SHELL = [
   "/auth/login",
   "/offline",
   "/manifest.json",
+  // icons/logos
   "/logo-reaport.png",
   "/badge-reaport.png",
 ];
@@ -22,12 +23,15 @@ const APP_SHELL = [
 /* ===== Config upload/meta ===== */
 const QUEUE_DB = "photo-upload-queue-db";
 const QUEUE_STORE = "requests";
+
 const UPLOAD_PATH = "/api/job-photos/upload";
 const META_PATH = "/api/job-photos/meta";
-// 🔥 Survey
+
+// 🔥 Survey endpoints (optional additional flows)
 const SURVEY_UPLOAD_PATH = "/api/survey/uploads";
-// const SURVEY_META_PATH = "/api/survey/meta"; // siapkan bila diperlukan
-const UPLOAD_TIMEOUT_MS = 2500; // jika fetch > 2.5s → antre (UI cepat dapat respons)
+// const SURVEY_META_PATH = "/api/survey/meta";
+
+const UPLOAD_TIMEOUT_MS = 2500; // jika fetch > 2.5s → antre (UI segera dapat respons)
 
 /* ===== IndexedDB (queue) ===== */
 function idbOpen() {
@@ -77,7 +81,7 @@ async function queueDel(id) {
 async function notifyClients(msg) {
   const arr = await self.clients.matchAll({ includeUncontrolled: true });
   for (const c of arr) {
-    try { c.postMessage(msg); } catch (_) {}
+    try { c.postMessage(msg); } catch {}
   }
 }
 
@@ -87,21 +91,28 @@ function sanitizeHeaders(raw) {
   if (!raw) return h;
   for (const k in raw) {
     const lk = k.toLowerCase();
-    if ([
-      "content-length",
-      "connection",
-      "keep-alive",
-      "proxy-connection",
-      "transfer-encoding",
-    ].includes(lk)) continue;
+    if (
+      [
+        "content-length",
+        "connection",
+        "keep-alive",
+        "proxy-connection",
+        "transfer-encoding",
+      ].includes(lk)
+    ) continue;
     h[lk] = raw[k];
   }
   return h;
 }
 
+/**
+ * Process queued POST requests.
+ * Uses credentials: "include" to forward cookies on replay (important for same-origin auth).
+ */
 async function processQueue() {
   const items = await queueAll();
   const okIds = [];
+
   for (const item of items) {
     try {
       const headers = sanitizeHeaders(item.headers || {});
@@ -109,7 +120,9 @@ async function processQueue() {
         method: item.method || "POST",
         headers,
         body: item.body || null,
+        credentials: "include", // ⬅️ penting: kirim cookies untuk same-origin
       });
+
       if (res && res.ok) {
         await queueDel(item.id);
         okIds.push(item.id);
@@ -138,12 +151,12 @@ async function processQueue() {
 async function precache(cache, urls) {
   await Promise.all(
     urls.map(async (u) => {
-      try { await cache.add(new Request(u, { cache: "reload" })); } catch (_) {}
+      try { await cache.add(new Request(u, { cache: "reload" })); } catch {}
     })
   );
 }
 async function putDual(cache, req, res) {
-  try { await cache.put(req, res.clone()); } catch (_) {}
+  try { await cache.put(req, res.clone()); } catch {}
   try {
     const url = new URL(req.url);
     const pathReq = new Request(url.pathname, {
@@ -151,14 +164,15 @@ async function putDual(cache, req, res) {
       mode: "same-origin",
     });
     await cache.put(pathReq, res.clone());
-  } catch (_) {}
+  } catch {}
 }
 async function matchHtml(urlOrReq) {
   let hit = await caches.match(urlOrReq, { ignoreSearch: true });
   if (hit) return hit;
-  const url = typeof urlOrReq === "string"
-    ? new URL(urlOrReq, self.location.origin)
-    : new URL(urlOrReq.url);
+  const url =
+    typeof urlOrReq === "string"
+      ? new URL(urlOrReq, self.location.origin)
+      : new URL(urlOrReq.url);
   const candidates = [
     url.href,
     url.pathname + url.hash,
@@ -217,16 +231,10 @@ self.addEventListener("message", (e) => {
   }
 });
 
-/* ===== Web Push (VAPID) — diambil dari code 1 =====
- * Payload JSON yang disarankan:
- * { title: string, body: string, url?: string, tag?: string, data?: any }
- * - url default diarahkan ke "/user/dashboard"
- * - tag dipakai agar notifikasi dengan tag yang sama bisa di-merge
- */
+/* ===== Web Push (VAPID) ===== */
 self.addEventListener("push", (e) => {
   let data = {};
-  try { data = e.data ? e.data.json() : {}; } catch (_) {}
-
+  try { data = e.data ? e.data.json() : {}; } catch {}
   const title = data.title || "Magang App";
   const body = data.body || "Anda mendapat pemberitahuan baru";
   const url = data.url || "/user/dashboard";
@@ -246,14 +254,11 @@ self.addEventListener("push", (e) => {
     })
   );
 });
-
-// Klik notifikasi → fokuskan tab app kalau ada; jika tidak, buka
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const url =
     (event.notification && event.notification.data && event.notification.data.url) ||
     "/user/dashboard";
-
   event.waitUntil((async () => {
     const allClients = await clients.matchAll({ type: "window", includeUncontrolled: true });
 
@@ -265,10 +270,10 @@ self.addEventListener("notificationclick", (event) => {
           await client.focus();
           return;
         }
-      } catch (_) {}
+      } catch {}
     }
 
-    // Jika tidak ada yang cocok, fokuskan tab app manapun
+    // Jika tidak ada yang cocok, fokuskan tab app manapun (navigate bila beda URL)
     for (const client of allClients) {
       try {
         if ("focus" in client) {
@@ -278,17 +283,13 @@ self.addEventListener("notificationclick", (event) => {
           }
           return;
         }
-      } catch (_) {}
+      } catch {}
     }
 
     // Terakhir, buka window baru
-    if (clients.openWindow) {
-      await clients.openWindow(url);
-    }
+    if (clients.openWindow) await clients.openWindow(url);
   })());
 });
-
-// Subscriptions berubah (token invalid, dsb) → minta client re-subscribe
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil((async () => {
     await notifyClients({ type: "pushsubscriptionchange" });
@@ -300,6 +301,9 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
 
+  // Manual bypass untuk debugging
+  if (req.headers.get("x-sw-bypass") === "1") return;
+
   // 🔐 BYPASS: semua rute auth → biarkan browser handle (cookie ikut)
   if (
     url.origin === self.location.origin &&
@@ -308,16 +312,15 @@ self.addEventListener("fetch", (e) => {
       url.pathname.startsWith("/auth/callback") ||
       url.pathname === "/auth/confirm" ||
       url.pathname.startsWith("/auth/confirm") ||
-      url.pathname.startsWith("/auth/") // ⬅️ penting untuk login & rute auth lain
+      url.pathname.startsWith("/auth/")
     )
   ) {
     return; // no intercept
   }
 
-  // 🛡️ BYPASS: semua /api/** (agar cookie tidak hilang & tidak dicache),
-  // KECUALI POST ke endpoint yang memang dikelola antrean offline.
+  // 🛡️ BYPASS: semua /api/** kecuali POST ke endpoint upload/meta yang kita kelola
   if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
-    const isManagedUpload =
+    const isManagedPost =
       req.method === "POST" &&
       (
         url.pathname === UPLOAD_PATH ||
@@ -325,7 +328,7 @@ self.addEventListener("fetch", (e) => {
         url.pathname === SURVEY_UPLOAD_PATH
         // || url.pathname === SURVEY_META_PATH
       );
-    if (!isManagedUpload) {
+    if (!isManagedPost) {
       e.respondWith(fetch(req)); // network only + credentials dari req asli
       return;
     }
@@ -342,38 +345,42 @@ self.addEventListener("fetch", (e) => {
     )
   ) {
     e.respondWith((async () => {
+      // Coba online cepat: race dengan timeout agar UI tidak “ngeblock”
       try {
         const onlineRes = await Promise.race([
-          fetch(req.clone()),
+          fetch(req.clone(), { credentials: "include" }), // kirim cookies saat online try
           new Promise((_, rej) =>
             setTimeout(() => rej(new Error("timeout")), UPLOAD_TIMEOUT_MS)
           ),
         ]);
 
-        // ACK cepat ke client jika upload sukses (Instalasi & Survey)
+        // Kirim ACK TANPA menahan respons utama (Instalasi & Survey)
         if (url.pathname === UPLOAD_PATH || url.pathname === SURVEY_UPLOAD_PATH) {
-          try {
-            const resClone = onlineRes.clone();
-            const data = await resClone.json().catch(() => null);
-            if (data && (data.ok || data.photoUrl || data.thumbUrl || data.thumb_url)) {
-              await notifyClients({
-                type: "upload-online-ack",
-                categoryId: data.categoryId || null,
-                thumbUrl: data.thumbUrl || data.thumb_url || null,
-                serialNumber: data.serialNumber || null,
-                meter: typeof data.meter === "number" ? data.meter : null,
-              });
-              await notifyClients({ type: "persist-now" });
-            }
-          } catch (_) {}
+          e.waitUntil((async () => {
+            try {
+              const data = await onlineRes.clone().json().catch(() => null);
+              if (data && (data.ok || data.photoUrl || data.thumbUrl || data.thumb_url)) {
+                await notifyClients({
+                  type: "upload-online-ack",
+                  categoryId: data.categoryId || null,
+                  thumbUrl: data.thumbUrl || data.thumb_url || null,
+                  serialNumber: data.serialNumber || null,
+                  meter: typeof data.meter === "number" ? data.meter : null,
+                });
+                await notifyClients({ type: "persist-now" });
+              }
+            } catch {}
+          })());
         }
+
         return onlineRes;
       } catch {
-        // timeout / error → antre
+        // timeout / error → antre offline
         const body = await req.clone().arrayBuffer();
         const headers = {};
         req.headers.forEach((v, k) => (headers[k] = v));
         const id = Date.now() + "-" + Math.random().toString(36).slice(2);
+
         await queueAdd({
           id,
           url: req.url,
@@ -386,23 +393,24 @@ self.addEventListener("fetch", (e) => {
               ? "meta"
               : "upload",
         });
+
         try {
           await self.registration.sync.register(
             url.pathname === META_PATH /* || url.pathname === SURVEY_META_PATH */
               ? "meta-sync"
               : "photo-upload-sync"
           );
-        } catch (_) {}
-        return new Response(
-          JSON.stringify({ status: "queued", queueId: id }),
-          { headers: { "Content-Type": "application/json" } }
-        );
+        } catch {}
+
+        return new Response(JSON.stringify({ status: "queued", queueId: id }), {
+          headers: { "Content-Type": "application/json" },
+        });
       }
     })());
     return;
   }
 
-  // Hanya GET yang lewat sini
+  // Hanya GET yang lewat bawah
   if (req.method !== "GET") return;
 
   const isSameOrigin = url.origin === self.location.origin;
@@ -458,7 +466,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // 3) API GET (same-origin) → jaringan dulu + fallback cache (catatan: umumnya ter-bypass di atas)
+  // 3) API GET (same-origin) → jaringan dulu + fallback cache
   if (url.pathname.startsWith("/api/")) {
     e.respondWith((async () => {
       try {

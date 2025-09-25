@@ -24,6 +24,7 @@ import {
   type ExternalSelected,
 } from "@/components/external-id-picker";
 import { calcManDaysInstalasi, calcManDaysSurvey } from "./helpers";
+import { LOKASI_OPTIONS } from "@/lib/photoTemplate.bali";
 
 type Props = {
   open: boolean;
@@ -78,6 +79,7 @@ export default function CreateProjectDialog({
     insentif: "2000",
     paketCount: 0,
     paketDetails: [],
+    templateLokasi: "",
   });
 
   const [newSurveyProjectForm, setNewSurveyProjectForm] =
@@ -370,6 +372,7 @@ export default function CreateProjectDialog({
       insentif: "2000",
       paketCount: 0,
       paketDetails: [],
+      templateLokasi: "",
     });
     setPaketCountInput("0");
     setNewSurveyProjectForm({
