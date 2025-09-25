@@ -22,7 +22,7 @@ const ENDPOINTS = {
   jobsToday: (isoDate: string) =>
     `/api/technicians/jobs?date=${encodeURIComponent(isoDate)}`,
 
-  // Koordinat sesuai skema attendance (longitude/latitude terpisah)
+  // Koordinat sesuai skema attendance (longitude/latitude terpisah) — PERTAHANKAN
   todayCoords: (projectId: string, jobId: string | null | undefined, techId: string) => {
     const u = new URL("/api/attendance/coords", window.location.origin);
     u.searchParams.set("technicianId", techId);   // HARUS technicians.id
@@ -31,8 +31,16 @@ const ENDPOINTS = {
     return `${u.pathname}${u.search}`;
   },
 
-  // === PROGRESS (x/X) dari route GET yang menerima params { jobId } ===
-  // UBAH path ini jika lokasi route-mu berbeda (misal: "/api/jobs/{jobId}/photos")
+  // Waktu Check In / Check Out — jalur GET /api/attendance (times)
+  todayTimes: (projectId: string, jobId: string | null | undefined, techId: string) => {
+    const u = new URL("/api/attendance", window.location.origin);
+    u.searchParams.set("technicianId", techId);
+    if (projectId) u.searchParams.set("projectId", projectId);
+    if (jobId) u.searchParams.set("jobId", jobId);
+    return `${u.pathname}${u.search}`;
+  },
+
+  // Progress (x/X)
   progressByJob: (jobId: string) => `/api/job-photos/${encodeURIComponent(jobId)}`,
 } as const;
 
@@ -81,6 +89,62 @@ function safeNum(n: any) {
   return Number.isFinite(v) ? v : null;
 }
 
+/* ==== DMS untuk koordinat (LAT dulu, lalu LON) ==== */
+function toDMS(dec: number) {
+  const abs = Math.abs(dec);
+  const deg = Math.floor(abs);
+  const minFloat = (abs - deg) * 60;
+  const min = Math.floor(minFloat);
+  const sec = (minFloat - min) * 60;
+  const secStr = sec.toFixed(1).padStart(4, "0");
+  return { deg, min, secStr };
+}
+function formatLatDMS(lat: number) {
+  const hemi = lat < 0 ? "S" : "N";
+  const { deg, min, secStr } = toDMS(lat);
+  return `${deg}°${String(min).padStart(2, "0")}'${secStr}"${hemi}`;
+}
+function formatLonDMS(lon: number) {
+  const hemi = lon < 0 ? "W" : "E";
+  const { deg, min, secStr } = toDMS(lon);
+  return `${deg}°${String(min).padStart(2, "0")}'${secStr}"${hemi}`;
+}
+function formatCoordsDMS(lat?: number | null, lon?: number | null) {
+  const hasLat = typeof lat === "number" && Number.isFinite(lat);
+  const hasLon = typeof lon === "number" && Number.isFinite(lon);
+  if (!hasLat && !hasLon) return "";
+  if (hasLat && hasLon) return `${formatLatDMS(lat!)} ${formatLonDMS(lon!)}`;
+  if (hasLat) return formatLatDMS(lat!);
+  return formatLonDMS(lon!);
+}
+
+/* ==== Deteksi zona waktu Indonesia dari LONGITUDE ==== */
+/** Mengembalikan { key: 'WIB'|'WITA'|'WIT', label: string, offsetFromWIB: 0|1|2 } */
+function detectIndoTZFromLongitude(lon?: number | null) {
+  // Default WIB jika belum ada koordinat
+  if (typeof lon !== "number" || !Number.isFinite(lon)) {
+    return { key: "WIB" as const, label: "WIB", offsetFromWIB: 0 };
+  }
+  // Batas sederhana: <114.5 = WIB, 114.5–129.5 = WITA, ≥129.5 = WIT
+  if (lon < 114.5) return { key: "WIB" as const, label: "WIB", offsetFromWIB: 0 };
+  if (lon < 129.5) return { key: "WITA" as const, label: "WITA", offsetFromWIB: 1 };
+  return { key: "WIT" as const, label: "WIT", offsetFromWIB: 2 };
+}
+
+/** Geser "HH:mm:ss" (WIB) ke zona lokal dengan delta jam (bisa 0/1/2) */
+function shiftHHMMSS(wibTime?: string | null, deltaHours: number = 0) {
+  if (!wibTime) return "";
+  const [hStr, mStr, sStr] = wibTime.split(":");
+  let h = Number(hStr || "0");
+  const m = Number(mStr || "0");
+  const s = Number(sStr || "0");
+  if (!Number.isFinite(h) || !Number.isFinite(m) || !Number.isFinite(s)) return "";
+  h = (h + deltaHours + 24) % 24; // geser & wrap 0..23
+  const hh = String(h).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 /* ===== KOMPONEN ===== */
 export default function DailyReportPage() {
   const [loading, setLoading] = useState(true);
@@ -95,6 +159,9 @@ export default function DailyReportPage() {
   const [coords, setCoords] = useState<{ lng?: number | null; lat?: number | null } | null>(null);
   const [progress, setProgress] = useState<{ done: number | null; total: number | null } | null>(null);
 
+  // Times (as stored in WIB from DB)
+  const [timesWIB, setTimesWIB] = useState<{ in?: string | null; out?: string | null }>({ in: null, out: null });
+
   // Pesan editable
   const [messageText, setMessageText] = useState("");
   const [messageDirty, setMessageDirty] = useState(false); // true = user sudah edit
@@ -107,7 +174,7 @@ export default function DailyReportPage() {
     [jobs, selectedJobId]
   );
 
-  // progress text: utamakan dari endpoint progress, fallback dari field lama jika ada
+  // progress text
   const progressText = useMemo(() => {
     const pDone = progress?.done ?? selectedJob?.progressDone ?? null;
     const pTotal = progress?.total ?? selectedJob?.progressTotal ?? null;
@@ -115,6 +182,19 @@ export default function DailyReportPage() {
       ? `${pDone}/${pTotal}`
       : "";
   }, [progress, selectedJob]);
+
+  // TZ berdasarkan longitude (kalau belum ada koordinat → WIB)
+  const tz = useMemo(() => detectIndoTZFromLongitude(coords?.lng ?? null), [coords?.lng]);
+
+  // Waktu lokal (display) dari WIB-time di DB
+  const timeInLocal = useMemo(
+    () => shiftHHMMSS(timesWIB.in, tz.offsetFromWIB) && timesWIB.in ? `${shiftHHMMSS(timesWIB.in, tz.offsetFromWIB)} ${tz.label}` : "",
+    [timesWIB.in, tz]
+  );
+  const timeOutLocal = useMemo(
+    () => shiftHHMMSS(timesWIB.out, tz.offsetFromWIB) && timesWIB.out ? `${shiftHHMMSS(timesWIB.out, tz.offsetFromWIB)} ${tz.label}` : "",
+    [timesWIB.out, tz]
+  );
 
   const ready = useMemo(() => {
     return Boolean(
@@ -129,82 +209,44 @@ export default function DailyReportPage() {
     );
   }, [todayStr, selectedJob, coords]);
 
-    function toDMS(dec: number) {
-    const abs = Math.abs(dec);
-    const deg = Math.floor(abs);
-    const minFloat = (abs - deg) * 60;
-    const min = Math.floor(minFloat);
-    const sec = (minFloat - min) * 60;
-    // tampilkan 1 decimal pada detik, dengan leading zero seperti 02.1
-    const secStr = sec.toFixed(1).padStart(4, "0"); // "02.1", "54.2", dsb
-    return { deg, min, secStr };
-    }
-
-    function formatLatDMS(lat: number) {
-    const hemi = lat < 0 ? "S" : "N";
-    const { deg, min, secStr } = toDMS(lat);
-    return `${deg}°${String(min).padStart(2, "0")}'${secStr}"${hemi}`;
-    }
-
-    function formatLonDMS(lon: number) {
-    const hemi = lon < 0 ? "W" : "E";
-    const { deg, min, secStr } = toDMS(lon);
-    return `${deg}°${String(min).padStart(2, "0")}'${secStr}"${hemi}`;
-    }
-
-    /** Format gabungan: LAT dulu, baru LON. */
-    function formatCoordsDMS(lat?: number | null, lon?: number | null) {
-    const hasLat = typeof lat === "number" && Number.isFinite(lat);
-    const hasLon = typeof lon === "number" && Number.isFinite(lon);
-    if (!hasLat && !hasLon) return "";
-    if (hasLat && hasLon) return `${formatLatDMS(lat!)} ${formatLonDMS(lon!)}`;
-    if (hasLat) return formatLatDMS(lat!);
-    return formatLonDMS(lon!);
-    }
-
-
   // builder template pesan
-    function buildTemplate(opts: {
+  function buildTemplate(opts: {
     todayStr: string;
     job: UiJob | null;
     coords: { lng?: number | null; lat?: number | null } | null;
     progressText: string;
-    }) {
-    const { todayStr, job, coords, progressText } = opts;
+    timeInLocal: string;
+    timeOutLocal: string;
+  }) {
+    const { todayStr, job, coords, progressText, timeInLocal, timeOutLocal } = opts;
     if (!job) return "";
 
     const techJoined = techListForMessage(job.assignedTechnicians || []);
-    // ⬇️ baru: jika ada lebih dari satu baris, pindahkan ke baris baru
     const techBlock = techJoined.includes("\n")
-        ? `Nama / List Teknisi:\n${techJoined}`
-        : `Nama / List Teknisi: ${techJoined}`;
-
-    const lngLat =
-        (safeNum(coords?.lng) !== null || safeNum(coords?.lat) !== null)
-        ? `${coords?.lng ?? ""}, ${coords?.lat ?? ""}`.trim()
-        : "";
+      ? `Nama / List Teknisi:\n${techJoined}`
+      : `Nama / List Teknisi: ${techJoined}`;
 
     const lngLatDms = formatCoordsDMS(coords?.lat ?? null, coords?.lng ?? null);
 
     const lines = [
-    `Hari/Tanggal : ${todayStr}`,
-    `Nama Project : ${job.name ?? ""}`,
-    `Lokasi Project : ${job.lokasi ?? ""}`,
-    techBlock, // tetap seperti revisi sebelumnya untuk list teknisi
-    `Nama Sales: ${job.sales_name ?? ""}`,
-    `Nama Supervisor: ${job.supervisor_name ?? ""}`,
-    `Koordinat : ${lngLatDms}`,
-    `Code Lokasi : `,
-    `Progress: ${progressText || ""}`,
-    `Ip Address : `,
-    "",
-    `Keterangan : `,
+      `Hari/Tanggal : ${todayStr}`,
+      `Nama Project : ${job.name ?? ""}`,
+      `Lokasi Project : ${job.lokasi ?? ""}`,
+      `Waktu Check In : ${timeInLocal || "-"}`,
+      `Waktu Check Out : ${timeOutLocal || "-"}`,
+      techBlock,
+      `Nama Sales: ${job.sales_name ?? ""}`,
+      `Nama Supervisor: ${job.supervisor_name ?? ""}`,
+      `Koordinat : ${lngLatDms}`,
+      `Code Lokasi : `,
+      `Progress: ${progressText || ""}`,
+      `Ip Address : `,
+      "",
+      `Keterangan : `,
     ];
 
-
     return lines.map((l) => l.replace(/\s+$/g, "")).join("\n");
-    }
-
+  }
 
   // saat template siap & user belum edit, isi otomatis
   useEffect(() => {
@@ -215,10 +257,12 @@ export default function DailyReportPage() {
           job: selectedJob,
           coords,
           progressText,
+          timeInLocal,
+          timeOutLocal,
         })
       );
     }
-  }, [ready, messageDirty, todayStr, selectedJob, coords, progressText]);
+  }, [ready, messageDirty, todayStr, selectedJob, coords, progressText, timeInLocal, timeOutLocal]);
 
   const onEditMessage = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setMessageDirty(true);
@@ -233,6 +277,8 @@ export default function DailyReportPage() {
         job: selectedJob,
         coords,
         progressText,
+        timeInLocal,
+        timeOutLocal,
       })
     );
   };
@@ -285,7 +331,7 @@ export default function DailyReportPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // fetch koordinat (pakai /api/attendance/coords → longitude & latitude terpisah)
+  // fetch koordinat (PERTAHANKAN)
   useEffect(() => {
     if (!selectedJobId || !techId) {
       setCoords(null);
@@ -315,7 +361,31 @@ export default function DailyReportPage() {
     return () => { cancelled = true; };
   }, [selectedJobId, techId, jobs]);
 
-  // === fetch PROGRESS (x/X) dari route GET { jobId } ===
+  // fetch waktu (Check In / Out) — dari /api/attendance?technicianId=&projectId=
+  useEffect(() => {
+    if (!selectedJobId || !techId) {
+      setTimesWIB({ in: null, out: null });
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const job = jobs.find((j) => j.id === selectedJobId) || null;
+        const url = ENDPOINTS.todayTimes(selectedJobId, job?.job_id, techId);
+        const res = await apiFetch<{ data?: { check_in_time?: string | null; check_out_time?: string | null } }>(url);
+        if (cancelled) return;
+        const tIn = res?.data?.check_in_time ?? null;
+        const tOut = res?.data?.check_out_time ?? null;
+        setTimesWIB({ in: tIn, out: tOut });
+      } catch (e) {
+        console.error("[dailyReport] gagal fetch times (GET /api/attendance):", e);
+        setTimesWIB({ in: null, out: null });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedJobId, techId, jobs]);
+
+  // fetch PROGRESS (x/X)
   useEffect(() => {
     const jobId = selectedJob?.job_id;
     if (!jobId) {
@@ -334,7 +404,6 @@ export default function DailyReportPage() {
 
         if (cancelled) return;
 
-        // Prefer progress.done & progress.total; fallback ke uploaded/total
         const done =
           (typeof res?.progress?.done === "number" ? res?.progress?.done : undefined) ??
           (typeof res?.progress?.complete === "number" ? res?.progress?.complete : undefined) ??
@@ -357,10 +426,10 @@ export default function DailyReportPage() {
 
   const handleSelectJob = useCallback((val: string) => {
     setSelectedJobId(val);
-    // ganti project → template akan dibangun ulang jika ready dan belum dirty
     setMessageDirty(false);
     setProgress(null);
     setCoords(null);
+    setTimesWIB({ in: null, out: null });
   }, []);
 
   return (
@@ -417,6 +486,18 @@ export default function DailyReportPage() {
               <Input readOnly value={selectedJob?.lokasi ?? ""} placeholder="Pilih project terlebih dahulu" />
             </div>
 
+            {/* Waktu Check In / Out (otomatis WIB→WITA/WIT via longitude) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label>Waktu Check In</Label>
+                <Input readOnly value={timeInLocal || ""} placeholder="-" />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Waktu Check Out</Label>
+                <Input readOnly value={timeOutLocal || ""} placeholder="-" />
+              </div>
+            </div>
+
             {/* Nama Teknisi / List Teknisi */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -429,7 +510,6 @@ export default function DailyReportPage() {
               {(() => {
                 const list = selectedJob?.assignedTechnicians || [];
                 if (list.length <= 1) {
-                  // 1 teknisi → tampil sebaris
                   return (
                     <Input
                       readOnly
@@ -438,7 +518,6 @@ export default function DailyReportPage() {
                     />
                   );
                 }
-                // >1 teknisi → tampil list kebawah (1., 2., 3.)
                 return (
                   <Textarea
                     readOnly
@@ -503,10 +582,10 @@ export default function DailyReportPage() {
               )}
             </div>
 
-            {/* Kirim via WhatsApp */}
-            <div className="flex justify-end">
-              <Button asChild disabled={!waHref} className="gap-2">
-                <a href={waHref || "#"} target="_blank" rel="noopener noreferrer">
+            {/* Kirim via WhatsApp (full width, opsional jika Anda ingin) */}
+            <div className="mt-3">
+              <Button asChild disabled={!waHref} className="w-full h-11 gap-2 text-base">
+                <a href={waHref || "#"} target="_blank" rel="noopener noreferrer" className="w-full flex items-center justify-center">
                   <Send className="h-4 w-4" />
                   Kirim via WhatsApp
                 </a>
