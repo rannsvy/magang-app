@@ -4,7 +4,7 @@ export const runtime = "nodejs";
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServers"; // server-side client (RLS ON)
 import { supabaseAdmin, supabaseAdmins } from "@/lib/supabaseAdmin"; // admin client (service-role, BYPASS RLS)
-import { sendPushToEmails } from "@/lib/sendAssignmentPush"; // helper kirim push
+import { sendPushToEmails } from "@/lib/sendAssignmentPush"; // ADD: helper kirim push
 
 type ShapedAssignment = {
   projectId: string;
@@ -387,7 +387,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "date wajib diisi" }, { status: 400 });
   }
 
-  // Penampung teknisi yang BARU ditambahkan (untuk push)
+  // ADD: penampung teknisi yang BARU ditambahkan (untuk push)
   let newlyAddedForPush: Array<{ project_id: string; technician_id: string }> =
     [];
 
@@ -487,7 +487,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  /* ========= Siapkan default supervisor untuk setiap LEADER ========= */
+  /* ========= (BARU) Siapkan default supervisor untuk setiap LEADER ========= */
   const leaderTechIds = Array.from(
     new Set(
       Array.from(byProject.values()).flatMap((b) => Array.from(b.techLeaders))
@@ -616,10 +616,7 @@ export async function POST(req: NextRequest) {
         .is("removed_at", null);
 
       if (existingPaErr)
-        return NextResponse.json(
-          { error: existingPaErr.message },
-          { status: 500 }
-        );
+        return NextResponse.json({ error: existingPaErr.message }, { status: 500 });
 
       for (const r of (existingPa ?? []) as any[]) {
         if (!r.technician_id) continue;
@@ -735,7 +732,7 @@ export async function POST(req: NextRequest) {
           });
         }
       }
-      newlyAddedForPush = tmp;
+      newlyAddedForPush = tmp; // simpan untuk dipakai di akhir
     }
 
     if (paRows.length) {
@@ -850,82 +847,74 @@ export async function POST(req: NextRequest) {
   /* ========= (ADD) Kirim Push Notification ke TEKNISI yang BARU di-assign ========= */
   try {
     if (newlyAddedForPush.length) {
-      const techIds = Array.from(
-        new Set(newlyAddedForPush.map((x) => x.technician_id))
-      );
-      const projIds = Array.from(
-        new Set(newlyAddedForPush.map((x) => x.project_id))
-      );
+      const techIds = Array.from(new Set(newlyAddedForPush.map((x) => x.technician_id)));
+      const projIds = Array.from(new Set(newlyAddedForPush.map((x) => x.project_id)));
 
-      // Ambil email teknisi
+      // Ambil email + nama teknisi
       const { data: techRows, error: techErr } = await supabaseAdmins()
         .from("technicians")
-        .select("id, email")
+        .select("id, email, nama_panggilan, nama_lengkap, inisial")
         .in("id", techIds);
 
       if (!techErr && techRows?.length) {
         const emailByTech = new Map<string, string>();
+        const nameByTech  = new Map<string, string>();
         for (const t of (techRows ?? []) as any[]) {
           const em = String(t?.email || "").trim();
-          if (em) emailByTech.set(t.id as string, em);
+          if (em) emailByTech.set(String(t.id), em);
+          const name =
+            (t?.nama_panggilan && String(t.nama_panggilan).trim()) ||
+            (t?.nama_lengkap && String(t.nama_lengkap).trim()) ||
+            (t?.inisial && String(t.inisial).trim()) ||
+            "";
+          if (name) nameByTech.set(String(t.id), name);
         }
 
-        // Ambil label proyek (code/name), fallback ke id
-        const { data: projMeta, error: projErr2 } = await supabaseAdmins()
-          .from("projects")
-          .select("id, project_code, name, project_name, kode, nama")
-          .in("id", projIds);
+        // === Ambil nama & lokasi project dari API /api/projects ===
+        const projectsApiUrl = new URL("/api/projects", req.url);
+        projectsApiUrl.searchParams.set("date", date);
 
-        const projectLabel = new Map<string, string>();
-        if (!projErr2) {
-          for (const p of (projMeta ?? []) as any[]) {
+        // Map id -> { label, lokasi }
+        let projectMeta = new Map<string, { label: string; lokasi: string }>();
+        try {
+          const resp = await fetch(projectsApiUrl.toString(), { cache: "no-store" });
+          const j = await resp.json();
+          const arr = Array.isArray(j?.data) ? (j.data as any[]) : [];
+          for (const p of arr) {
             const label =
-              (p?.project_code as string) ||
-              (p?.project_name as string) ||
-              (p?.name as string) ||
-              (p?.kode as string) ||
-              (p?.nama as string) ||
-              (p?.id as string);
-            projectLabel.set(p.id as string, label);
+              (typeof p?.name === "string" && p.name.trim()) ||
+              (typeof p?.job_id === "string" && p.job_id.trim()) ||
+              String(p?.id ?? "");
+            const lokasi =
+              (typeof p?.lokasi === "string" && p.lokasi.trim()) || "-";
+            if (p?.id) projectMeta.set(String(p.id), { label, lokasi });
           }
+        } catch (e) {
+          console.warn("[assignments] projects API fetch failed; using fallbacks", e);
+          projectMeta = new Map();
         }
 
-        // Kelompokkan per teknisi → daftar label proyek
-        const byTech = new Map<string, string[]>();
+        // === Kirim notifikasi PER assignment (teknisi x project)
         for (const it of newlyAddedForPush) {
-          const label = projectLabel.get(it.project_id) ?? it.project_id;
-          const arr = byTech.get(it.technician_id) ?? [];
-          if (!arr.includes(label)) arr.push(label);
-          byTech.set(it.technician_id, arr);
-        }
-
-        // Kirim notifikasi
-        for (const [techId, labels] of byTech) {
-          const email = emailByTech.get(techId);
+          const email = emailByTech.get(it.technician_id);
           if (!email) continue;
 
-          const title =
-            labels.length > 1
-              ? "Kamu di-assign ke beberapa project baru"
-              : "Kamu di-assign ke project baru";
-
-          const body =
-            labels.length > 1
-              ? labels.slice(0, 3).join(", ") +
-                (labels.length > 3 ? `, +${labels.length - 3} lainnya` : "")
-              : labels[0];
+          const techName = nameByTech.get(it.technician_id) ?? "Anda";
+          const meta = projectMeta.get(it.project_id);
+          const label = meta?.label ??
+            (it.project_id.length > 10 ? `${it.project_id.slice(0, 8)}…` : it.project_id);
+          const lokasi = meta?.lokasi ?? "-";
 
           await sendPushToEmails([email], {
-            title,
-            body,
-            url: "/user/dashboard", // klik notif → buka dashboard teknisi
-            tag: `assign-${date}-${techId}`, // supaya notifikasi sejenis dimerge
+            title: `Halo, kamu ${techName} di-assign ke project baru`,
+            body: `Project: ${label}\nLokasi: ${lokasi}`, // ⬅️ dua baris
+            url: "/user/dashboard",
+            tag: `assign-${date}-${it.technician_id}-${it.project_id}`, // unik per assignment
           });
         }
       }
-    }
+    }  
   } catch (e) {
-    // Jangan gagalkan request utama hanya karena push gagal
     console.error("[assignments] push-notification error:", e);
   }
 

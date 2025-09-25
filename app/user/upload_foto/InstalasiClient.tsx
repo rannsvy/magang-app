@@ -282,13 +282,10 @@ async function fetchCategories(jobId: string): Promise<PhotoCategory[]> {
       uploadState: undefined,
       queueId: undefined,
       uploadError: undefined,
-      // NOTE: jangan andalkan base.photos untuk operasi di bawah;
-      // kita akan pakai tmpPhotos dulu.
       photos: [], // placeholder
       selectedPhotoId: undefined,
     };
 
-    // gunakan penampung lokal agar tidak memicu error "possibly undefined"
     let tmpPhotos: PhotoEntry[] = [];
 
     // Kompat data lama (single photo)
@@ -319,13 +316,11 @@ async function fetchCategories(jobId: string): Promise<PhotoCategory[]> {
       }));
       base.selectedPhotoId = it.selectedPhotoId ?? undefined;
 
-      // set offlineThumb ke foto utama (pakai tmpPhotos, bukan base.photos)
       const sel =
         tmpPhotos.find((pp) => pp.id === base.selectedPhotoId) ?? tmpPhotos[0];
       base.offlineThumb = sel?.thumb;
     }
 
-    // tuliskan kembali ke base.photos di paling akhir
     base.photos = tmpPhotos;
 
     return base;
@@ -350,7 +345,6 @@ async function saveMeta(
     categoryId,
   };
 
-  // serial number
   if (meta.serialNumber !== undefined) {
     payload.serialNumber =
       meta.serialNumber === null || meta.serialNumber === ""
@@ -358,17 +352,14 @@ async function saveMeta(
         : meta.serialNumber;
   }
 
-  // meter
   if (meta.meter !== undefined) {
     payload.meter = meta.meter;
   }
 
-  // selectedPhotoId dikirim SEBAGAI FIELD TOP-LEVEL
   if (meta.selectedPhotoId !== undefined) {
     payload.selectedPhotoId = meta.selectedPhotoId;
   }
 
-  // ocrStatus boleh ikut, tapi kirim sebagai OBJEK (bukan string)
   if (meta.ocrStatus !== undefined) {
     payload.ocrStatus = meta.selectedPhotoId
       ? {
@@ -424,11 +415,107 @@ function formatDateOnly(epochMs: number) {
   return `${dd}-${mm}-${yyyy}`;
 }
 
-/* ================= Page (UI code 2 + fitur code 1) ================= */
+/* ====== IDENTITAS USER (Technician vs Supervisor/GM/Manager vs Sales) ====== */
+type WhoAmI = {
+  isTechnician: boolean;
+  isSupervisor: boolean;
+  isSales: boolean;
+  supervisorRole: "Supervisor" | "Manager" | "GM" | "General Manager" | null;
+};
+
+async function fetchWhoAmI(): Promise<WhoAmI> {
+  const { data: u } = await supabase.auth.getUser();
+  const user = u?.user ?? null;
+  if (!user)
+    return {
+      isTechnician: false,
+      isSupervisor: false,
+      isSales: false,
+      supervisorRole: null,
+    };
+
+  const { data: prof } = await supabase
+    .from("profiles")
+    .select("technician_id, email, role")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  const isTechnician = !!prof?.technician_id;
+  const email = (prof?.email || user.email || "").toLowerCase();
+
+  let isSupervisor = false;
+  let supervisorRole: WhoAmI["supervisorRole"] = null;
+  if (email) {
+    const { data: sup } = await supabase
+      .from("supervisors")
+      .select("role")
+      .eq("email", email)
+      .maybeSingle();
+    if (sup?.role) {
+      isSupervisor = true;
+      const r = String(sup.role).toLowerCase();
+      supervisorRole =
+        r === "gm"
+          ? "GM"
+          : r === "general manager"
+          ? "General Manager"
+          : r === "manager"
+          ? "Manager"
+          : "Supervisor";
+    }
+  }
+
+  let isSales = false;
+  if (email) {
+    const { data: erows } = await supabase
+      .from("email_roles")
+      .select("app_role")
+      .eq("email", email)
+      .limit(1);
+    isSales = Array.isArray(erows) && erows[0]?.app_role === "sales";
+
+    if (!isSales) {
+      const { data: srow } = await supabase
+        .from("sales")
+        .select("id")
+        .eq("email", email)
+        .maybeSingle();
+      isSales = !!srow;
+    }
+  }
+
+  return { isTechnician, isSupervisor, isSales, supervisorRole };
+}
+
+/* ================= Page (code 2 + perizinan code 1) ================= */
 export default function UploadFotoPage() {
   const sp = useSearchParams();
   const qJob = sp.get("job") ?? "";
   const [jobId, setJobId] = useState<string>(qJob);
+
+  // >>> Mode Edit / View-only (merge dari code 1)
+  const [editable, setEditable] = useState<boolean>(false);
+  const [accessLoaded, setAccessLoaded] = useState(false);
+  const [who, setWho] = useState<WhoAmI>({
+    isTechnician: false,
+    isSupervisor: false,
+    isSales: false,
+    supervisorRole: null,
+  });
+
+  useEffect(() => {
+    (async () => {
+      const me = await fetchWhoAmI();
+      setWho(me);
+      // Default:
+      // - Technician => edit ON
+      // - Supervisor/GM/Manager => view-only (bisa toggle)
+      // - Sales => view-only (dikunci)
+      setEditable(me.isTechnician ? true : false);
+      if (me.isSales) setEditable(false);
+      setAccessLoaded(true);
+    })();
+  }, []);
 
   // simpan/restore last_job_id
   useEffect(() => {
@@ -841,13 +928,17 @@ export default function UploadFotoPage() {
     if (el) el.value = "";
   };
 
-  // Behavior: klik kartu -> jika belum ada foto buka kamera; kalau sudah ada foto -> buka Review
+  // Behavior klik kartu (merge): di view-only tidak bisa ambil foto baru
   const handleCardClick = (cat: PhotoCategory) => {
     const thumbSel = getSelectedThumb(cat);
-    if (!thumbSel) {
-      fileInputRefs.current[cat.id]?.click();
+    if (editable) {
+      if (!thumbSel) {
+        fileInputRefs.current[cat.id]?.click();
+      } else {
+        openReview(cat.id);
+      }
     } else {
-      openReview(cat.id);
+      if (thumbSel) openReview(cat.id);
     }
   };
 
@@ -857,17 +948,14 @@ export default function UploadFotoPage() {
     const selId = cat.selectedPhotoId;
     const idx =
       selId && cat.photos
-        ? Math.max(
-            0,
-            cat.photos.findIndex((p) => p.id === selId)
-          )
+        ? Math.max(0, cat.photos.findIndex((p) => p.id === selId))
         : 0;
     setReviewCatId(catId);
     setReviewIndex(idx < 0 ? 0 : idx);
     setReviewOpen(true);
   };
 
-  // Tambah foto dari dalam Review — TIDAK menutup Review agar foto lama tetap terlihat
+  // Tambah foto dari dalam Review — tidak menutup Review
   const handleAddPhotoFromReview = (catId: string) => {
     fileInputRefs.current[catId]?.click();
   };
@@ -976,199 +1064,198 @@ export default function UploadFotoPage() {
     onImageLoaded(imgRef.current);
   }, [aspect]);
 
-/* ============== KONFIRM CROP ============== */
-const handleConfirmCrop = async () => {
-  if (!imgRef.current || !completedCrop || !pendingCategoryId) return;
-  setSavingCrop(true);
+  /* ============== KONFIRM CROP (merge dengan versi terbaru) ============== */
+  const handleConfirmCrop = async () => {
+    if (!imgRef.current || !completedCrop || !pendingCategoryId) return;
+    setSavingCrop(true);
 
-  // 1) Siapkan blob & skor kualitas
-  const fullBlob = await cropElToBlob(imgRef.current, completedCrop);
-  const thumbBlob = await makeThumbnail(fullBlob, 640, true, 0.8);
+    // 1) Blob & kualitas
+    const fullBlob = await cropElToBlob(imgRef.current, completedCrop);
+    const thumbBlob = await makeThumbnail(fullBlob, 640, true, 0.8);
 
-  const [fullDataUrl, thumbDataUrl] = await Promise.all([
-    blobToDataUrl(fullBlob),
-    blobToDataUrl(thumbBlob),
-  ]);
-  const sharpness = await computeSharpnessFromDataUrl(thumbDataUrl);
+    const [fullDataUrl, thumbDataUrl] = await Promise.all([
+      blobToDataUrl(fullBlob),
+      blobToDataUrl(thumbBlob),
+    ]);
+    const sharpness = await computeSharpnessFromDataUrl(thumbDataUrl);
 
-  // 2) Siapkan entri baru & hitung "best"
-  const token = Date.now();
-  const photoId = uid();
-  const initialState: UploadState = online ? "uploading" : "queued";
+    // 2) Entri baru & best
+    const token = Date.now();
+    const photoId = uid();
+    const initialState: UploadState = online ? "uploading" : "queued";
 
-  const catBefore = categoriesRef.current.find((c) => c.id === pendingCategoryId);
-  const existing = catBefore?.photos ?? [];
-  const newEntry: PhotoEntry = {
-    id: photoId,
-    createdAt: token,
-    full: fullDataUrl,
-    thumb: thumbDataUrl,
-    sharpness,
-    uploadState: initialState,
-    token,
-  };
-  const nextPhotos = [...existing, newEntry];
-
-  let best = nextPhotos[0];
-  for (const it of nextPhotos) if (it.sharpness > best.sharpness) best = it;
-
-  const bestIsThisNew = best.id === photoId; // <--- NEW: apakah foto baru adalah yang terbaik?
-
-  // meter (jika kategori kabel)
-  const meterVal =
-    isPendingCable &&
-    cableMeterDraft.trim() !== "" &&
-    !Number.isNaN(Number(cableMeterDraft))
-      ? Number(cableMeterDraft)
-      : catBefore?.meter;
-
-  // 3) Update state lokal: pilih foto terbaik sebagai "Utama"
-  setCategories((prev) => {
-    const next = prev.map((c) =>
-      c.id !== pendingCategoryId
-        ? c
-        : {
-            ...c,
-            photos: nextPhotos,
-            selectedPhotoId: best.id,
-            offlineThumb: best.thumb,
-            photoToken: token,
-            uploadState: initialState,
-            uploadError: undefined,
-            meter: meterVal,
-          }
+    const catBefore = categoriesRef.current.find(
+      (c) => c.id === pendingCategoryId
     );
-    persistSnapshotNow(cacheKey, next);
-    return next;
-  });
+    const existing = catBefore?.photos ?? [];
+    const newEntry: PhotoEntry = {
+      id: photoId,
+      createdAt: token,
+      full: fullDataUrl,
+      thumb: thumbDataUrl,
+      sharpness,
+      uploadState: initialState,
+      token,
+    };
+    const nextPhotos = [...existing, newEntry];
 
-  // 4) Persist meter (kalau diisi) — aman dipersist sekarang
-  if (
-    isPendingCable &&
-    cableMeterDraft.trim() !== "" &&
-    !Number.isNaN(Number(cableMeterDraft))
-  ) {
-    try {
-      await saveMeta(jobId, pendingCategoryId, {
-        meter: Number(cableMeterDraft),
-      });
-    } catch {}
-  }
+    let best = nextPhotos[0];
+    for (const it of nextPhotos) if (it.sharpness > best.sharpness) best = it;
 
-  // 5) Upload (non-blocking). Setelah sukses & online: persist selectedPhotoId pakai entryId dari server
-  (async () => {
-    try {
-      const fd = new FormData();
-      const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`;
+    const bestIsThisNew = best.id === photoId;
 
-      fd.append("photo", new File([fullBlob], fileName, { type: "image/jpeg" }));
-      fd.append("thumb", new File([thumbBlob], `thumb-${fileName}`, { type: "image/jpeg" }));
-      fd.append("jobId", jobId);
-      fd.append("categoryId", pendingCategoryId);
+    const meterVal =
+      isPendingCable &&
+      cableMeterDraft.trim() !== "" &&
+      !Number.isNaN(Number(cableMeterDraft))
+        ? Number(cableMeterDraft)
+        : catBefore?.meter;
 
-      // NEW: kirim token & sharpness ke server (dicatat di riwayat)
-      fd.append("token", String(token));
-      fd.append("sharpness", String(sharpness));
+    // 3) Update lokal
+    setCategories((prev) => {
+      const next = prev.map((c) =>
+        c.id !== pendingCategoryId
+          ? c
+          : {
+              ...c,
+              photos: nextPhotos,
+              selectedPhotoId: best.id,
+              offlineThumb: best.thumb,
+              photoToken: token,
+              uploadState: initialState,
+              uploadError: undefined,
+              meter: meterVal,
+            }
+      );
+      persistSnapshotNow(cacheKey, next);
+      return next;
+    });
 
-      // Info tambahan jika tersedia
-      const catSnap = categoriesRef.current.find((x) => x.id === pendingCategoryId);
-      if (typeof catSnap?.meter === "number") {
-        fd.append("meter", String(catSnap.meter));
-      }
-      if (catSnap?.requiresSerialNumber && catSnap.serialNumber) {
-        fd.append("serialNumber", catSnap.serialNumber);
-      }
-
-      const result: any = await safeUpload({
-        endpoint: UPLOAD_ENDPOINT,
-        formData: fd,
-        meta: { jobId, categoryId: pendingCategoryId, token, photoId },
-      });
-
-      // Update state upload -> uploaded/queued
-      setCategories((prev) => {
-        const next = prev.map((c) => {
-          if (c.id !== pendingCategoryId || !c.photos?.length) return c;
-          const resultState: UploadState =
-            result?.status === "queued" ? "queued" : "uploaded";
-          const photos = c.photos.map((p) =>
-            p.id === photoId
-              ? {
-                  ...p,
-                  uploadState: resultState,
-                  queueId: result?.status === "queued" ? result.queueId : undefined,
-                  uploadError: undefined,
-                }
-              : p
-          );
-          return { ...c, photos, uploadState: resultState };
+    // 4) Persist meter jika diisi
+    if (
+      isPendingCable &&
+      cableMeterDraft.trim() !== "" &&
+      !Number.isNaN(Number(cableMeterDraft))
+    ) {
+      try {
+        await saveMeta(jobId, pendingCategoryId, {
+          meter: Number(cableMeterDraft),
         });
-        persistSnapshotNow(cacheKey, next);
-        return next;
-      });
-
-      // NEW: Persist "Utama" HANYA kalau foto baru memang yang terbaik dan kita dapat entryId dari server
-      if (online && bestIsThisNew && result?.entryId) {
-        try {
-          await saveMeta(jobId, pendingCategoryId, {
-            selectedPhotoId: result.entryId,
-            ocrStatus: "selected",
-          });
-        } catch {}
-      }
-
-      // OPTIONAL (aman & ringan): jika best BUKAN foto baru namun beda dengan selectedPhotoId yang tersimpan di DB,
-      // kamu bisa juga memanggil saveMeta(...) di sini menggunakan ID existing (kalau ID itu berasal dari server).
-      // Biasanya tidak diperlukan jika server sudah menyimpan pilihan sebelumnya dengan benar.
-
-    } catch {
-      // Mark as queued saat gagal (biar SW bisa replay)
-      setCategories((prev) => {
-        const next = prev.map((c) => {
-          if (c.id !== pendingCategoryId || !c.photos?.length) return c;
-          const photos = c.photos.map((p) =>
-            p.id === photoId
-              ? { ...p, uploadState: "queued" as UploadState, uploadError: undefined }
-              : p
-          );
-          return { ...c, photos, uploadState: "queued" as UploadState };
-        });
-        persistSnapshotNow(cacheKey, next);
-        return next;
-      });
+      } catch {}
     }
-  })();
 
-  // 6) Jika perlu validasi SN, buka modal-nya
-  const cat = categoriesRef.current.find((c) => c.id === pendingCategoryId);
-  const needSN = cat?.requiresSerialNumber && !cat.serialNumber;
-  if (needSN) {
-    const expandedCropDataUrl = await cropElToDataUrl(
-      imgRef.current,
-      completedCrop,
-      0.35
-    );
-    setSnSrc(expandedCropDataUrl);
-    setSnOpen(true);
-    setSnLoading(false);
-    setSnError("");
-    setSnProgress(0);
-    setSnCandidates([]);
-    setSnDraft("");
-    setSnCrop(undefined);
-    setSnCompletedCrop(null);
-  }
+    // 5) Upload (non-blocking) + kirim token & sharpness, dan persist "Utama" jika best=baru
+    (async () => {
+      try {
+        const fd = new FormData();
+        const fileName = `job-${jobId || "NA"}-cat-${pendingCategoryId}-${token}.jpg`;
 
-  // 7) Reset UI modal
-  if (pendingCategoryId) resetFileInput(pendingCategoryId);
-  setCropOpen(false);
-  setSrcToCrop(null);
-  setPendingCategoryId(null);
-  setIsPendingCable(false);
-  setCableMeterDraft("");
-  setSavingCrop(false);
-};
+        fd.append("photo", new File([fullBlob], fileName, { type: "image/jpeg" }));
+        fd.append("thumb", new File([thumbBlob], `thumb-${fileName}`, { type: "image/jpeg" }));
+        fd.append("jobId", jobId);
+        fd.append("categoryId", pendingCategoryId);
+        fd.append("token", String(token));
+        fd.append("sharpness", String(sharpness));
 
+        const catSnap = categoriesRef.current.find(
+          (x) => x.id === pendingCategoryId
+        );
+        if (typeof catSnap?.meter === "number") {
+          fd.append("meter", String(catSnap.meter));
+        }
+        if (catSnap?.requiresSerialNumber && catSnap.serialNumber) {
+          fd.append("serialNumber", catSnap.serialNumber);
+        }
+
+        const result: any = await safeUpload({
+          endpoint: UPLOAD_ENDPOINT,
+          formData: fd,
+          meta: { jobId, categoryId: pendingCategoryId, token, photoId },
+        });
+
+        // state upload
+        setCategories((prev) => {
+          const next = prev.map((c) => {
+            if (c.id !== pendingCategoryId || !c.photos?.length) return c;
+            const resultState: UploadState =
+              result?.status === "queued" ? "queued" : "uploaded";
+            const photos = c.photos.map((p) =>
+              p.id === photoId
+                ? {
+                    ...p,
+                    uploadState: resultState,
+                    queueId:
+                      result?.status === "queued" ? result.queueId : undefined,
+                    uploadError: undefined,
+                  }
+                : p
+            );
+            return { ...c, photos, uploadState: resultState };
+          });
+          persistSnapshotNow(cacheKey, next);
+          return next;
+        });
+
+        // Persist pilihan "Utama" ke server bila foto baru memang terbaik dan server mengembalikan entryId
+        if (online && bestIsThisNew && result?.entryId) {
+          try {
+            await saveMeta(jobId, pendingCategoryId, {
+              selectedPhotoId: result.entryId,
+              ocrStatus: "selected",
+            });
+          } catch {}
+        }
+      } catch {
+        // gagal → tandai queued (nanti di-replay oleh SW)
+        setCategories((prev) => {
+          const next = prev.map((c) => {
+            if (c.id !== pendingCategoryId || !c.photos?.length) return c;
+            const photos = c.photos.map((p) =>
+              p.id === photoId
+                ? {
+                    ...p,
+                    uploadState: "queued" as UploadState,
+                    uploadError: undefined,
+                  }
+                : p
+            );
+            return { ...c, photos, uploadState: "queued" as UploadState };
+          });
+          persistSnapshotNow(cacheKey, next);
+          return next;
+        });
+      }
+    })();
+
+    // 6) Validasi SN jika perlu
+    const cat = categoriesRef.current.find((c) => c.id === pendingCategoryId);
+    const needSN = cat?.requiresSerialNumber && !cat.serialNumber;
+    if (needSN) {
+      const expandedCropDataUrl = await cropElToDataUrl(
+        imgRef.current,
+        completedCrop,
+        0.35
+      );
+      setSnSrc(expandedCropDataUrl);
+      setSnOpen(true);
+      setSnLoading(false);
+      setSnError("");
+      setSnProgress(0);
+      setSnCandidates([]);
+      setSnDraft("");
+      setSnCrop(undefined);
+      setSnCompletedCrop(null);
+    }
+
+    // 7) Reset UI modal
+    if (pendingCategoryId) resetFileInput(pendingCategoryId);
+    setCropOpen(false);
+    setSrcToCrop(null);
+    setPendingCategoryId(null);
+    setIsPendingCable(false);
+    setCableMeterDraft("");
+    setSavingCrop(false);
+  };
 
   const handleCancelCrop = () => {
     if (pendingCategoryId) resetFileInput(pendingCategoryId);
@@ -1324,6 +1411,34 @@ const handleConfirmCrop = async () => {
         showBackButton
         backUrl="/user/dashboard"
       />
+
+      {/* Switch Mode Edit: tampil untuk Supervisor/GM/Manager (non-teknisi), TAPI disembunyikan untuk Sales */}
+      {accessLoaded &&
+        (who.isSupervisor || (!who.isTechnician && !who.isSales)) && (
+          <div className="px-3 pt-2 flex items-center justify-end">
+            <label className="flex items-center gap-2 text-xs text-gray-700 select-none">
+              <span>Mode Edit</span>
+              <button
+                type="button"
+                onClick={() => setEditable((v) => !v)}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${
+                  editable ? "bg-blue-600" : "bg-gray-300"
+                }`}
+                aria-pressed={editable}
+                title={editable ? "Matikan edit (view-only)" : "Nyalakan edit"}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
+                    editable ? "translate-x-4" : "translate-x-1"
+                  }`}
+                />
+              </button>
+              <span className="ml-1 text-[11px] text-gray-500">
+                {editable ? "ON" : "OFF"}
+              </span>
+            </label>
+          </div>
+        )}
 
       <main className="p-2">
         <div className="max-w-4xl mx-auto">
@@ -1566,7 +1681,7 @@ const handleConfirmCrop = async () => {
         </div>
       )}
 
-      {/* ===== Modal Validasi SN (pilih area + OCR) ===== */}
+      {/* ===== Modal Validasi SN ===== */}
       {snOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div
@@ -1594,9 +1709,7 @@ const handleConfirmCrop = async () => {
                   />
                 </ReactCrop>
               ) : (
-                <div className="text-xs text-gray-500 p-3">
-                  Tidak ada gambar
-                </div>
+                <div className="text-xs text-gray-500 p-3">Tidak ada gambar</div>
               )}
             </div>
 
@@ -1737,7 +1850,7 @@ const handleConfirmCrop = async () => {
         </div>
       )}
 
-      {/* ===== Modal Review Riwayat Foto (multi-foto, set 'Utama') ===== */}
+      {/* ===== Modal Review Riwayat Foto ===== */}
       {reviewOpen && reviewCatId && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/60"
@@ -1763,13 +1876,16 @@ const handleConfirmCrop = async () => {
                       {cat?.name || "Foto"}
                     </h3>
                     <div className="flex items-center gap-2">
-                      <button
-                        className="px-2 py-1 text-xs rounded border"
-                        onClick={() => handleAddPhotoFromReview(reviewCatId!)}
-                      >
-                        <Plus className="inline-block mr-1 h-3.5 w-3.5" />
-                        Tambah Foto
-                      </button>
+                      {/* tombol tambah foto: hanya saat editable */}
+                      {editable && (
+                        <button
+                          className="px-2 py-1 text-xs rounded border"
+                          onClick={() => handleAddPhotoFromReview(reviewCatId!)}
+                        >
+                          <Plus className="inline-block mr-1 h-3.5 w-3.5" />
+                          Tambah Foto
+                        </button>
+                      )}
                       <button
                         className="px-2 py-1 text-xs rounded border"
                         onClick={() => setReviewOpen(false)}
@@ -1803,21 +1919,24 @@ const handleConfirmCrop = async () => {
 
                       {current && cat && (
                         <div className="mt-2 flex items-center gap-2">
-                          <button
-                            className={`px-3 py-1.5 text-xs rounded text-white ${
-                              cat.selectedPhotoId === current.id
-                                ? "bg-emerald-600"
-                                : "bg-blue-600"
-                            }`}
-                            onClick={() => setSelectedPhoto(cat.id, current.id)}
-                          >
-                            <Star className="inline-block h-3.5 w-3.5 mr-1" />
-                            {cat.selectedPhotoId === current.id
-                              ? "Utama"
-                              : "Set sebagai Utama"}
-                          </button>
+                          {/* set utama: hanya saat editable */}
+                          {editable && (
+                            <button
+                              className={`px-3 py-1.5 text-xs rounded text-white ${
+                                cat.selectedPhotoId === current.id
+                                  ? "bg-emerald-600"
+                                  : "bg-blue-600"
+                              }`}
+                              onClick={() => setSelectedPhoto(cat.id, current.id)}
+                            >
+                              <Star className="inline-block h-3.5 w-3.5 mr-1" />
+                              {cat.selectedPhotoId === current.id
+                                ? "Utama"
+                                : "Set sebagai Utama"}
+                            </button>
+                          )}
 
-                          {/* Badge info khusus */}
+                          {/* Badge info */}
                           {cat.requiresSerialNumber && cat.serialNumber && (
                             <span className="ml-2 text-[11px] px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
                               SN: {cat.serialNumber}
@@ -1867,34 +1986,36 @@ const handleConfirmCrop = async () => {
               );
             })()}
 
-            {/* Hidden inputs untuk tambah foto dari Review & dari card kosong */}
-            {categories.map((c) => (
-              <input
-                key={`hidden-${c.id}`}
-                ref={setFileInputRef(c.id)}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="hidden"
-                onChange={(e) => handlePhotoCapture(c.id, e)}
-              />
-            ))}
+            {/* Hidden inputs untuk tambah foto dari Review & dari card kosong — hanya render saat editable */}
+            {editable &&
+              categories.map((c) => (
+                <input
+                  key={`hidden-${c.id}`}
+                  ref={setFileInputRef(c.id)}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => handlePhotoCapture(c.id, e)}
+                />
+              ))}
           </div>
         </div>
       )}
 
-      {/* Hidden inputs untuk semua kategori (juga dipakai saat card kosong diklik) */}
-      {categories.map((c) => (
-        <input
-          key={`hidden-bottom-${c.id}`}
-          ref={setFileInputRef(c.id)}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          onChange={(e) => handlePhotoCapture(c.id, e)}
-        />
-      ))}
+      {/* Hidden inputs untuk semua kategori (dipakai saat card kosong diklik) — hanya saat editable */}
+      {editable &&
+        categories.map((c) => (
+          <input
+            key={`hidden-bottom-${c.id}`}
+            ref={setFileInputRef(c.id)}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => handlePhotoCapture(c.id, e)}
+          />
+        ))}
     </div>
   );
 }

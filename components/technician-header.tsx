@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabaseBrowser";
 import { ensurePushSubscription } from "@/lib/pushClient";
@@ -24,13 +24,12 @@ import {
   UserCircle,
   AlertCircle,
   AlertTriangle,
-  Bell,
-  BellOff,
   CheckCircle2,
   Loader2,
   CircleCheck,
   CircleX,
-  Trophy, // ⬅️ untuk Leaderboard
+  Trophy, // Leaderboard
+  Bell, // FAB icon
 } from "lucide-react";
 
 /** Role yang boleh melihat Leaderboard */
@@ -111,11 +110,10 @@ export function TechnicianHeader({
   technicianId,
 }: TechnicianHeaderProps) {
   const router = useRouter();
+  const pathname = usePathname();
 
   const [isClient, setIsClient] = useState(false);
-  useEffect(() => {
-    setIsClient(true);
-  }, []);
+  useEffect(() => setIsClient(true), []);
 
   /* ====== Role (untuk Leaderboard) ====== */
   const [role, setRole] = useState<string | null>(null);
@@ -138,7 +136,7 @@ export function TechnicianHeader({
     })();
   }, []);
 
-  /* logout & nav */
+  /* ===== logout & nav ===== */
   async function handleLogout() {
     try {
       await supabase.auth.signOut();
@@ -154,7 +152,7 @@ export function TechnicianHeader({
   const handleComplaintClick = () => router.push("/user/complain");
   const handleDamageComplainClick = () => router.push("/user/damageComplain");
 
-  /* Push notif */
+  /* ===== Push notif ===== */
   const supported = useMemo(
     () =>
       typeof window !== "undefined" &&
@@ -165,6 +163,10 @@ export function TechnicianHeader({
   );
   const [notifStatus, setNotifStatus] = useState<NotifStatus>("idle");
   const [email, setEmail] = useState<string | undefined>(undefined);
+
+  // indikator tengah + fade
+  const [notifCenterOpen, setNotifCenterOpen] = useState(false);
+  const [notifFading, setNotifFading] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -185,6 +187,7 @@ export function TechnicianHeader({
     };
   }, []);
 
+  // status awal notif
   useEffect(() => {
     if (!supported) {
       setNotifStatus("unsupported");
@@ -209,6 +212,7 @@ export function TechnicianHeader({
     };
   }, [supported]);
 
+  // enable notif (dipakai oleh FAB & auto-prompt)
   async function handleEnableNotifications() {
     if (!supported) {
       setNotifStatus("unsupported");
@@ -228,90 +232,91 @@ export function TechnicianHeader({
       });
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
-      setNotifStatus(sub ? "enabled" : "prompt");
+      const ok = Boolean(sub);
+      setNotifStatus(ok ? "enabled" : "prompt");
+      if (ok) {
+        // Tampilkan indikator tengah + fade-out
+        setNotifCenterOpen(true);
+        setNotifFading(false);
+        window.setTimeout(() => setNotifFading(true), 1500); // mulai pudar
+        window.setTimeout(() => setNotifCenterOpen(false), 2000); // unmount
+      }
     } catch {
       setNotifStatus("error");
     }
   }
 
-  const NotifButton = () => {
-    if (!supported)
-      return (
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          disabled
-        >
-          <BellOff className="h-4 w-4 mr-1" />
-          Notifikasi: Tidak didukung
-        </Button>
-      );
-    if (notifStatus === "enabled")
-      return (
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          disabled
-        >
-          <CheckCircle2 className="h-4 w-4 mr-1" />
-          Notifikasi Aktif
-        </Button>
-      );
-    if (notifStatus === "blocked")
-      return (
-        <Button
-          variant="destructive"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={() =>
-            alert(
-              "Notifikasi diblokir oleh browser. Buka pengaturan situs dan izinkan Notifications."
-            )
-          }
-        >
-          <BellOff className="h-4 w-4 mr-1" /> Notifikasi Diblokir
-        </Button>
-      );
-    if (notifStatus === "loading")
-      return (
-        <Button
-          variant="default"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          disabled
-        >
-          <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-          Mengaktifkan...
-        </Button>
-      );
-    if (notifStatus === "error")
-      return (
-        <Button
-          variant="destructive"
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={handleEnableNotifications}
-        >
-          <Bell className="h-4 w-4 mr-1" />
-          Coba Lagi
-        </Button>
-      );
-    return (
-      <Button
-        variant="default"
-        size="sm"
-        className="h-7 px-2 text-xs"
-        onClick={handleEnableNotifications}
-      >
-        <Bell className="h-4 w-4 mr-1" />
-        Aktifkan Notifikasi
-      </Button>
-    );
-  };
+  /* ========= FAB (floating button) pojok kanan bawah — tampil di mobile & desktop ========= */
+  const [showFab, setShowFab] = useState(false);
 
-  /* Auto-lookup technicianId dari sesi */
+  // Tampilkan FAB hanya di /user/dashboard dan bila perlu aktifkan (default/granted-no-sub)
+  useEffect(() => {
+    if (!supported) {
+      setShowFab(false);
+      return;
+    }
+    if (!pathname?.startsWith("/user/dashboard")) {
+      setShowFab(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const perm = Notification.permission;
+        if (perm === "denied") {
+          if (!cancelled) setShowFab(false);
+          return;
+        }
+        if (perm === "default") {
+          if (!cancelled) setShowFab(true);
+          return;
+        }
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (!cancelled) setShowFab(!sub);
+      } catch {
+        if (!cancelled) setShowFab(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [supported, pathname, notifStatus]);
+
+  async function onFabClick() {
+    // Sembunyikan segera agar terasa instan
+    setShowFab(false);
+    await handleEnableNotifications();
+  }
+
+  // Auto-prompt sekali per sesi saat mendarat di dashboard (opsional — hapus blok ini jika tidak ingin auto)
+  const ranOnce = useRef(false);
+  useEffect(() => {
+    if (!supported) return;
+    if (ranOnce.current) return;
+    if (!pathname?.startsWith("/user/dashboard")) return;
+
+    const ASK_KEY = "notif_auto_asked_v1";
+    if (typeof window === "undefined") return;
+    if (sessionStorage.getItem(ASK_KEY) === "yes") return;
+
+    (async () => {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const currentSub = await reg.pushManager.getSubscription();
+        const perm = Notification.permission; // "default" | "granted" | "denied"
+        if (perm === "default" || (perm === "granted" && !currentSub)) {
+          ranOnce.current = true;
+          sessionStorage.setItem(ASK_KEY, "yes");
+          await handleEnableNotifications();
+        }
+      } catch {}
+    })();
+  }, [supported, pathname]);
+
+  /* ================== Auto-lookup technicianId dari sesi ================== */
   const [techIdAuto, setTechIdAuto] = useState<string | undefined>(undefined);
   useEffect(() => {
     let alive = true;
@@ -373,7 +378,7 @@ export function TechnicianHeader({
   const effTechnicianId = technicianId ?? techIdAuto;
   const canCheck = Boolean(effTechnicianId);
 
-  /* Check In/Out state */
+  /* ================== Check In/Out state ================== */
   const [confirmType, setConfirmType] = useState<null | "in" | "out">(null);
   const [checkBusy, setCheckBusy] = useState(false);
   const [checkError, setCheckError] = useState<string | null>(null);
@@ -382,7 +387,7 @@ export function TechnicianHeader({
   >([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | "">("");
 
-  // ===== Popup sukses =====
+  // ===== Popup sukses CheckIn/CheckOut =====
   const [success, setSuccess] = useState<null | {
     type: "in" | "out";
     text: string;
@@ -451,7 +456,7 @@ export function TechnicianHeader({
       }))
       .filter((x) => x.id);
 
-    setProjectChoices(rows); // tampilkan apa adanya
+    setProjectChoices(rows);
     return rows;
   }
 
@@ -577,125 +582,147 @@ export function TechnicianHeader({
   );
 
   return (
-    <header className="bg-white shadow-sm border-b relative">
-      <div className="px-4 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          {showBackButton && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleBack}
-              className="p-2"
-            >
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-          )}
-          <h1 className="text-[15px] font-bold text-gray-900">{title}</h1>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {showFilter && (
-            <div className="flex items-center gap-1">
+    <>
+      <header className="bg-white shadow-sm border-b relative">
+        <div className="px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            {showBackButton && (
               <Button
-                variant={filterValue === "all" ? "default" : "outline"}
-                size="sm"
-                onClick={() => onFilterChange?.("all")}
-                className="h-7 px-2 text-xs font-sans"
-              >
-                All
-              </Button>
-              <Button
-                variant={filterValue === "survey" ? "default" : "outline"}
-                size="sm"
-                onClick={() => onFilterChange?.("survey")}
-                className="h-7 px-2 text-xs font-sans"
-              >
-                Survey
-              </Button>
-              <Button
-                variant={filterValue === "instalasi" ? "default" : "outline"}
-                size="sm"
-                onClick={() => onFilterChange?.("instalasi")}
-                className="h-7 px-2 text-xs font-sans"
-              >
-                Instalasi
-              </Button>
-            </div>
-          )}
-
-          {isClient ? (
-            <NotifButton />
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 px-2 text-xs"
-              disabled
-            >
-              <Loader2 className="h-4 w-4 mr-1" /> Memuat…
-            </Button>
-          )}
-
-          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-            <DropdownMenuTrigger asChild>
-              <Button
-                ref={menuTriggerRef}
                 variant="ghost"
                 size="sm"
+                onClick={handleBack}
                 className="p-2"
               >
-                <Menu className="h-6 w-6" />
+                <ArrowLeft className="h-5 w-5" />
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-60">
-              <DropdownMenuItem onClick={handleProfileClick}>
-                <UserCircle className="h-4 w-4 mr-2 text-black-500" /> Profil
-              </DropdownMenuItem>
+            )}
+            <h1 className="text-[15px] font-bold text-gray-900">{title}</h1>
+          </div>
 
-              {/* Leaderboard hanya untuk role tertentu */}
-              {canSeeLeaderboard && (
-                <DropdownMenuItem onClick={() => router.push("/leaderboard")}>
-                  <Trophy className="h-4 w-4 mr-2 text-yellow-500" />
-                  Leaderboard Poin
+          <div className="flex items-center gap-2">
+            {showFilter && (
+              <div className="flex items-center gap-1">
+                <Button
+                  variant={filterValue === "all" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => onFilterChange?.("all")}
+                  className="h-7 px-2 text-xs font-sans"
+                >
+                  All
+                </Button>
+                <Button
+                  variant={filterValue === "survey" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => onFilterChange?.("survey")}
+                  className="h-7 px-2 text-xs font-sans"
+                >
+                  Survey
+                </Button>
+                <Button
+                  variant={filterValue === "instalasi" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => onFilterChange?.("instalasi")}
+                  className="h-7 px-2 text-xs font-sans"
+                >
+                  Instalasi
+                </Button>
+              </div>
+            )}
+
+            {/* (badge header dihapus; diganti indikator tengah yang memudar) */}
+
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  ref={menuTriggerRef}
+                  variant="ghost"
+                  size="sm"
+                  className="p-2"
+                >
+                  <Menu className="h-6 w-6" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-60">
+                <DropdownMenuItem onClick={handleProfileClick}>
+                  <UserCircle className="h-4 w-4 mr-2 text-black-500" /> Profil
                 </DropdownMenuItem>
-              )}
 
-              <DropdownMenuItem onClick={handleDamageComplainClick}>
-                <AlertTriangle className="h-4 w-4 mr-2 text-black-500" /> Lapor
-                Kerusakan
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleComplaintClick}>
-                <AlertCircle className="h-4 w-4 mr-2 text-black-500" /> Ajukan
-                Komplain
-              </DropdownMenuItem>
+                {/* Leaderboard hanya untuk role tertentu */}
+                {canSeeLeaderboard && (
+                  <DropdownMenuItem onClick={() => router.push("/leaderboard")}>
+                    <Trophy className="h-4 w-4 mr-2 text-yellow-500" />
+                    Leaderboard Poin
+                  </DropdownMenuItem>
+                )}
 
-              {/* Check In/Out */}
-              <DropdownMenuItem
-                onClick={() => {
-                  setMenuOpen(false);
-                  setConfirmType("in");
-                }}
-              >
-                <CircleCheck className="h-4 w-4 mr-2 text-black-500" /> Check In
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  setMenuOpen(false);
-                  setConfirmType("out");
-                }}
-              >
-                <CircleX className="h-4 w-4 mr-2 text-black-500" /> Check Out
-              </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleDamageComplainClick}>
+                  <AlertTriangle className="h-4 w-4 mr-2 text-black-500" />{" "}
+                  Lapor Kerusakan
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleComplaintClick}>
+                  <AlertCircle className="h-4 w-4 mr-2 text-black-500" /> Ajukan
+                  Komplain
+                </DropdownMenuItem>
 
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600">
-                <LogOut className="h-4 w-4 mr-2" /> Keluar
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                {/* Check In/Out */}
+                <DropdownMenuItem
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setConfirmType("in");
+                  }}
+                >
+                  <CircleCheck className="h-4 w-4 mr-2 text-black-500" /> Check
+                  In
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setConfirmType("out");
+                  }}
+                >
+                  <CircleX className="h-4 w-4 mr-2 text-black-500" /> Check Out
+                </DropdownMenuItem>
+
+                <DropdownMenuItem
+                  onClick={handleLogout}
+                  className="text-red-600"
+                >
+                  <LogOut className="h-4 w-4 mr-2" /> Keluar
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
-      </div>
+      </header>
 
-      {/* Dialog Check In */}
+      {/* ========= FAB “Aktifkan Notifikasi” (pojok kanan bawah, mobile & desktop) ========= */}
+      {showFab && (
+        <Button
+          onClick={onFabClick}
+          size="icon"
+          className="fixed bottom-5 right-5 z-[60] h-14 w-14 md:h-16 md:w-16 rounded-full shadow-lg"
+          aria-label="Aktifkan notifikasi"
+          title="Aktifkan notifikasi"
+        >
+          <Bell className="h-6 w-6 md:h-7 md:w-7" />
+        </Button>
+      )}
+
+      {/* ========= Indikator tengah “Notifikasi Aktif” dengan fade-out ========= */}
+      {notifCenterOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center pointer-events-none">
+          <div
+            className={`pointer-events-auto bg-green-600 text-white shadow-xl rounded-2xl px-5 py-3 flex items-center gap-2 transition-opacity duration-500 ${
+              notifFading ? "opacity-0" : "opacity-100"
+            }`}
+          >
+            <CheckCircle2 className="h-5 w-5 text-white" />
+            <span className="text-sm font-semibold">Notifikasi Aktif</span>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Dialog Check In ===== */}
       <Dialog
         open={confirmType === "in"}
         onOpenChange={(v) => {
@@ -774,7 +801,7 @@ export function TechnicianHeader({
         </DialogContent>
       </Dialog>
 
-      {/* Dialog Check Out */}
+      {/* ===== Dialog Check Out ===== */}
       <Dialog
         open={confirmType === "out"}
         onOpenChange={(v) => {
@@ -853,7 +880,7 @@ export function TechnicianHeader({
         </DialogContent>
       </Dialog>
 
-      {/* ===== Popup sukses (auto hide) ===== */}
+      {/* ===== Popup sukses CheckIn/CheckOut (auto hide) ===== */}
       {success && (
         <div
           aria-live="polite"
@@ -881,6 +908,6 @@ export function TechnicianHeader({
           </div>
         </div>
       )}
-    </header>
+    </>
   );
 }

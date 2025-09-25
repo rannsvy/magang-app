@@ -1,5 +1,5 @@
 /* public/sw.js — fast offline upload with timeout & ACK + Web Push (VAPID) */
-const VERSION = "magang-app-v1.0.50"; // ⬅️ bump versi agar SW baru aktif
+const VERSION = "magang-app-v1.0.51"; // ⬅️ bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
@@ -16,8 +16,7 @@ const APP_SHELL = [
   "/offline",
   "/manifest.json",
   "/logo-reaport.png",
-  "/icon-192x192.png",
-  "/icon-512x512.png",
+  "/badge-reaport.png",
 ];
 
 /* ===== Config upload/meta ===== */
@@ -237,8 +236,8 @@ self.addEventListener("push", (e) => {
     self.registration.showNotification(title, {
       body,
       tag,
-      icon: "/icon-192x192.png",
-      badge: "/icon-192x192.png",
+      icon: "/logo-reaport.png",
+      badge: "/badge-reaport.png",
       data: { url },
       renotify: true,
       requireInteraction: true,
