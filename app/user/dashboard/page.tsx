@@ -1,6 +1,6 @@
 // app/user/dashboard/page.tsx
 import { Suspense } from "react";
-import DashboardClient from "./DashboardClient";
+import DashboardClient from "./_components/dashboard-client";
 
 export const dynamic = "force-dynamic"; // boleh di Server file
 export const revalidate = 0;

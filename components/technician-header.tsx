@@ -30,6 +30,7 @@ import {
   CircleX,
   Trophy, // Leaderboard
   Bell, // FAB icon
+  CalendarArrowDown, // Daily Report
 } from "lucide-react";
 
 /** Role yang boleh melihat Leaderboard */
@@ -151,6 +152,7 @@ export function TechnicianHeader({
   const handleProfileClick = () => router.push("/user/profile");
   const handleComplaintClick = () => router.push("/user/complain");
   const handleDamageComplainClick = () => router.push("/user/damageComplain");
+  const handleOpenDailyReport = () => router.push("/user/dailyReport"); // ⬅️ dari code 2
 
   /* ===== Push notif ===== */
   const supported = useMemo(
@@ -291,7 +293,7 @@ export function TechnicianHeader({
     await handleEnableNotifications();
   }
 
-  // Auto-prompt sekali per sesi saat mendarat di dashboard (opsional — hapus blok ini jika tidak ingin auto)
+  // Auto-prompt sekali per sesi saat mendarat di dashboard
   const ranOnce = useRef(false);
   useEffect(() => {
     if (!supported) return;
@@ -683,6 +685,18 @@ export function TechnicianHeader({
                   <CircleX className="h-4 w-4 mr-2 text-black-500" /> Check Out
                 </DropdownMenuItem>
 
+                {/* Daily Report (dari code 2) */}
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    handleOpenDailyReport();
+                  }}
+                  className="cursor-pointer"
+                >
+                  <CalendarArrowDown className="h-4 w-4 mr-2 text-black-500" />
+                  Daily Report
+                </DropdownMenuItem>
+
                 <DropdownMenuItem
                   onClick={handleLogout}
                   className="text-red-600"
@@ -735,7 +749,7 @@ export function TechnicianHeader({
             <DialogTitle>Konfirmasi Check In</DialogTitle>
           </DialogHeader>
 
-          <p className="text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
             Apakah anda yakin ingin{" "}
             <span className="font-semibold">Check In</span> sekarang? Lokasi/GPS
             wajib aktif.

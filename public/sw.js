@@ -1,5 +1,5 @@
 /* public/sw.js — merged: fast offline upload with timeout & ACK + auth/api bypass + survey + replay w/ cookies */
-const VERSION = "magang-app-v1.0.60"; // bump versi agar SW baru aktif
+const VERSION = "magang-app-v1.0.61"; // bump versi agar SW baru aktif
 const STATIC_CACHE = VERSION + "-static";
 const DYNAMIC_CACHE = VERSION + "-dynamic";
 
