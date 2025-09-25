@@ -4,6 +4,7 @@ import type React from "react";
 import { supabase } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { LogoutButton } from "./ui/logout-button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,20 +27,6 @@ export function AdminHeader({
   rightContent,
 }: AdminHeaderProps) {
   const router = useRouter();
-
-  async function handleLogout() {
-    try {
-      await supabase.auth.signOut();
-    } catch {}
-
-    await fetch("/api/auth/logout", {
-      method: "POST",
-      credentials: "include",
-    }).catch(() => {});
-
-    const next = encodeURIComponent("/auth/login");
-    window.location.href = `/auth/login`;
-  }
 
   const handleBack = () => {
     router.push(backUrl);
@@ -80,9 +67,8 @@ export function AdminHeader({
                 <Settings className="h-4 w-4 mr-2" />
                 Pengaturan
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600">
-                <LogOut className="h-4 w-4 mr-2" />
-                Keluar
+              <DropdownMenuItem className="text-red-600">
+                <LogoutButton />
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

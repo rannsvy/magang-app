@@ -1,3 +1,4 @@
+// app/api/pog/ids/route.ts
 import { NextResponse } from "next/server";
 import { getIdList } from "@/lib/pogClient";
 
@@ -50,7 +51,7 @@ function makeCombinedKey(it: Item) {
   return norm(`${it.id} ${it.label ?? ""} ${it.type}`);
 }
 
-/* ====== WIB date helpers (default: hari ini s/d 1 tahun ke belakang) ====== */
+/* ====== WIB date helpers ====== */
 const TZ = "Asia/Jakarta";
 const DAY_MS = 86_400_000;
 function ymdInTZ(date: Date, tz = TZ) {
@@ -72,6 +73,17 @@ function defaultOneYearRange() {
   const now = new Date();
   const start = new Date(now.getTime() - 365 * DAY_MS);
   return { tglAwal: ymdInTZ(start), tglAkhir: ymdInTZ(now) };
+}
+
+// NEW: clamp jendela ke 1 tahun terakhir (WIB)
+function clampToLastYearWIB(tglAwal: string, tglAkhir: string) {
+  const today = ymdInTZ(new Date()); // YYYY-MM-DD (WIB)
+  const minStart = ymdInTZ(new Date(Date.now() - 365 * DAY_MS));
+  // bandingkan string ISO YYYY-MM-DD secara leksikografis
+  if (tglAkhir > today) tglAkhir = today;
+  if (tglAwal < minStart) tglAwal = minStart;
+  if (tglAwal > tglAkhir) [tglAwal, tglAkhir] = [tglAkhir, tglAwal];
+  return { tglAwal, tglAkhir };
 }
 
 /* ============== Build / Read cache index ============== */
@@ -129,7 +141,6 @@ function search(
     const it = items[i];
     if (!out.includes(it)) out.push(it);
   }
-
   return out.slice(0, limit);
 }
 
@@ -166,6 +177,9 @@ export async function GET(req: Request) {
     // safety: kalau user kebalik, tukar
     if (tglAwal > tglAkhir) [tglAwal, tglAkhir] = [tglAkhir, tglAwal];
 
+    // paksa tetap di jendela 1 tahun terakhir (WIB)
+    ({ tglAwal, tglAkhir } = clampToLastYearWIB(tglAwal, tglAkhir));
+
     const q = searchParams.get("q") ?? "";
 
     const rawLimit = Number(searchParams.get("limit") ?? "");
@@ -187,7 +201,7 @@ export async function GET(req: Request) {
 
     const res = NextResponse.json({
       items: shaped,
-      meta: { count: shaped.length, refreshedAt: idx.ts },
+      meta: { count: shaped.length, refreshedAt: idx.ts, tglAwal, tglAkhir },
     });
     res.headers.set(
       "Cache-Control",

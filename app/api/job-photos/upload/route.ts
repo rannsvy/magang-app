@@ -1,10 +1,15 @@
 // app/api/job-photos/upload/route.ts
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { createClient, type User } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const BUCKET = "job-photos";
 
 /* ===================== Bucket helper ===================== */
@@ -20,26 +25,99 @@ async function ensureBucketExists() {
   }
 }
 
-/* ===================== Auth Guard (code 1) ===================== */
+/* ===================== Auth helpers (merged) ===================== */
+/** Verifikasi user dari Authorization Bearer ATAU dari cookie "sb-access-token" */
+async function getUserFromRequest(req: Request): Promise<User | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+
+  // 1) Cek Authorization: Bearer <token>
+  const authz = req.headers.get("authorization") || "";
+  const bearer = authz.startsWith("Bearer ") ? authz.slice(7) : null;
+  if (bearer) {
+    const supa = createClient(url, anon, {
+      global: { headers: { Authorization: `Bearer ${bearer}` } },
+    });
+    const { data } = await supa.auth.getUser();
+    if (data?.user) return data.user;
+  }
+
+  // 2) Fallback: cookie access token
+  const cookieStore = await cookies();
+  const accessCookie =
+    cookieStore.get("sb-access-token")?.value ??
+    cookieStore.get("supabase-auth-token")?.value ??
+    null;
+
+  if (accessCookie) {
+    const supa = createClient(url, anon, {
+      global: { headers: { Authorization: `Bearer ${accessCookie}` } },
+    });
+    const { data } = await supa.auth.getUser();
+    if (data?.user) return data.user;
+  }
+
+  return null;
+}
+
 type GuardOK = { ok: true; uid: string; technicianId: string };
 type GuardNG = { ok: false; res: NextResponse };
 
-async function assertTechnician(): Promise<GuardOK | GuardNG> {
-  const supabase = supabaseServer();
+/**
+ * Guard teknisi: coba session server (supabaseServer) lalu fallback ke Authorization/cookie.
+ * Pakai supabaseAdmin untuk cek profile agar bebas RLS.
+ */
+async function assertTechnician(req: Request): Promise<GuardOK | GuardNG> {
+  // 1) Coba via supabaseServer (session dari cookies di request)
+  try {
+    const supa = supabaseServer();
+    const { data: auth, error: authErr } = await supa.auth.getUser();
+    if (!authErr && auth?.user) {
+      const uid = auth.user.id;
+      const { data: profile, error: profErr } = await supabaseAdmin
+        .from("profiles")
+        .select("technician_id")
+        .eq("id", uid)
+        .maybeSingle();
 
-  const { data: auth, error: authErr } = await supabase.auth.getUser();
-  if (authErr || !auth?.user) {
+      if (profErr) {
+        return {
+          ok: false,
+          res: NextResponse.json(
+            { error: profErr.message || "Auth failed" },
+            { status: 500 }
+          ),
+        };
+      }
+      const technicianId = (profile?.technician_id as string) || null;
+      if (!technicianId) {
+        return {
+          ok: false,
+          res: NextResponse.json(
+            { error: "Forbidden: hanya teknisi yang dapat mengunggah foto." },
+            { status: 403 }
+          ),
+        };
+      }
+      return { ok: true, uid, technicianId };
+    }
+  } catch {
+    // ignore and fallback
+  }
+
+  // 2) Fallback: Authorization Bearer / cookie tokens
+  const user = await getUserFromRequest(req);
+  if (!user) {
     return {
       ok: false,
       res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
     };
   }
 
-  const uid = auth.user.id;
-  const { data: profile, error: profErr } = await supabase
+  const { data: profile, error: profErr } = await supabaseAdmin
     .from("profiles")
     .select("technician_id")
-    .eq("id", uid)
+    .eq("id", user.id)
     .maybeSingle();
 
   if (profErr) {
@@ -63,10 +141,10 @@ async function assertTechnician(): Promise<GuardOK | GuardNG> {
     };
   }
 
-  return { ok: true, uid, technicianId };
+  return { ok: true, uid: user.id, technicianId };
 }
 
-/* ===================== Upload helpers (code 2) ===================== */
+/* ===================== Upload helpers ===================== */
 function extFromMime(mime?: string | null) {
   const m = (mime || "").toLowerCase();
   if (m.includes("png")) return "png";
@@ -117,8 +195,8 @@ async function uploadToSupabase(
 /* ===================== Handler ===================== */
 export async function POST(req: Request) {
   try {
-    // Guard teknisi dulu (code 1)
-    const guard = await assertTechnician();
+    // Guard peran (teknisi)
+    const guard = await assertTechnician(req);
     if (!guard.ok) return guard.res;
     const { uid, technicianId } = guard;
 
@@ -309,8 +387,7 @@ export async function POST(req: Request) {
       if (exErr) {
         includeSelectedForFirstPhoto = true;
       } else {
-        includeSelectedForFirstPhoto =
-          !existing || !existing.selected_photo_id;
+        includeSelectedForFirstPhoto = !existing || !existing.selected_photo_id;
       }
     } catch {
       includeSelectedForFirstPhoto = true;
@@ -339,7 +416,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 3) Tambah poin (leaderboard) — WIB-aware, de-dupe by token (code 1)
+    // 3) Tambah poin (leaderboard) — WIB-aware, de-dupe by token
     try {
       await supabaseAdmin.rpc("add_point_for_upload", {
         p_technician_id: technicianId,
@@ -357,10 +434,11 @@ export async function POST(req: Request) {
     // Respons untuk SW/klien
     return NextResponse.json({
       ok: true,
+      jobId,
+      categoryId: String(categoryId),
       photoUrl,
       thumbUrl,
       entryId,
-      categoryId: String(categoryId),
       serialNumber: serialNumber ?? null,
       meter: meterNum,
     });

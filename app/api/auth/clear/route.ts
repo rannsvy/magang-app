@@ -1,6 +1,7 @@
-// app/api/auth/logout/route.ts
+// app/api/auth/clear/route.ts
 import { NextResponse } from "next/server";
 
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 function projectRefFromUrl(url: string | undefined) {
   if (!url) return null;
   const m = url.match(/^https?:\/\/([^.]+)\.supabase\.co/i);
@@ -9,24 +10,17 @@ function projectRefFromUrl(url: string | undefined) {
 
 export async function POST() {
   const res = NextResponse.json({ ok: true });
-
-  const ref = projectRefFromUrl(process.env.NEXT_PUBLIC_SUPABASE_URL || "");
+  const ref = projectRefFromUrl(SUPABASE_URL);
   const names = [
+    "sb-access-token",
+    "sb-refresh-token",
     "access_token",
     "refresh_token",
-    "sb-access-token",
     "supabase-access-token",
-    ref ? `sb-${ref}-auth-token` : null,
-  ].filter(Boolean) as string[];
-
+    ...(ref ? [`sb-${ref}-auth-token`] : []),
+  ];
   for (const name of names) {
-    res.cookies.set({
-      name,
-      value: "",
-      maxAge: 0,
-      path: "/",
-    });
+    res.cookies.set({ name, value: "", path: "/", maxAge: 0 });
   }
-
   return res;
 }

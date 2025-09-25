@@ -5,6 +5,7 @@ import { createServerClient } from "@supabase/ssr";
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
 
+/* ================== Helpers ================== */
 function computeStatusPajakServer(
   paid?: string | null,
   due?: string | null
@@ -23,7 +24,7 @@ function computeStatusPajakServer(
 
 function mapRowToUI(v: any) {
   return {
-    id: v.vehicle_code ?? v.id,
+    id: v.vehicle_code ?? v.id, // prioritaskan code agar stabil
     merk: v.brand ?? "",
     tipe: v.model ?? "",
     no_polisi: v.plate ?? "",
@@ -33,7 +34,61 @@ function mapRowToUI(v: any) {
   };
 }
 
+/** Baca access token dari berbagai skema cookie yang kamu gunakan */
+function readAccessTokenFromCookies(req: NextRequest): string | null {
+  const c = req.cookies;
+
+  // 1) Cookie custom yang kamu set di middleware
+  //    - "access_token"
+  //    - "sb-access-token"
+  const direct =
+    c.get("access_token")?.value || c.get("sb-access-token")?.value;
+  if (direct) return direct;
+
+  // 2) Format auth-helpers baru: "sb-<ref>-auth-token" (berupa JSON)
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const m = supabaseUrl.match(/^https?:\/\/([^.]+)\.supabase\.co/i);
+  const ref = m ? m[1] : null;
+  if (ref) {
+    const name = `sb-${ref}-auth-token`;
+    const raw = c.get(name)?.value;
+    if (raw) {
+      // Bisa jadi plain JSON atau "base64-<json>"
+      let txt = raw;
+      if (txt.startsWith("base64-")) {
+        const b64 = txt.slice(7);
+        try {
+          // @ts-ignore
+          txt = Buffer.from(b64, "base64").toString("utf8");
+        } catch {
+          /* noop */
+        }
+      }
+      try {
+        const obj = JSON.parse(txt);
+        if (obj?.currentSession?.access_token) {
+          return String(obj.currentSession.access_token);
+        }
+        if (obj?.access_token) return String(obj.access_token);
+      } catch {
+        // abaikan parse error
+      }
+    }
+  }
+
+  // 3) Nama lama yang kadang muncul
+  const legacy =
+    c.get("supabase-access-token")?.value ||
+    c.get("supabase-auth-token")?.value;
+  if (legacy) return legacy;
+
+  return null;
+}
+
+/** Buat Supabase client + propagate cookies */
 function makeSb(req: NextRequest, res: NextResponse) {
+  const access = readAccessTokenFromCookies(req);
+
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -52,18 +107,31 @@ function makeSb(req: NextRequest, res: NextResponse) {
         secure: process.env.NODE_ENV === "production",
         sameSite: "lax",
       },
+      // ⬇️ KUNCI PERBAIKAN: pakai token user agar RLS & getUser() jalan
+      global: {
+        headers: access ? { Authorization: `Bearer ${access}` } : {},
+      },
     }
   );
 }
 
+/* ================== Handlers ================== */
 export async function GET(req: NextRequest) {
   const res = new NextResponse();
   const sb = makeSb(req, res);
 
-  // (opsional) kalau mau wajib login:
+  // Wajib login
   const {
     data: { user },
+    error: userErr,
   } = await sb.auth.getUser();
+
+  if (userErr) {
+    return NextResponse.json(
+      { error: userErr.message || "Auth error" },
+      { status: 401, headers: res.headers }
+    );
+  }
   if (!user) {
     return NextResponse.json(
       { error: "Unauthorized" },
@@ -94,10 +162,18 @@ export async function POST(req: NextRequest) {
   const res = new NextResponse();
   const sb = makeSb(req, res);
 
-  // (opsional tapi bagus) wajib login:
+  // Wajib login
   const {
     data: { user },
+    error: userErr,
   } = await sb.auth.getUser();
+
+  if (userErr) {
+    return NextResponse.json(
+      { error: userErr.message || "Auth error" },
+      { status: 401, headers: res.headers }
+    );
+  }
   if (!user) {
     return NextResponse.json(
       { error: "Unauthorized" },
@@ -107,7 +183,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => ({} as any));
 
-  // terima kedua gaya payload (baru & lama)
+  // terima gaya payload baru & lama
   const brand = body.brand ?? body.merk ?? null;
   const model = body.model ?? body.tipe ?? null;
   const plate = body.plate ?? body.no_polisi;
