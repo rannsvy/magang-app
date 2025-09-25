@@ -132,8 +132,7 @@ async function processQueue() {
     }
   }
 
-  if (okIds.length)
-    await notifyClients({ type: "sync-complete", queueIds: okIds });
+  if (okIds.length) await notifyClients({ type: "sync-complete", queueIds: okIds });
 }
 
 /* ===== Cache utils ===== */
@@ -197,9 +196,7 @@ self.addEventListener("activate", (e) => {
       .then((keys) =>
         Promise.all(
           keys.map((k) =>
-            k.startsWith("magang-app-") &&
-            k !== STATIC_CACHE &&
-            k !== DYNAMIC_CACHE
+            k.startsWith("magang-app-") && k !== STATIC_CACHE && k !== DYNAMIC_CACHE
               ? caches.delete(k)
               : Promise.resolve()
           )
@@ -211,8 +208,7 @@ self.addEventListener("activate", (e) => {
 
 /* ===== Background Sync & Messages ===== */
 self.addEventListener("sync", (e) => {
-  if (e.tag === "photo-upload-sync" || e.tag === "meta-sync")
-    e.waitUntil(processQueue());
+  if (e.tag === "photo-upload-sync" || e.tag === "meta-sync") e.waitUntil(processQueue());
 });
 self.addEventListener("message", (e) => {
   if (e.data?.type === "force-sync") {
@@ -334,8 +330,7 @@ self.addEventListener("fetch", (e) => {
   // kecuali dua endpoint POST yang memang dikelola SW untuk antre offline.
   if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
     const isManagedUpload =
-      req.method === "POST" &&
-      (url.pathname === UPLOAD_PATH || url.pathname === META_PATH);
+      req.method === "POST" && (url.pathname === UPLOAD_PATH || url.pathname === META_PATH);
 
     if (!isManagedUpload) {
       e.respondWith(fetch(req)); // network only, credentials ikut karena pakai req asli
@@ -344,18 +339,13 @@ self.addEventListener("fetch", (e) => {
   }
 
   // === Upload & Meta POST (antrian offline) ===
-  if (
-    req.method === "POST" &&
-    (url.pathname === UPLOAD_PATH || url.pathname === META_PATH)
-  ) {
+  if (req.method === "POST" && (url.pathname === UPLOAD_PATH || url.pathname === META_PATH)) {
     e.respondWith(
       (async () => {
         try {
           const onlineRes = await Promise.race([
             fetch(req.clone()),
-            new Promise((_, rej) =>
-              setTimeout(() => rej(new Error("timeout")), UPLOAD_TIMEOUT_MS)
-            ),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), UPLOAD_TIMEOUT_MS)),
           ]);
 
           // ACK cepat ke client jika upload sukses
@@ -396,10 +386,9 @@ self.addEventListener("fetch", (e) => {
               url.pathname === META_PATH ? "meta-sync" : "photo-upload-sync"
             );
           } catch (_) {}
-          return new Response(
-            JSON.stringify({ status: "queued", queueId: id }),
-            { headers: { "Content-Type": "application/json" } }
-          );
+          return new Response(JSON.stringify({ status: "queued", queueId: id }), {
+            headers: { "Content-Type": "application/json" },
+          });
         }
       })()
     );
@@ -428,18 +417,14 @@ self.addEventListener("fetch", (e) => {
         try {
           const res = await fetch(req);
           const resForCache = res.clone();
-          e.waitUntil(
-            caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache))
-          );
+          e.waitUntil(caches.open(DYNAMIC_CACHE).then((c) => putDual(c, req, resForCache)));
           return res;
         } catch {
           return (
             (await matchHtml(req)) ||
             (await caches.match("/", { ignoreSearch: true })) ||
             (await caches.match("/offline", { ignoreSearch: true })) ||
-            new Response("<h1>Offline</h1>", {
-              headers: { "Content-Type": "text/html" },
-            })
+            new Response("<h1>Offline</h1>", { headers: { "Content-Type": "text/html" } })
           );
         }
       })()
@@ -451,9 +436,7 @@ self.addEventListener("fetch", (e) => {
   const isStatic =
     isSameOrigin &&
     (url.pathname.startsWith("/_next/") ||
-      /\.(?:js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|webp|ico)$/i.test(
-        url.pathname
-      ));
+      /\.(?:js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|webp|ico)$/i.test(url.pathname));
 
   if (isStatic) {
     e.respondWith(
@@ -479,9 +462,7 @@ self.addEventListener("fetch", (e) => {
       try {
         return await fetch(req);
       } catch {
-        return (
-          (await caches.match(req, { ignoreSearch: true })) || Response.error()
-        );
+        return (await caches.match(req, { ignoreSearch: true })) || Response.error();
       }
     })()
   );

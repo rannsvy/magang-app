@@ -1,3 +1,4 @@
+//login/page.tsx
 "use client";
 
 import type React from "react";
@@ -21,30 +22,28 @@ export default function LoginPage() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
   const routeAfterLogin = async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
+    let user = (await supabase.auth.getUser()).data.user;
     if (!user) {
-      setError("Login berhasil tapi user tidak ditemukan.");
+      await new Promise((r) => setTimeout(r, 150));
+      user = (await supabase.auth.getUser()).data.user;
+    }
+    if (!user) {
+      setError("Login gagal menyelesaikan sesi. Coba lagi.");
       return;
     }
 
-    // 1) Role dari metadata
     let role: string | undefined =
       (user.user_metadata as any)?.role || (user.app_metadata as any)?.role;
 
-    // 2) (Opsional) role dari profiles
     if (!role) {
       const { data: prof } = await supabase
         .from("profiles")
         .select("role")
         .eq("id", user.id)
         .maybeSingle();
-      role = prof?.role;
+      role = prof?.role ?? "";
     }
 
-    // 3) fallback
     const isAdmin = role === "admin" || (user.email ?? "").includes("admin");
     router.replace(isAdmin ? "/admin/dashboard" : "/user/dashboard");
   };
@@ -129,8 +128,6 @@ export default function LoginPage() {
         setError(error.message || "Email atau password salah");
         return;
       }
-
-      // ⬅️ Kirim token ke server agar dibuat cookie httpOnly (dipakai API route)
       const { data: sess } = await supabase.auth.getSession();
       const at = sess?.session?.access_token;
       const rt = sess?.session?.refresh_token;
@@ -139,11 +136,10 @@ export default function LoginPage() {
         const res = await fetch("/api/auth/set", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          credentials: "include", // penting agar cookie dari server masuk ke browser
+          credentials: "include",
           body: JSON.stringify({ access_token: at, refresh_token: rt }),
         });
         if (!res.ok) {
-          // Tidak fatal untuk user-side (client tetap punya session), tapi API server bisa 401
           const j = await res.json().catch(() => ({}));
           console.warn("auth/set failed:", j?.error || res.statusText);
         }

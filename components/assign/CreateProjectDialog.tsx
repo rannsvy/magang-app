@@ -704,9 +704,6 @@ export default function CreateProjectDialog({
                 lastApplied.current = null;
                 setExternalSelected(v);
               }}
-              defaultType="paket"
-              tglAwal="2025-03-01"
-              tglAkhir="2025-09-01"
             />
 
             {/* Paket */}

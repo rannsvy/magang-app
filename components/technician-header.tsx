@@ -31,7 +31,11 @@ import {
   CircleCheck,
   CircleX,
   CalendarArrowDown,
+  Trophy,
 } from "lucide-react";
+
+/** Role yang boleh melihat Leaderboard */
+const ALLOWED = new Set(["supervisor", "gm", "manager"]);
 
 interface TechnicianHeaderProps {
   title: string;
@@ -104,10 +108,31 @@ export function TechnicianHeader({
   technicianId,
 }: TechnicianHeaderProps) {
   const router = useRouter();
-
+  /* logout & nav */
   const [isClient, setIsClient] = useState(false);
   useEffect(() => {
     setIsClient(true);
+  }, []);
+
+  /* ====== Role (untuk Leaderboard) ====== */
+  const [role, setRole] = useState<string | null>(null);
+  const canSeeLeaderboard = role ? ALLOWED.has(role) : false;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .maybeSingle();
+        if (!error) setRole((data?.role || "").toLowerCase());
+      } catch {}
+    })();
   }, []);
 
   /* logout & nav */
@@ -619,6 +644,14 @@ export function TechnicianHeader({
               <DropdownMenuItem onClick={handleDamageComplainClick}>
                 <AlertTriangle className="h-4 w-4 mr-2 text-black-500" /> Lapor Kerusakan
               </DropdownMenuItem>
+              
+              {/* Leaderboard hanya untuk role tertentu */}
+              {canSeeLeaderboard && (
+                <DropdownMenuItem onClick={() => router.push("/leaderboard")}>
+                  <Trophy className="h-4 w-4 mr-2 text-yellow-500" />
+                  Leaderboard Poin
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={handleComplaintClick}>
                 <AlertCircle className="h-4 w-4 mr-2 text-black-500" /> Ajukan Komplain
               </DropdownMenuItem>

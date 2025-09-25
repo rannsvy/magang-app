@@ -1,13 +1,17 @@
 // app/api/job-photos/upload/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin"; // WAJIB: service role key (server)
-import { supabaseServer } from "@/lib/supabaseServers"; // untuk auth user & RBAC
+import { cookies } from "next/headers";
+import { createClient, type User } from "@supabase/supabase-js";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import crypto from "crypto";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const BUCKET = "job-photos";
 
+/* ===================== Helpers ===================== */
 async function ensureBucketExists() {
   const { data, error } = await supabaseAdmin.storage.listBuckets();
   if (error) throw error;
@@ -20,30 +24,59 @@ async function ensureBucketExists() {
   }
 }
 
-// Guard: hanya teknisi yang boleh upload
-async function assertTechnician() {
-  const supabase = supabaseServer();
+/** Verifikasi user dari Authorization Bearer ATAU dari cookie "sb-access-token" */
+async function getUserFromRequest(req: Request): Promise<User | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
 
-  const { data: auth, error: authErr } = await supabase.auth.getUser();
-  if (authErr || !auth?.user) {
-    return {
-      ok: false as const,
-      res: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
-    };
+  // 1) Cek Authorization: Bearer <token>
+  const authz = req.headers.get("authorization") || "";
+  const bearer = authz.startsWith("Bearer ") ? authz.slice(7) : null;
+  if (bearer) {
+    const supa = createClient(url, anon, {
+      global: { headers: { Authorization: `Bearer ${bearer}` } },
+    });
+    const { data } = await supa.auth.getUser();
+    if (data?.user) return data.user;
   }
 
-  const uid = auth.user.id;
+  // 2) Fallback: baca cookie access token (READONLY — tidak ada .set())
+  const cookieStore = await cookies();
+  const accessCookie =
+    cookieStore.get("sb-access-token")?.value ??
+    cookieStore.get("supabase-auth-token")?.value ?? // jaga-jaga jika pakai nama custom
+    null;
 
-  // Cek profiles: ada technician_id => teknisi
-  const { data: profile, error: profErr } = await supabase
+  if (accessCookie) {
+    const supa = createClient(url, anon, {
+      global: { headers: { Authorization: `Bearer ${accessCookie}` } },
+    });
+    const { data } = await supa.auth.getUser();
+    if (data?.user) return data.user;
+  }
+
+  return null;
+}
+
+type GuardOK = { ok: true; uid: string; technicianId: string };
+type GuardNG = { ok: false; res: NextResponse };
+
+async function assertTechnician(req: Request): Promise<GuardOK | GuardNG> {
+  const user = await getUserFromRequest(req);
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 }) as any;
+  }
+
+  // Pakai admin agar bebas RLS ketika cek profile
+  const { data: profile, error: profErr } = await supabaseAdmin
     .from("profiles")
-    .select("technician_id, email")
-    .eq("id", uid)
+    .select("technician_id")
+    .eq("id", user.id)
     .maybeSingle();
 
   if (profErr) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json(
         { error: profErr.message || "Auth failed" },
         { status: 500 }
@@ -51,11 +84,10 @@ async function assertTechnician() {
     };
   }
 
-  const isTechnician = !!profile?.technician_id;
-
-  if (!isTechnician) {
+  const technicianId = profile?.technician_id as string | null;
+  if (!technicianId) {
     return {
-      ok: false as const,
+      ok: false,
       res: NextResponse.json(
         { error: "Forbidden: hanya teknisi yang dapat mengunggah foto." },
         { status: 403 }
@@ -63,22 +95,25 @@ async function assertTechnician() {
     };
   }
 
-  return { ok: true as const };
+  return { ok: true, uid: user.id, technicianId };
 }
 
+/* ===================== Handler ===================== */
 export async function POST(req: Request) {
   try {
-    // === Guard peran lebih dulu (sebelum baca multipart besar) ===
-    const guard = await assertTechnician();
-    if (!guard.ok) return guard.res;
+    // Guard peran
+    const guard = await assertTechnician(req);
+    if (!("ok" in guard) || !guard.ok) return (guard as GuardNG).res;
+    const { uid, technicianId } = guard as GuardOK;
 
+    // Validasi multipart
     const ct = req.headers.get("content-type") || "";
     if (!ct.includes("multipart/form-data")) {
       const peek = (await req.text()).slice(0, 60);
       return NextResponse.json(
         {
           error:
-            "Unsupported Content-Type. Kirim sebagai multipart/form-data (photo, thumb, jobId, categoryId[, meter, serialNumber]).",
+            "Unsupported Content-Type. Kirim multipart/form-data (photo, thumb, jobId, categoryId[, meter, serialNumber]).",
           peek,
         },
         { status: 415 }
@@ -93,7 +128,6 @@ export async function POST(req: Request) {
     const meterStr = form.get("meter")?.toString();
     const serialNumber = form.get("serialNumber")?.toString();
 
-    // Optional token (kalau dikirim oleh client)
     const tokenRaw = form.get("token")?.toString();
     const tokenNum = tokenRaw ? Number(tokenRaw) : null;
 
@@ -106,7 +140,7 @@ export async function POST(req: Request) {
 
     await ensureBucketExists();
 
-    // Path penyimpanan
+    // Path file
     const ts = Date.now();
     const basePath = `${encodeURIComponent(jobId)}/${encodeURIComponent(
       categoryId
@@ -140,12 +174,9 @@ export async function POST(req: Request) {
       .from(BUCKET)
       .getPublicUrl(thumbPath);
 
-    // Siapkan metadata
-    const meterNum =
-      meterStr != null && meterStr !== "" ? Number(meterStr) : null;
-
-    // 1) Simpan ke tabel RIWAYAT (job_photo_entries) — tidak wajib ada (fallback jika tidak ada)
+    // Simpan entry riwayat (best-effort)
     const entryId = crypto.randomUUID();
+    let entryInserted = false;
     try {
       const { error: histErr } = await supabaseAdmin
         .from("job_photo_entries")
@@ -156,17 +187,15 @@ export async function POST(req: Request) {
           url: fullPub.publicUrl,
           thumb_url: thumbPub.publicUrl,
           created_at: new Date().toISOString(),
-          sharpness: null, // bisa dihitung di server jika ingin
+          sharpness: null,
           token: tokenNum,
         });
-      if (histErr) {
-        // Tidak fatal—lanjutkan ke snapshot
-      }
+      if (!histErr) entryInserted = true;
     } catch {
-      // tabel belum ada / RLS — abaikan demi kompatibilitas
+      /* ignore */
     }
 
-    // 2) Upsert snapshot terbaru ke job_photos
+    // Upsert snapshot terbaru ke job_photos
     const payload: any = {
       job_id: jobId,
       category_id: categoryId,
@@ -175,21 +204,19 @@ export async function POST(req: Request) {
       updated_at: new Date().toISOString(),
     };
     if (serialNumber) payload.serial_number = serialNumber;
+    const meterNum =
+      meterStr != null && meterStr !== "" ? Number(meterStr) : null;
     if (Number.isFinite(meterNum)) payload.cable_meter = meterNum;
 
-    // Jika skema mendukung selected_photo_id, set ke entryId yang baru
-    let upsertOk = false;
     try {
-      payload.selected_photo_id = entryId;
+      payload.selected_photo_id = entryId; // kalau FK ada
       const { error: upErr1 } = await supabaseAdmin
         .from("job_photos")
         .upsert(payload, { onConflict: "job_id,category_id" })
         .select("selected_photo_id")
         .maybeSingle();
       if (upErr1) throw upErr1;
-      upsertOk = true;
     } catch {
-      // Coba ulang tanpa selected_photo_id (untuk skema lama)
       const { selected_photo_id, ...fallbackPayload } = payload;
       const { error: upErr2 } = await supabaseAdmin
         .from("job_photos")
@@ -197,21 +224,31 @@ export async function POST(req: Request) {
         .select("job_id")
         .maybeSingle();
       if (upErr2) throw upErr2;
-      upsertOk = true;
     }
 
-    if (!upsertOk) {
-      return NextResponse.json(
-        { error: "Failed to save snapshot" },
-        { status: 500 }
-      );
+    // Tambah poin (best-effort)
+    try {
+      await supabaseAdmin.rpc("add_point_for_upload", {
+        p_technician_id: technicianId,
+        p_user_id: uid,
+        p_job_id: jobId,
+        p_category_id: categoryId,
+        p_entry_id: entryInserted ? entryId : null,
+        p_token: tokenNum ?? null,
+      });
+    } catch (e) {
+      console.warn("[points] award failed:", e);
     }
 
     return NextResponse.json({
       ok: true,
+      jobId,
+      categoryId,
       photoUrl: fullPub.publicUrl,
       thumbUrl: thumbPub.publicUrl,
-      entryId, // id riwayat yang baru
+      entryId,
+      serialNumber: serialNumber ?? undefined,
+      meter: Number.isFinite(Number(meterStr)) ? Number(meterStr) : undefined,
     });
   } catch (e: any) {
     console.error("[job-photos/upload] ERROR:", e);
