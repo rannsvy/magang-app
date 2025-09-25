@@ -906,7 +906,7 @@ export async function POST(req: NextRequest) {
           const lokasi = meta?.lokasi ?? "-";
 
           await sendPushToEmails([email], {
-            title: `Halo, kamu ${techName} di-assign ke project baru`,
+            title: `Halo, ${techName} Kamu di-assign ke project baru`,
             body: `Project: ${label}\nLokasi: ${lokasi}`, // ⬅️ dua baris
             url: "/user/dashboard",
             tag: `assign-${date}-${it.technician_id}-${it.project_id}`, // unik per assignment
