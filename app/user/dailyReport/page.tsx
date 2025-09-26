@@ -242,7 +242,7 @@ export default function DailyReportPage() {
       `Progress: ${progressText || ""}`,
       `Ip Address : `,
       "",
-      `Keterangan : `,
+      `Keterangan : \nListrik ON,\nMoratel ON`,
     ];
 
     return lines.map((l) => l.replace(/\s+$/g, "")).join("\n");

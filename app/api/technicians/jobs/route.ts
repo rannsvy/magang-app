@@ -2,6 +2,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServers } from "@/lib/supabaseServers";
 
+// Default & varian template
+import { PHOTO_TEMPLATE as PHOTO_TEMPLATE_DEFAULT } from "@/lib/photoTemplate";
+import { PHOTO_TEMPLATE as PHOTO_TEMPLATE_BALI_MAP } from "@/lib/photoTemplate.bali";
+
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -19,9 +23,70 @@ type UiJob = {
   sales_name?: string | null;
   vehicle_name?: string | null;
   vehicle_names?: string[];
+  // baru:
   progressDone?: number | null;
   progressTotal?: number | null;
 };
+
+type TemplateType = "photo" | "photo+sn" | "photo+cable";
+
+type TemplateItem = {
+  id: string;
+  name: string;
+  type: TemplateType;
+  sort?: number | null;
+};
+
+const normalizeLabel = (label: string) =>
+  label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const slugifyLabel = (label: string) =>
+  normalizeLabel(label).replace(/\s+/g, "-");
+
+const BALI_TEMPLATE_ENTRIES: Array<{
+  label: string;
+  normalized: string;
+  slug: string;
+  items: TemplateItem[];
+}> = Object.entries(PHOTO_TEMPLATE_BALI_MAP).map(([label, items]) => ({
+  label,
+  normalized: normalizeLabel(label),
+  slug: slugifyLabel(label),
+  items: items as TemplateItem[],
+}));
+
+function findBaliTemplate(term?: string | null): TemplateItem[] | null {
+  if (!term) return null;
+  const normalizedTerm = normalizeLabel(term);
+  if (!normalizedTerm) return null;
+
+  let entry = BALI_TEMPLATE_ENTRIES.find(
+    (e) => e.normalized === normalizedTerm
+  );
+  if (entry) return entry.items;
+
+  entry = BALI_TEMPLATE_ENTRIES.find(
+    (e) =>
+      normalizedTerm.includes(e.normalized) ||
+      e.normalized.includes(normalizedTerm)
+  );
+  if (entry) return entry.items;
+
+  const slugTerm = slugifyLabel(term);
+  entry = BALI_TEMPLATE_ENTRIES.find(
+    (e) =>
+      e.slug === slugTerm ||
+      slugTerm.includes(e.slug) ||
+      e.slug.includes(slugTerm)
+  );
+  if (entry) return entry.items;
+
+  return null;
+}
 
 const isUuid = (v?: string | null) =>
   !!v &&
@@ -47,6 +112,27 @@ function vehicleLabel(v?: {
   return plate ? `${base} (${plate})` : base;
 }
 
+/** Pilih template berdasarkan project (selalu mengembalikan array TemplateItem) */
+function resolveTemplateByProject(
+  templateKey?: string | null,
+  templateLokasi?: string | null
+): TemplateItem[] {
+  const templateFromLokasi = findBaliTemplate(templateLokasi);
+  if (templateFromLokasi) return templateFromLokasi;
+
+  const templateFromKey = findBaliTemplate(templateKey);
+  if (templateFromKey) return templateFromKey;
+
+  const lok = (templateLokasi || "").toLowerCase();
+  const key = (templateKey || "").toLowerCase();
+
+  if (key.includes("bali") || lok.includes("bali")) {
+    return BALI_TEMPLATE_ENTRIES[0]?.items ?? PHOTO_TEMPLATE_DEFAULT;
+  }
+
+  return PHOTO_TEMPLATE_DEFAULT;
+}
+
 /** Cek apakah email adalah sales, dan ambil identitas sales (nama & panggilan) */
 async function fetchSalesIdentity(
   supabase: Awaited<ReturnType<typeof supabaseServers>>,
@@ -58,7 +144,7 @@ async function fetchSalesIdentity(
 }> {
   const em = (email || "").toLowerCase();
 
-  // 1) Cek email_roles
+  // 1) email_roles
   const { data: erows } = await supabase
     .from("email_roles")
     .select("app_role")
@@ -66,7 +152,7 @@ async function fetchSalesIdentity(
     .limit(1);
   const fromRole = Array.isArray(erows) && erows[0]?.app_role === "sales";
 
-  // 2) Cek tabel sales (berdasarkan email)
+  // 2) sales table
   const { data: srow } = await supabase
     .from("sales")
     .select("nama_lengkap, nama_panggilan, email")
@@ -80,6 +166,22 @@ async function fetchSalesIdentity(
     namaLengkap: srow?.nama_lengkap ?? null,
     namaPanggilan: srow?.nama_panggilan ?? null,
   };
+}
+
+function dedupeCrew(list: Array<{ name: string; isLeader: boolean }>) {
+  const seen = new Set<string>();
+  return list.filter((it) => {
+    const k = `${(it.name || "").toLowerCase()}|${it.isLeader ? 1 : 0}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function sortLeaderFirst(list: Array<{ name: string; isLeader: boolean }>) {
+  return [...list].sort((a, b) =>
+    a.isLeader === b.isLeader ? 0 : a.isLeader ? -1 : 1
+  );
 }
 
 export async function GET(req: NextRequest) {
@@ -152,7 +254,7 @@ export async function GET(req: NextRequest) {
     // ===== Query params
     const workDate = url.searchParams.get("date") || todayWIB();
     const technicianParam = url.searchParams.get("technician");
-    const debugAll = url.searchParams.get("debug") === "1"; // hanya efektif untuk admin-like
+    const debugAll = url.searchParams.get("debug") === "1"; // efektif untuk admin-like
 
     // ===== Tentukan filter akses
     let filterByTechnicianId: string | null = null;
@@ -177,7 +279,13 @@ export async function GET(req: NextRequest) {
           if (t?.id) filterByTechnicianId = String(t.id);
         }
       }
-      // admin-like tanpa filter → semua assignment hari itu (debugAll tak mengubah banyak)
+      if (debugAll) {
+        // admin-like + debug=1 -> tidak pakai filter khusus
+        filterByTechnicianId = null;
+        filterBySupervisorId = null;
+        filterBySupervisorName = null;
+        filterBySalesNames = [];
+      }
     } else {
       // Non admin-like:
       if (myTechId) {
@@ -207,7 +315,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ===== Query projects
+    // ===== Query projects (+ assignment hari itu)
     let q = supabase
       .from("projects")
       .select(
@@ -220,6 +328,8 @@ export async function GET(req: NextRequest) {
         closed_at,
         sales_name,
         sigma_teknisi,
+        template_key,
+        template_lokasi,
         project_assignments!inner(
           project_id,
           technician_id,
@@ -251,9 +361,11 @@ export async function GET(req: NextRequest) {
           .eq("project_assignments.is_leader", true)
           .eq("project_assignments.supervisor_id", filterBySupervisorId);
       } else if (filterBySupervisorName) {
-        q = q
-          .eq("project_assignments.is_leader", true)
-          .ilike("project_assignments.supervisor_name", filterBySupervisorName);
+        // pakai wildcard agar robust
+        q = q.ilike(
+          "project_assignments.supervisor_name",
+          `%${filterBySupervisorName}%`
+        );
       } else if (filterBySalesNames.length) {
         const sanitize = (s: string) =>
           s.replace(/,/g, " ").replace(/\*/g, "").trim();
@@ -262,8 +374,6 @@ export async function GET(req: NextRequest) {
         );
         if (clauses.length) q = q.or(clauses.join(","));
       }
-    } else {
-      // admin-like tanpa filter → biarkan semua untuk tanggal tsb
     }
 
     const { data, error } = await q;
@@ -271,6 +381,7 @@ export async function GET(req: NextRequest) {
 
     const projects = (data ?? []) as any[];
     const projectIds = projects.map((p) => String(p.id));
+    const jobIds = projects.map((p) => String(p.job_id || p.id));
 
     // ===== Crew teknisi aktif
     const crewByProject = new Map<
@@ -369,6 +480,36 @@ export async function GET(req: NextRequest) {
       for (const r of rs.data ?? []) surveySet.add(String(r.project_id));
     }
 
+    // ===== Progress foto per job (job_photos)
+    const doneByJob = new Map<string, number>();
+    const totalByJob = new Map<string, number>(); // fallback lama
+    if (jobIds.length) {
+      // total kategori per job_photos (fallback – akan ditimpa oleh template length)
+      const { data: totRows, error: totErr } = await supabase
+        .from("job_photos")
+        .select("job_id, id")
+        .in("job_id", jobIds);
+      if (totErr && !/does not exist/i.test(totErr.message)) throw totErr;
+      for (const r of totRows ?? []) {
+        const k = String(r.job_id);
+        totalByJob.set(k, (totalByJob.get(k) ?? 0) + 1);
+      }
+
+      // kategori yang sudah ada foto utama
+      const { data: doneRows, error: doneErr } = await supabase
+        .from("job_photos")
+        .select("job_id, selected_photo_id, photo, thumb_url")
+        .in("job_id", jobIds)
+        .or(
+          "selected_photo_id.not.is.null,photo.not.is.null,thumb_url.not.is.null"
+        );
+      if (doneErr && !/does not exist/i.test(doneErr.message)) throw doneErr;
+      for (const r of doneRows ?? []) {
+        const k = String(r.job_id);
+        doneByJob.set(k, (doneByJob.get(k) ?? 0) + 1);
+      }
+    }
+
     // ===== Bentuk respon
     const items: UiJob[] = projects.map((p) => {
       const uiStatus: UiJob["status"] = p.closed_at
@@ -377,49 +518,90 @@ export async function GET(req: NextRequest) {
         ? "not-started"
         : "in-progress";
 
-      const crew = crewByProject.get(String(p.id)) ?? [];
+      const pid = String(p.id);
+      const jid = String(p.job_id || p.id);
+
+      // === crew dari JOIN (inner) — sebagai fallback saja
+      const joinedCrewRaw: any[] = Array.isArray((p as any).project_assignments)
+        ? (p as any).project_assignments
+        : [];
+      const joinedCrew: Array<{ name: string; isLeader: boolean }> =
+        joinedCrewRaw
+          .filter((x) => !x.removed_at)
+          .map((r) => ({
+            name: r.technician_name ?? "Teknisi",
+            isLeader: !!r.is_leader,
+          }));
+
+      // === crew “lengkap” dari query terpisah (semua teknisi pada project itu di hari tsb)
+      // gunakan ini agar card menampilkan SEMUA nama teknisi
+      const crewFullRaw = crewByProject.get(pid) ?? [];
+      const crewFull = sortLeaderFirst(
+        dedupeCrew(crewFullRaw.length ? crewFullRaw : joinedCrew)
+      );
+
+      // === progress berbasis jumlah teknisi (pakai crewFull agar konsisten)
       const sigmaTek = Number(p.sigma_teknisi ?? 0);
       const progress =
         sigmaTek > 0
-          ? Math.min(100, Math.round((crew.length / sigmaTek) * 100))
+          ? Math.min(100, Math.round((crewFull.length / sigmaTek) * 100))
           : null;
 
-      const isSurvey = surveySet.has(String(p.id));
-      const spvFromPA = supervisorNameByProject.get(String(p.id)) ?? null;
+      // survey?
+      const isSurvey = surveySet.has(pid);
 
+      // supervisor (leader hari ini)
+      const spvFromPA = supervisorNameByProject.get(pid) ?? null;
       const supervisor_name: string | null =
         spvFromPA ??
         (p.supervisor_name as string | null) ??
         (p.spv_name as string | null) ??
         null;
 
+      // sales
       const sales_name: string | null =
         (p.sales_name as string | null) ??
         (p.sales as string | null) ??
         (p.nama_sales as string | null) ??
         null;
 
-      const vehArr = vehicleNamesByProject.get(String(p.id)) ?? [];
-      const vehicle_name = vehArr.length ? vehArr.join(", ") : null;
+      // kendaraan
+      const vehArr: string[] = vehicleNamesByProject.get(pid) ?? [];
+      const vehicle_name: string | null = vehArr.length
+        ? vehArr.join(", ")
+        : null;
+
+      // progress foto berdasarkan TEMPLATE
+      const tplLen: number = resolveTemplateByProject(
+        (p as any).template_key,
+        (p as any).template_lokasi
+      ).length;
+
+      const progressTotal: number | null =
+        tplLen > 0 ? tplLen : totalByJob.get(jid) ?? null;
+      const progressDone: number | null =
+        doneByJob.get(jid) ?? (progressTotal ? 0 : null);
 
       return {
-        id: String(p.id),
-        job_id: String(p.job_id || p.id),
+        id: pid,
+        job_id: jid,
         name: String(p.name ?? "Project"),
         lokasi: (p.lokasi as string | null) ?? null,
         status: uiStatus,
         progress,
-        assignedTechnicians: crew,
+        assignedTechnicians: crewFull, // ⬅️ PENTING: pakai crewFull (SEMUA teknisi)
         type: isSurvey ? "survey" : "instalasi",
         building_name: isSurvey ? String(p.name ?? "Gedung") : null,
         supervisor_name,
         sales_name,
         vehicle_name,
         vehicle_names: vehArr,
+        progressDone,
+        progressTotal,
       };
     });
 
-    return NextResponse.json({ items });
+    return NextResponse.json({ items, date: workDate });
   } catch (e: any) {
     console.error(e);
     return NextResponse.json(

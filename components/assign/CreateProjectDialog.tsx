@@ -1,4 +1,4 @@
-// CreateProjectDialog.tsx
+// components/assign/CreateProjectDialog.tsx
 "use client";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -25,6 +25,24 @@ import {
 } from "@/components/external-id-picker";
 import { calcManDaysInstalasi, calcManDaysSurvey } from "./helpers";
 import { LOKASI_OPTIONS } from "@/lib/photoTemplate.bali";
+/* ===================== Normalisasi Opsi Lokasi ===================== */
+type LokasiOptInput = string | { value: string; label?: string };
+
+function coerceLokasiOptions(
+  src: unknown
+): Array<{ value: string; label: string }> {
+  if (!Array.isArray(src)) return [];
+  return (src as LokasiOptInput[])
+    .map((it) =>
+      typeof it === "string"
+        ? { value: it, label: it }
+        : {
+            value: String((it as any)?.value ?? ""),
+            label: String((it as any)?.label ?? (it as any)?.value ?? ""),
+          }
+    )
+    .filter((o) => !!o.value);
+}
 
 type Props = {
   open: boolean;
@@ -49,6 +67,172 @@ type ShapedDetail = {
   [k: string]: any;
 };
 
+/* ======= SearchableSelect (combobox sederhana) ======= */
+type SOption = { value: string; label: string };
+
+type SearchableSelectProps = {
+  id?: string;
+  value: string; // nilai yang tersimpan (value)
+  options: SOption[]; // sumber pilihan
+  onChange: (val: string) => void; // return value yang dipilih
+  placeholder?: string;
+  includeDefault?: boolean; // tampilkan baris "Default" (value = "")
+};
+
+function SearchableSelect({
+  id,
+  value,
+  options,
+  onChange,
+  placeholder = "Cari…",
+  includeDefault = true,
+}: SearchableSelectProps) {
+  const [open, setOpen] = useState(false);
+  const [inputVal, setInputVal] = useState("");
+  const [hlIdx, setHlIdx] = useState(0);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  // sinkronkan tampilan input dengan value terpilih
+  useEffect(() => {
+    const found = options.find((o) => o.value === value);
+    setInputVal(found ? found.label : "");
+  }, [value, options]);
+
+  const q = inputVal.trim().toLowerCase();
+  const filtered =
+    q.length === 0
+      ? options
+      : options.filter(
+          (o) =>
+            o.label.toLowerCase().includes(q) ||
+            o.value.toLowerCase().includes(q)
+        );
+
+  const finalList: Array<{ _k: string; opt: SOption | null }> = [
+    ...(includeDefault
+      ? [{ _k: "__default__", opt: null as SOption | null }]
+      : []),
+    ...filtered.map((o) => ({ _k: o.value, opt: o })),
+  ];
+
+  useEffect(() => {
+    // reset highlight ketika list berubah / dibuka
+    setHlIdx(0);
+  }, [q, open]);
+
+  // tutup saat klik di luar
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!boxRef.current) return;
+      if (!boxRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const pick = (opt: SOption | null) => {
+    if (!opt) {
+      onChange("");
+      setInputVal("");
+    } else {
+      onChange(opt.value);
+      setInputVal(opt.label);
+    }
+    setOpen(false);
+  };
+
+  const onKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (e) => {
+    if (!open && (e.key === "ArrowDown" || e.key === "Enter")) {
+      setOpen(true);
+      return;
+    }
+    if (!open) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHlIdx((i) => Math.min(i + 1, finalList.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHlIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const item = finalList[hlIdx];
+      if (item) pick(item.opt);
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div ref={boxRef} className="relative">
+      <div className="flex items-center gap-2">
+        <input
+          id={id}
+          value={inputVal}
+          onChange={(e) => {
+            setInputVal(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder={placeholder}
+          className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+          autoComplete="off"
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={id ? `${id}-listbox` : undefined}
+        />
+        {value !== "" && (
+          <button
+            type="button"
+            onClick={() => pick(null)}
+            className="text-xs px-2 py-1 rounded-md border border-input hover:bg-gray-100"
+            title="Set ke Default"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div
+          id={id ? `${id}-listbox` : undefined}
+          role="listbox"
+          className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border border-input bg-popover shadow-md"
+        >
+          {finalList.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-gray-500">
+              Tidak ada hasil
+            </div>
+          ) : (
+            finalList.map((row, idx) => {
+              const isActive = idx === hlIdx;
+              const isDefault = row.opt === null;
+              return (
+                <button
+                  key={row._k}
+                  type="button"
+                  role="option"
+                  aria-selected={isActive}
+                  onMouseEnter={() => setHlIdx(idx)}
+                  onMouseDown={(e) => e.preventDefault()} // jangan hilang fokus
+                  onClick={() => pick(row.opt)}
+                  className={`w-full text-left px-3 py-2 text-sm ${
+                    isActive ? "bg-accent" : ""
+                  } ${
+                    isDefault ? "text-gray-700 font-medium" : "text-foreground"
+                  }`}
+                >
+                  {isDefault ? "Default" : row.opt!.label}
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CreateProjectDialog({
   open,
   onOpenChange,
@@ -69,7 +253,7 @@ export default function CreateProjectDialog({
     namaPresales: "",
     tanggalSpkUser: "",
     tanggalTerimaPo: "",
-    tanggalMulaiProject: "",        // ← tetap ada, tapi tidak wajib diisi
+    tanggalMulaiProject: "",
     tanggalDeadlineProject: "",
     sigmaManDays: "",
     sigmaHari: "",
@@ -98,7 +282,10 @@ export default function CreateProjectDialog({
       tipeTemplate: "",
     });
 
-  // ===== (NEW - from code 1) Auto Man Days: Instalasi =====
+  // Opsi lokasi siap pakai untuk <select>
+  const lokasiOpts = coerceLokasiOptions(LOKASI_OPTIONS);
+
+  // ===== Auto Man Days: Instalasi =====
   useEffect(() => {
     const md = calcManDaysInstalasi(
       newProjectForm.sigmaHari,
@@ -110,7 +297,7 @@ export default function CreateProjectDialog({
     }));
   }, [newProjectForm.sigmaHari, newProjectForm.sigmaTeknisi]);
 
-  // ===== (NEW - from code 1) Auto Man Days: Survey =====
+  // ===== Auto Man Days: Survey =====
   useEffect(() => {
     const md = calcManDaysSurvey(
       newSurveyProjectForm.totalHari,
@@ -134,7 +321,7 @@ export default function CreateProjectDialog({
     })();
   }, []);
 
-  // ====== Picker eksternal (paket/npkt) [keep from code 2] ======
+  // ====== Picker eksternal (paket/npkt) ======
   const [externalSelected, setExternalSelected] =
     useState<ExternalSelected>(null);
 
@@ -155,6 +342,7 @@ export default function CreateProjectDialog({
     salesName?: string;
     namaPaket?: string;
   } {
+    // 1) Sudah di-shape oleh route /api/pog/detail
     if (anyResp && (anyResp.lokasi || anyResp.salesName || anyResp.meta)) {
       const lok = typeof anyResp.lokasi === "string" ? anyResp.lokasi : "";
       const sname =
@@ -166,13 +354,14 @@ export default function CreateProjectDialog({
       return { lokasi: lok, salesName: sname, namaPaket };
     }
 
+    // 2) Bentuk raw (status + data[]) atau data[]
     const list: any[] =
       (Array.isArray(anyResp?.data?.data) && anyResp.data.data) ||
       (Array.isArray(anyResp?.data) && anyResp.data) ||
       [];
 
-    const first =
-      list[0] || (Array.isArray(anyResp) ? anyResp[0] : undefined);
+    const first = list[0] || (Array.isArray(anyResp) ? anyResp[0] : undefined);
+
     if (!first) return {};
 
     const instansi = first.instansi ? String(first.instansi).trim() : "";
@@ -189,7 +378,7 @@ export default function CreateProjectDialog({
     return { lokasi, salesName, namaPaket };
   }
 
-  // Ambil detail POG segera saat user memilih ID (paket/npkt)
+  // Ambil detail POG saat user memilih ID (paket/npkt)
   useEffect(() => {
     if (!externalSelected?.id || !externalSelected?.type) {
       lastApplied.current = null;
@@ -213,7 +402,7 @@ export default function CreateProjectDialog({
 
         const { lokasi, salesName } = parseDetail(resp);
 
-        // Autofill form Instalasi (TANPA menyentuh namaProject)
+        // Autofill Instalasi (tanpa sentuh namaProject)
         setNewProjectForm((prev) => {
           const next = { ...prev };
           if ((!lokasiTouched.current || !prev.lokasi) && lokasi) {
@@ -225,7 +414,7 @@ export default function CreateProjectDialog({
           return next;
         });
 
-        // Autofill form Survey (TANPA menyentuh namaProject)
+        // Autofill Survey (tanpa sentuh namaProject)
         setNewSurveyProjectForm((prev) => {
           const next = { ...prev };
           if (!prev.lokasi && lokasi) next.lokasi = lokasi;
@@ -356,7 +545,7 @@ export default function CreateProjectDialog({
       namaPresales: "",
       tanggalSpkUser: "",
       tanggalTerimaPo: "",
-      tanggalMulaiProject: "",      // ← tetap reset kosong
+      tanggalMulaiProject: "",
       tanggalDeadlineProject: "",
       sigmaManDays: "",
       sigmaHari: "",
@@ -407,7 +596,6 @@ export default function CreateProjectDialog({
 
   // ====== Submit instalasi ======
   const submitInstalasi = async () => {
-    // ⬇️ Tanggal Mulai TIDAK lagi wajib
     if (
       !newProjectForm.namaProject ||
       !newProjectForm.tanggalDeadlineProject ||
@@ -415,29 +603,20 @@ export default function CreateProjectDialog({
       !newProjectForm.sigmaTeknisi
     )
       return;
-
-    if (!newProjectForm.tipeTemplate) {
-      setTmplErr("Harap pilih tipe template");
-      return;
-    }
-
-    // Validasi tanggal fleksibel: jika start kosong, hanya cek deadline exist.
     if (
       !validateDates(
-        newProjectForm.tanggalMulaiProject, // boleh kosong
+        newProjectForm.tanggalMulaiProject,
         newProjectForm.tanggalDeadlineProject
       )
     )
       return;
 
-    // Recompute Man Days (defensive)
     const md = calcManDaysInstalasi(
       newProjectForm.sigmaHari,
       newProjectForm.sigmaTeknisi
     );
     if (md <= 0) return;
 
-    // sinkronkan UI (opsional)
     if (String(md) !== newProjectForm.sigmaManDays) {
       setNewProjectForm((prev) => ({ ...prev, sigmaManDays: String(md) }));
     }
@@ -446,22 +625,20 @@ export default function CreateProjectDialog({
 
     try {
       setIsSaving(true);
-      const payload: any = {
+      const payload = {
         namaProject: newProjectForm.namaProject || null,
         lokasi: newProjectForm.lokasi || null,
         namaSales: newProjectForm.namaSales || null,
         namaPresales: newProjectForm.namaPresales || null,
         tanggalSpkUser: newProjectForm.tanggalSpkUser || null,
         tanggalTerimaPo: newProjectForm.tanggalTerimaPo || null,
-        // ⬇️ Kirim hanya jika diisi; jika kosong → undefined (tidak terkirim)
-        ...(newProjectForm.tanggalMulaiProject
-          ? { tanggalMulaiProject: newProjectForm.tanggalMulaiProject }
-          : {}),
+        tanggalMulaiProject: newProjectForm.tanggalMulaiProject,
         tanggalDeadlineProject: newProjectForm.tanggalDeadlineProject,
         sigmaManDays: md,
         sigmaHari: Number(newProjectForm.sigmaHari),
         sigmaTeknisi: Number(newProjectForm.sigmaTeknisi),
         templateKey: newProjectForm.tipeTemplate,
+        templateLokasi: newProjectForm.templateLokasi || null,
         durasiMinutes: newProjectForm.durasi
           ? Number(newProjectForm.durasi)
           : undefined,
@@ -474,7 +651,6 @@ export default function CreateProjectDialog({
             rw: p.rw || null,
             rt: p.rt || null,
           })) ?? [],
-        // pertahankan integrasi code 2
         idPaket:
           externalSelected?.type === "paket" ? externalSelected.id : null,
         idNpkt: externalSelected?.type === "npkt" ? externalSelected.id : null,
@@ -499,7 +675,7 @@ export default function CreateProjectDialog({
     }
   };
 
-  // ====== Submit survey (tetap seperti semula; survey tetap mandatory start/end) ======
+  // ====== Submit survey ======
   const submitSurvey = async () => {
     if (
       !newSurveyProjectForm.namaProject ||
@@ -577,13 +753,12 @@ export default function CreateProjectDialog({
     else submitInstalasi();
   };
 
-  // ====== Can create (Instalasi: tanggal mulai TIDAK wajib) ======
+  // ====== Can create ======
   const canCreate =
     projectCategory === "survey"
       ? !!newSurveyProjectForm.namaProject &&
         !!newSurveyProjectForm.namaGedung &&
         !!newSurveyProjectForm.lokasi &&
-        !!newSurveyProjectForm.tanggalMulaiProject &&
         !!newSurveyProjectForm.tanggalDeadlineProject &&
         calcManDaysSurvey(
           newSurveyProjectForm.totalHari,
@@ -594,7 +769,6 @@ export default function CreateProjectDialog({
         !!newSurveyProjectForm.tipeTemplate &&
         !dateErr
       : !!newProjectForm.namaProject &&
-        /* tanggalMulaiProject tidak wajib */
         !!newProjectForm.tanggalDeadlineProject &&
         calcManDaysInstalasi(
           newProjectForm.sigmaHari,
@@ -602,7 +776,6 @@ export default function CreateProjectDialog({
         ) > 0 &&
         !!newProjectForm.sigmaHari &&
         !!newProjectForm.sigmaTeknisi &&
-        !!newProjectForm.tipeTemplate &&
         !dateErr;
 
   return (
@@ -696,6 +869,32 @@ export default function CreateProjectDialog({
                 />
                 <p className="text-xs text-gray-500 mt-1">
                   Maksimal 140 karakter ({newProjectForm.lokasi.length}/140)
+                </p>
+              </div>
+            </div>
+
+            {/* Template Lokasi (opsional) */}
+            <div className="flex flex-col md:flex-row md:items-start gap-2">
+              <Label htmlFor="templateLokasi" className="min-w-[120px] md:mt-2">
+                Template Lokasi
+              </Label>
+              <div className="flex-1">
+                <SearchableSelect
+                  id="templateLokasi"
+                  value={newProjectForm.templateLokasi ?? ""} // <-- COERCE KE STRING
+                  options={lokasiOpts}
+                  onChange={(val) =>
+                    setNewProjectForm((prev) => ({
+                      ...prev,
+                      templateLokasi: val,
+                    }))
+                  }
+                  placeholder="Cari lokasi template…"
+                  includeDefault={true}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Opsional — pilih variasi template berdasarkan lokasi. Ketik
+                  untuk mencari.
                 </p>
               </div>
             </div>
@@ -860,14 +1059,12 @@ export default function CreateProjectDialog({
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
                 </div>
-
-                {/* ⬇️ Tanggal Mulai Instalasi TIDAK mandatory: hilangkan '*' dan required */}
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label
                     htmlFor="tanggalMulaiProject"
                     className="min-w-[120px]"
                   >
-                    Tanggal Mulai Instalasi
+                    Tanggal Mulai Instalasi{" "}
                   </Label>
                   <input
                     id="tanggalMulaiProject"
@@ -886,7 +1083,6 @@ export default function CreateProjectDialog({
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
                   />
                 </div>
-
                 <div className="flex flex-col md:flex-row md:items-center gap-2">
                   <Label htmlFor="sigmaTeknisi" className="min-w-[120px]">
                     Total Teknisi <span className="text-red-500">*</span>
@@ -1020,7 +1216,7 @@ export default function CreateProjectDialog({
                     htmlFor="tipeTemplate"
                     className="min-w-[120px] md:mt-2"
                   >
-                    Tipe Template <span className="text-red-500">*</span>
+                    Tipe Template
                   </Label>
                   <div className="flex-1">
                     <select
@@ -1036,7 +1232,6 @@ export default function CreateProjectDialog({
                       className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-sm ${
                         tmplErr ? "border-red-500" : "border-input"
                       }`}
-                      required
                     >
                       <option value="" disabled>
                         Pilih Tipe Template
@@ -1080,7 +1275,6 @@ export default function CreateProjectDialog({
         {/* ===== SURVEY ===== */}
         {projectCategory === "survey" && (
           <div className="grid gap-4 py-2">
-            {/* (bagian survey tetap sama / mandatory) */}
             {/* Nama, lokasi */}
             <div className="flex flex-col md:flex-row md:items-center gap-2">
               <Label htmlFor="surveyNamaProject" className="min-w-[140px]">
@@ -1147,7 +1341,7 @@ export default function CreateProjectDialog({
               </div>
             </div>
 
-            {/* Picker eksternal (pertahankan integrasi) */}
+            {/* Picker eksternal */}
             <ExternalIdPicker
               value={externalSelected}
               onChange={(v) => {

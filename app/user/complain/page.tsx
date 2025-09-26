@@ -54,7 +54,7 @@ export default function ComplainPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <TechnicianHeader title="Ajukan Komplain" showBackButton={true} backUrl="/user/dashboard" />
+      <TechnicianHeader title="NCR" showBackButton={true} backUrl="/user/dashboard" />
 
       {/* Main Content */}
       <main className="p-4">

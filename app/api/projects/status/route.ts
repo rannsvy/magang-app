@@ -7,6 +7,7 @@ export async function PATCH(req: NextRequest) {
   const projectId: string = body?.projectId;
   const status: string = body?.status;
   const reason: string | undefined = body?.reason;
+  const supabase = supabaseServer();
 
   if (!projectId || !status) {
     return NextResponse.json(
@@ -17,7 +18,7 @@ export async function PATCH(req: NextRequest) {
 
   // ✅ Status baru: Menunggu Persetujuan BAST
   if (status === "awaiting_bast") {
-    const { error: upErr } = await supabaseServer
+    const { error: upErr } = await supabase
       .from("projects")
       .update({
         status: "awaiting_bast",
@@ -38,7 +39,7 @@ export async function PATCH(req: NextRequest) {
     const nowIsoWIB = nowWIBIso();
 
     // 1) Tandai selesai (cap waktu WIB), turunkan ke unassigned agar tidak dianggap ongoing
-    const { error: upErr } = await supabaseServer
+    const { error: upErr } = await supabase
       .from("projects")
       .update({
         status: "completed",
@@ -53,7 +54,7 @@ export async function PATCH(req: NextRequest) {
     }
 
     // 2) Putuskan semua assignment aktif
-    const { error: rmErr } = await supabaseServer
+    const { error: rmErr } = await supabase
       .from("project_assignments")
       .update({ removed_at: nowIsoWIB, is_leader: false })
       .eq("project_id", projectId)
@@ -70,7 +71,7 @@ export async function PATCH(req: NextRequest) {
   const payload: any = { project_status: status };
   payload.pending_reason = status === "pending" ? reason ?? null : null;
 
-  const { error } = await supabaseServer
+  const { error } = await supabase
     .from("projects")
     .update(payload)
     .eq("id", projectId);

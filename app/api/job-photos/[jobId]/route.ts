@@ -1,6 +1,12 @@
+// app/api/job-photos/[jobId]/route.ts
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServers";
-import { PHOTO_TEMPLATE } from "@/lib/photoTemplate";
+
+// Default template (single array)
+import { PHOTO_TEMPLATE as PHOTO_TEMPLATE_DEFAULT } from "@/lib/photoTemplate";
+
+// Bali: mapping per-lokasi + helper
+import { getTemplateForLocationWithTypes } from "@/lib/photoTemplate.bali";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
@@ -50,18 +56,32 @@ type ApiItem = {
   requiresSerialNumber: boolean;
   requiresCable: boolean;
 
-  // kompat lama (masih dikirim)
+  // kompat lama
   photoThumb: string | null;
   photo: string | null;
 
-  // baru (riwayat & pilihan utama)
+  // baru
   photos: PhotoEntry[];
   selectedPhotoId: string | null;
 
   // meta
   serialNumber: string | null;
-  meter: number | null; // hanya untuk type "photo+cable"
+  meter: number | null; // hanya untuk "photo+cable"
 };
+
+// ===== pilih template berdasarkan project =====
+function resolveTemplateItems(templateLokasi?: string | null): TemplateItem[] {
+  const key = (templateLokasi ?? "").trim();
+  if (key) {
+    // pakai mapping Bali: kembalikan array untuk lokasi tsb bila ada
+    const fromBali = getTemplateForLocationWithTypes(key);
+    if (Array.isArray(fromBali) && fromBali.length) {
+      return fromBali as unknown as TemplateItem[];
+    }
+  }
+  // fallback ke default (single array)
+  return PHOTO_TEMPLATE_DEFAULT as unknown as TemplateItem[];
+}
 
 // Helper: aman parse number
 function toNumOrNull(v: unknown): number | null {
@@ -78,7 +98,7 @@ function pickBestPhotoId(list: PhotoEntry[]): string | null {
   return best.id;
 }
 
-// NOTE: params adalah Promise → wajib di-await (sesuai Next 15 canary behavior)
+// params Next 15: Promise -> wajib await
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ jobId: string }> }
@@ -92,10 +112,10 @@ export async function GET(
 
     const supabase = supabaseServer();
 
-    // ===== Status project (pending / active) =====
+    // ===== status & metadata project (termasuk template_lokasi)
     const pj = await supabase
       .from("projects")
-      .select("status, pending_since, pending_reason")
+      .select("status, pending_since, pending_reason, template_lokasi")
       .eq("job_id", jobId)
       .maybeSingle();
 
@@ -105,7 +125,10 @@ export async function GET(
         pj.data.pending_since !== null ||
         pj.data.pending_reason !== null);
 
-    // ===== Snapshot terbaru per kategori =====
+    // ===== tentukan template yang dipakai
+    const templateRaw = resolveTemplateItems(pj.data?.template_lokasi);
+
+    // ===== snapshot terbaru per kategori
     const { data: latest, error: eLatest } = await supabase
       .from("job_photos")
       .select(
@@ -122,7 +145,7 @@ export async function GET(
       latestByCat.set(String(r.category_id), r as LatestRow);
     }
 
-    // ===== Semua entri riwayat =====
+    // ===== semua entri riwayat
     let entriesByCat = new Map<string, EntryRow[]>();
     try {
       const { data: entries, error: eEntries } = await supabase
@@ -143,19 +166,19 @@ export async function GET(
         }, new Map<string, EntryRow[]>());
       }
     } catch {
-      // fallback silently
+      // ignore
     }
 
-    // ===== Template (urut) =====
-    const template: TemplateItem[] = (PHOTO_TEMPLATE as TemplateItem[])
+    // ===== urut template
+    const template: TemplateItem[] = (templateRaw as TemplateItem[])
       .slice()
       .sort((a, b) => Number(a.sort ?? 0) - Number(b.sort ?? 0));
 
-    // ===== Build items untuk UI =====
-    const items: ApiItem[] = template.map((tpl) => {
+    // ===== bentuk items untuk UI
+    const items = template.map<ApiItem>((tpl) => {
       const latestRow = latestByCat.get(tpl.id);
 
-      // photos[] dari riwayat
+      // riwayat -> photos[]
       const rawList = entriesByCat.get(tpl.id) ?? [];
       const photos: PhotoEntry[] = rawList.map((p) => ({
         id: String(p.id),
@@ -178,13 +201,13 @@ export async function GET(
         });
       }
 
-      // Meter hanya valid untuk "photo+cable"
+      // cable meter hanya untuk "photo+cable"
       let meter: number | null = null;
       if (tpl.type === "photo+cable" && latestRow?.cable_meter != null) {
         meter = toNumOrNull(latestRow.cable_meter);
       }
 
-      // Tentukan selectedPhotoId
+      // selected photo
       const selectedPhotoId =
         latestRow?.selected_photo_id ??
         (photos.length ? pickBestPhotoId(photos) : null);
@@ -210,7 +233,7 @@ export async function GET(
       };
     });
 
-    // ===== Hitung progres =====
+    // ===== hitung progres
     const total = template.length;
     const complete = items.filter((it) => {
       const hasImg = it.photos.length > 0 || Boolean(it.photoThumb || it.photo);
@@ -222,7 +245,6 @@ export async function GET(
     const uploaded = complete;
     const percent = total ? Math.round((uploaded / total) * 100) : 0;
 
-    // Tambahkan progress.done agar frontend mudah konsumsi
     return NextResponse.json({
       items,
       status: isPending ? "pending" : "active",
@@ -232,7 +254,7 @@ export async function GET(
         total,
         complete,
         uploaded,
-        done: complete, // ← alias yang dipakai UI
+        done: complete, // alias untuk UI
         percent,
       },
     });
