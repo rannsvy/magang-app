@@ -1,0 +1,1 @@
+export { GET } from "../manage-project/route";

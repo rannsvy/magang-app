@@ -139,13 +139,31 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const { data: rows, error } = await sb
+  let supportsProjectColumn = true;
+  let rows: any[] | null = null;
+  let error: any = null;
+
+  const baseQuery = sb
     .from("vehicles")
-    .select(
-      "id, vehicle_code, brand, model, plate, tax_paid_date, tax_due_date, active"
-    )
+    .select("id, vehicle_code, brand, model, plate, tax_paid_date, tax_due_date, active, project_id")
     .eq("active", true)
     .order("vehicle_code", { ascending: true });
+
+  const { data: dataWithProject, error: errWithProject } = await baseQuery;
+
+  if (errWithProject && errWithProject.code === "42703") {
+    supportsProjectColumn = false;
+    const fallback = await sb
+      .from("vehicles")
+      .select("id, vehicle_code, brand, model, plate, tax_paid_date, tax_due_date, active")
+      .eq("active", true)
+      .order("vehicle_code", { ascending: true });
+    rows = (fallback.data as any[] | null) ?? null;
+    error = fallback.error;
+  } else {
+    rows = (dataWithProject as any[] | null) ?? null;
+    error = errWithProject as any;
+  }
 
   if (error) {
     return NextResponse.json(
@@ -154,7 +172,40 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const mapped = (rows ?? []).map(mapRowToUI);
+  const vehicleIdToProject = new Map<string, string>();
+  if (rows?.length) {
+    const shouldDerive =
+      !supportsProjectColumn || rows.some((r) => !r || !r.project_id);
+
+    if (shouldDerive) {
+      const vehicleIds = rows
+        .map((r) => (r?.id ? String(r.id) : null))
+        .filter((id): id is string => !!id);
+
+      if (vehicleIds.length) {
+        const { data: assignmentRows } = await sb
+          .from("project_assignments")
+          .select("project_id, vehicle_id, removed_at")
+          .in("vehicle_id", vehicleIds);
+
+        for (const row of assignmentRows ?? []) {
+          if (!row?.vehicle_id || !row?.project_id) continue;
+          if (row?.removed_at) continue;
+          const vehicleId = String(row.vehicle_id);
+          if (!vehicleIdToProject.has(vehicleId)) {
+            vehicleIdToProject.set(vehicleId, String(row.project_id));
+          }
+        }
+      }
+    }
+  }
+
+  const mapped = (rows ?? []).map((row) => {
+    const ui = mapRowToUI(row);
+    const directProject = row?.project_id ? String(row.project_id) : null;
+    const derivedProject = row?.id ? vehicleIdToProject.get(String(row.id)) ?? null : null;
+    return { ...ui, project_id: directProject ?? derivedProject ?? null };
+  });
   return NextResponse.json({ data: mapped }, { headers: res.headers });
 }
 

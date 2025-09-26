@@ -30,8 +30,10 @@ import {
   Loader2,
   CircleCheck,
   CircleX,
-  Trophy, // ⬅️ untuk Leaderboard
+  CalendarArrowDown,
+  Trophy,
 } from "lucide-react";
+import { LogoutButton } from "./ui/logout-button";
 
 /** Role yang boleh melihat Leaderboard */
 const ALLOWED = new Set(["supervisor", "gm", "manager"]);
@@ -112,6 +114,7 @@ export function TechnicianHeader({
 }: TechnicianHeaderProps) {
   const router = useRouter();
 
+  /* logout & nav */
   const [isClient, setIsClient] = useState(false);
   useEffect(() => {
     setIsClient(true);
@@ -137,22 +140,11 @@ export function TechnicianHeader({
       } catch {}
     })();
   }, []);
-
-  /* logout & nav */
-  async function handleLogout() {
-    try {
-      await supabase.auth.signOut();
-    } catch {}
-    await fetch("/api/auth/logout", {
-      method: "POST",
-      credentials: "include",
-    }).catch(() => {});
-    window.location.href = `/auth/login`;
-  }
   const handleBack = () => router.push(backUrl);
   const handleProfileClick = () => router.push("/user/profile");
   const handleComplaintClick = () => router.push("/user/complain");
   const handleDamageComplainClick = () => router.push("/user/damageComplain");
+  const handleOpenDailyReport = () => router.push("/user/dailyReport");
 
   /* Push notif */
   const supported = useMemo(
@@ -311,7 +303,7 @@ export function TechnicianHeader({
     );
   };
 
-  /* Auto-lookup technicianId dari sesi */
+  /* Auto-lookup technicianId dari sesi (gabungan: profiles → technicians.auth_user_id → technicians.user_id → technicians.email) */
   const [techIdAuto, setTechIdAuto] = useState<string | undefined>(undefined);
   useEffect(() => {
     let alive = true;
@@ -326,10 +318,7 @@ export function TechnicianHeader({
         const email = authRes?.user?.email ?? undefined;
         if (!uid && !email) return;
 
-        // prefer mapping via profiles first
-        let profTechId: string | null = null;
-        let profileEmail: string | undefined = undefined;
-
+        // 1) via profiles
         if (uid) {
           const { data: profile } = await supabase
             .from("profiles")
@@ -337,32 +326,53 @@ export function TechnicianHeader({
             .eq("id", uid)
             .maybeSingle();
 
-          if (profile?.technician_id) {
-            profTechId = String(profile.technician_id);
+          const profTechId = profile?.technician_id
+            ? String(profile.technician_id)
+            : null;
+          const profileEmail = (profile?.email || "").trim() || undefined;
+
+          if (profTechId) {
+            if (alive) setTechIdAuto(profTechId);
+            return;
           }
-          if (profile?.email) {
-            const trimmed = String(profile.email).trim();
-            if (trimmed) profileEmail = trimmed;
+
+          // 2) via technicians.auth_user_id
+          const t1 = await supabase
+            .from("technicians")
+            .select("id")
+            .eq("auth_user_id", uid)
+            .limit(1)
+            .single();
+          if (!t1.error && t1.data?.id) {
+            if (alive) setTechIdAuto(t1.data.id);
+            return;
           }
-        }
 
-        if (profTechId) {
-          if (alive) setTechIdAuto(profTechId);
-          return;
-        }
+          // 3) via technicians.user_id (fallback lain)
+          const t2 = await supabase
+            .from("technicians")
+            .select("id")
+            .eq("user_id", uid)
+            .limit(1)
+            .single();
+          if (!t2.error && t2.data?.id) {
+            if (alive) setTechIdAuto(t2.data.id);
+            return;
+          }
 
-        const lookupEmail = profileEmail ?? email;
-        if (!lookupEmail) return;
-
-        const { data: techByEmail, error: techByEmailError } = await supabase
-          .from("technicians")
-          .select("id")
-          .eq("email", lookupEmail)
-          .maybeSingle();
-
-        if (!techByEmailError && techByEmail?.id) {
-          if (alive) setTechIdAuto(techByEmail.id);
-          return;
+          // 4) via email (prioritaskan email di profile jika ada)
+          const lookupEmail = profileEmail ?? email;
+          if (lookupEmail) {
+            const { data: t3, error: e3 } = await supabase
+              .from("technicians")
+              .select("id")
+              .eq("email", lookupEmail)
+              .maybeSingle();
+            if (!e3 && t3?.id) {
+              if (alive) setTechIdAuto(t3.id);
+              return;
+            }
+          }
         }
       } catch {}
     })();
@@ -688,8 +698,20 @@ export function TechnicianHeader({
                 <CircleX className="h-4 w-4 mr-2 text-black-500" /> Check Out
               </DropdownMenuItem>
 
-              <DropdownMenuItem onClick={handleLogout} className="text-red-600">
-                <LogOut className="h-4 w-4 mr-2" /> Keluar
+              {/* Daily Report (dari code 1) */}
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault(); // cegah race close menu
+                  handleOpenDailyReport();
+                }}
+                className="cursor-pointer"
+              >
+                <CalendarArrowDown className="h-4 w-4 mr-2 text-black-500" />
+                Daily Report
+              </DropdownMenuItem>
+
+              <DropdownMenuItem className="text-red-600">
+                <LogoutButton/>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

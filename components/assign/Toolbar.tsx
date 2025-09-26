@@ -10,10 +10,11 @@ import {
   Plus,
   Share,
   LayoutGrid,
+  ListChecks, // ikon Manage Project
 } from "lucide-react";
 
 type Props = {
-  /* === Konfigurasi dari code 1 (dipertahankan) === */
+  /* bawaan */
   selectAll: boolean;
   onSelectAllChange: (v: boolean) => void;
   onEditProjectOpen: () => void;
@@ -21,45 +22,44 @@ type Props = {
   onShare: () => void;
   isExporting: boolean;
 
-  onSaveAssignment: () => void; // (tidak dipakai di UI saat ini, tetapi tetap ada)
-  selectedCount: number; // (dipertahankan)
-  loading: boolean; // (dipertahankan)
+  onSaveAssignment: () => void;
+  selectedCount: number;
+  loading: boolean;
 
   currentDateLabel: string;
   onPrevDate: () => void;
   onNextDate: () => void;
   totalAssignments: number;
 
-  /* === Tambahan dari code 2 (opsional agar kompatibel) === */
-  /** 1 = ProjectTable, 2 = ProjectTableCars */
-  tablePage?: number;
-  /** default 2 */
-  tablePageCount?: number;
+  /* pager tabel */
+  tablePage?: number; // 1 = ProjectTable, 2 = ProjectTableCars
+  tablePageCount?: number; // default 2
   onPrevTablePage?: () => void;
   onNextTablePage?: () => void;
+
+  /* NEW: buka dialog Manage Project */
+  onOpenManageProject: () => void;
 };
 
 export default function Toolbar({
-  /* === props code 1 === */
   selectAll,
   onSelectAllChange,
   onEditProjectOpen,
   onCreateProjectOpen,
   onShare,
   isExporting,
-  onSaveAssignment, // dipertahankan untuk kompatibilitas
-  selectedCount, // dipertahankan
-  loading, // dipertahankan
+  onSaveAssignment,
+  selectedCount,
+  loading,
   currentDateLabel,
   onPrevDate,
   onNextDate,
   totalAssignments,
-
-  /* === props tambahan code 2 (default agar tidak breaking) === */
   tablePage = 1,
   tablePageCount = 2,
   onPrevTablePage = () => {},
   onNextTablePage = () => {},
+  onOpenManageProject,
 }: Props) {
   const tableLabel = tablePage === 1 ? "Tabel: Project" : "Tabel: Kendaraan";
 
@@ -86,6 +86,16 @@ export default function Toolbar({
 
       {/* Kanan */}
       <div className="flex items-center gap-3">
+        {/* ⬅️ Tombol Manage Project — tepat di kiri pager tabel */}
+        <Button
+          onClick={onOpenManageProject}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 text-sm"
+          title="Buka daftar Manage Project (waitlist)"
+        >
+          <ListChecks className="h-4 w-4" />
+          Manage Project
+        </Button>
+
         {/* Pager TABEL */}
         <div className="flex items-center gap-1 bg-gray-100 px-2 py-1 rounded-lg">
           <Button
@@ -125,6 +135,7 @@ export default function Toolbar({
           <Edit className="h-4 w-4" />
           Edit Project
         </Button>
+
         <Button
           onClick={onCreateProjectOpen}
           className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 text-sm"
@@ -132,6 +143,7 @@ export default function Toolbar({
           <Plus className="h-4 w-4" />
           Buat Project
         </Button>
+
         <Button
           onClick={onShare}
           className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 text-sm"

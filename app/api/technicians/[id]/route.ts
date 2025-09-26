@@ -1,7 +1,70 @@
 // app/api/technicians/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const id = params.id;
+  const body = await req.json().catch(() => ({} as any));
+
+  const updatePayload: any = {
+    nama_lengkap: body?.nama_lengkap ?? null,
+    nama_panggilan: body?.nama_panggilan ?? null,
+    telepon: body?.phone ?? body?.telepon ?? null,
+    aktif:
+      typeof body?.is_active === "boolean"
+        ? body.is_active
+        : typeof body?.aktif === "boolean"
+        ? body.aktif
+        : undefined,
+  };
+
+  if (body?.inisial) {
+    updatePayload.inisial = String(body.inisial)
+      .toUpperCase()
+      .replace(/[^A-Z]/g, "")
+      .slice(0, 2);
+  }
+  if (body?.email !== undefined) {
+    updatePayload.email = body.email;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("technicians")
+    .update(updatePayload)
+    .eq("id", id)
+    .select("id, email")
+    .single();
+
+  if (error)
+    return NextResponse.json({ error: error.message }, { status: 400 });
+
+  // sinkronkan email ke auth user (via profiles)
+  if (body?.email) {
+    const { data: prof } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("technician_id", id)
+      .single();
+
+    if (prof?.id) {
+      await supabaseAdmin.auth.admin
+        .updateUserById(prof.id, {
+          email: body.email,
+          email_confirm: true,
+        })
+        .catch((e) => console.error("updateUserById:", e?.message));
+      await supabaseAdmin
+        .from("profiles")
+        .update({ email: body.email })
+        .eq("id", prof.id);
+    }
+  }
+
+  return NextResponse.json({ data: { id } });
+}
 /**
  * GET /api/technicians
  * Prefer view v_technicians_with_status; fallback ke tabel technicians.
@@ -18,7 +81,7 @@ export async function GET() {
       id: String(t.id),
       // UI saat ini pakai "name" atau "nama"
       name: String(t.nama_lengkap ?? "Teknisi"),
-      inisial: String(t.inisial ?? (t.nama_lengkap?.[0] ?? "?")).toUpperCase(),
+      inisial: String(t.inisial ?? t.nama_lengkap?.[0] ?? "?").toUpperCase(),
       email: t.email ?? "",
       phone: t.telepon ?? "",
       joinDate:
@@ -36,7 +99,9 @@ export async function GET() {
   // 2) Fallback ke tabel technicians (kolom Indonesia)
   const { data, error } = await supabaseAdmin
     .from("technicians")
-    .select("id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan")
+    .select(
+      "id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan"
+    )
     .order("inisial", { ascending: true });
 
   if (error) {
@@ -46,7 +111,7 @@ export async function GET() {
   const shaped = (data ?? []).map((t: any) => ({
     id: String(t.id),
     name: String(t.nama_lengkap ?? "Teknisi"),
-    inisial: String(t.inisial ?? (t.nama_lengkap?.[0] ?? "?")).toUpperCase(),
+    inisial: String(t.inisial ?? t.nama_lengkap?.[0] ?? "?").toUpperCase(),
     email: t.email ?? "",
     phone: t.telepon ?? "",
     joinDate: t.dibuat_pada ? String(t.dibuat_pada).slice(0, 10) : "",
@@ -69,13 +134,17 @@ export async function POST(request: Request) {
     const body = await request.json();
 
     // terima kedua gaya penamaan (Inggris/Indonesia)
-    const nama_lengkap: string = (body?.nama_lengkap ?? body?.name ?? "").trim();
-    const inisialRaw: string | null =
-      body?.inisial ?? body?.initials ?? null;
+    const nama_lengkap: string = (
+      body?.nama_lengkap ??
+      body?.name ??
+      ""
+    ).trim();
+    const inisialRaw: string | null = body?.inisial ?? body?.initials ?? null;
     const email: string | null = body?.email ?? null;
-    const telepon: string | null = (body?.telepon ?? body?.phone) ?? null;
+    const telepon: string | null = body?.telepon ?? body?.phone ?? null;
     const aktif: boolean =
-      body?.aktif ?? (typeof body?.is_active === "boolean" ? body.is_active : true);
+      body?.aktif ??
+      (typeof body?.is_active === "boolean" ? body.is_active : true);
     const nama_panggilan: string | null = body?.nama_panggilan ?? null;
 
     if (!nama_lengkap) {
@@ -86,7 +155,10 @@ export async function POST(request: Request) {
     }
     let inisial: string | null = null;
     if (inisialRaw) {
-      const s = String(inisialRaw).toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2);
+      const s = String(inisialRaw)
+        .toUpperCase()
+        .replace(/[^A-Z]/g, "")
+        .slice(0, 2);
       if (s.length === 0) {
         return NextResponse.json(
           { error: "Inisial harus berupa huruf A–Z." },
@@ -108,7 +180,9 @@ export async function POST(request: Request) {
     const { data, error } = await supabaseAdmin
       .from("technicians")
       .insert(insertPayload)
-      .select("id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan")
+      .select(
+        "id, nama_lengkap, inisial, dibuat_pada, email, telepon, aktif, nama_panggilan"
+      )
       .single();
 
     if (error) {
@@ -123,7 +197,9 @@ export async function POST(request: Request) {
     const shaped = {
       id: String(data!.id),
       name: data!.nama_lengkap,
-      inisial: String(data!.inisial ?? data!.nama_lengkap?.[0] ?? "?").toUpperCase(),
+      inisial: String(
+        data!.inisial ?? data!.nama_lengkap?.[0] ?? "?"
+      ).toUpperCase(),
       email: data!.email ?? "",
       phone: data!.telepon ?? "",
       joinDate: data!.dibuat_pada ? String(data!.dibuat_pada).slice(0, 10) : "",

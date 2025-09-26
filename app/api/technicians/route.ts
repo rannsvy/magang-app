@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
+const DEFAULT_PASSWORD = process.env.DEFAULT_USER_PASSWORD?.trim() || "123456";
 /**
  * GET /api/technicians
  * Prefer view v_technicians_with_status; fallback ke tabel technicians.
@@ -68,11 +69,11 @@ export async function GET() {
  * { nama_lengkap* | name*, inisial?, email?, telepon?|phone?, aktif?|is_active?, nama_panggilan? }
  * - inisial: maks 2 huruf, akan di-UPPERCASE
  */
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    // Terima kedua gaya penamaan (Inggris/Indonesia)
     const nama_lengkap: string = (
       body?.nama_lengkap ??
       body?.name ??
@@ -92,7 +93,6 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-
     let inisial: string | null = null;
     if (inisialRaw) {
       const s = String(inisialRaw)
@@ -133,22 +133,63 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: msg }, { status: 400 });
     }
 
+    // Opsional: buat akun auth & profiles jika ada email
+    if (email) {
+      const { data: authData, error: authErr } =
+        await supabaseAdmin.auth.admin.createUser({
+          email,
+          password: DEFAULT_PASSWORD,
+          email_confirm: true,
+          user_metadata: { app_role: "teknisi", full_name: nama_lengkap },
+        });
+
+      if (!authErr && authData?.user) {
+        const userId = authData.user.id;
+
+        // cek dulu profiles
+        const { data: existingProfile } = await supabaseAdmin
+          .from("profiles")
+          .select("id")
+          .eq("id", userId)
+          .maybeSingle();
+
+        const patch = {
+          role: "teknisi",
+          email,
+          technician_id: data!.id,
+          supervisor_id: null,
+          sales_id: null,
+        };
+
+        if (existingProfile) {
+          await supabaseAdmin.from("profiles").update(patch).eq("id", userId);
+        } else {
+          await supabaseAdmin.from("profiles").insert({ id: userId, ...patch });
+        }
+      } else {
+        console.error("Gagal membuat akun auth:", authErr?.message);
+      }
+    }
+
     const shaped = {
-      id: String((data as any)!.id),
-      name: (data as any)!.nama_lengkap,
-      inisial: String((data as any)!.inisial ?? "").toUpperCase(),
-      email: (data as any)!.email ?? "",
-      phone: (data as any)!.telepon ?? "",
-      joinDate: (data as any)!.dibuat_pada
-        ? String((data as any)!.dibuat_pada).slice(0, 10)
-        : "",
+      id: String(data!.id),
+      name: data!.nama_lengkap,
+      inisial: String(
+        data!.inisial ?? data!.nama_lengkap?.[0] ?? "?"
+      ).toUpperCase(),
+      email: data!.email ?? "",
+      phone: data!.telepon ?? "",
+      joinDate: data!.dibuat_pada ? String(data!.dibuat_pada).slice(0, 10) : "",
       status: "di_kantor" as const,
-      nama_panggilan: (data as any)!.nama_panggilan ?? "",
-      aktif: !!(data as any)!.aktif,
+      nama_panggilan: data!.nama_panggilan ?? "",
+      aktif: !!data!.aktif,
     };
 
-    return NextResponse.json({ data: shaped });
-  } catch {
+    return NextResponse.json({
+      data: shaped,
+      default_password_used: DEFAULT_PASSWORD,
+    });
+  } catch (e) {
     return NextResponse.json(
       { error: "Gagal menambah teknisi" },
       { status: 500 }

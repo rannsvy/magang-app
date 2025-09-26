@@ -55,12 +55,18 @@ export async function GET(req?: NextRequest) {
   const todayWIB = effectiveWIBDate();
   const url = req ? new URL(req.url) : null;
   const queryDate = url?.searchParams.get("date") || todayWIB;
+  const includeWaitlist = (
+    url?.searchParams.get("includeWaitlist") || ""
+  ).toLowerCase();
+  const includeWait =
+    includeWaitlist === "1" ||
+    includeWaitlist === "true" ||
+    includeWaitlist === "yes";
 
-  // Termasuk project yang tanggal_mulai-nya NULL
-  const { data: projects, error: pErr } = await supabaseAdmin
-    .from("projects")
-    .select(
-      `
+  // Default seperti code-1: exclude waitlist (tanggal_mulai IS NULL)
+  // Namun jika includeWaitlist=true => sertakan yang tanggal_mulai NULL (seperti code-2)
+  const sel = supabaseAdmin.from("projects").select(
+    `
       id, job_id, name, lokasi,
       sales_name, presales_name,
       status,
@@ -74,9 +80,15 @@ export async function GET(req?: NextRequest) {
       id_paket, id_npkt,
       template_key, template_lokasi
     `
-    )
-    .or(`tanggal_mulai.lte.${queryDate},tanggal_mulai.is.null`)
-    .order("created_at", { ascending: false });
+  );
+
+  const baseQuery = includeWait
+    ? sel.or(`tanggal_mulai.lte.${queryDate},tanggal_mulai.is.null`)
+    : sel.lte("tanggal_mulai", queryDate); // exclude waitlist
+
+  const { data: projects, error: pErr } = await baseQuery.order("created_at", {
+    ascending: false,
+  });
 
   if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
 
@@ -166,11 +178,9 @@ export async function GET(req?: NextRequest) {
       leader_count: 0,
       actual_man_days: actual.get(p.id) ?? 0,
 
-      // NEW: expose supaya UI bisa menampilkan badge/link kalau perlu
+      // NEW: expose supaya UI bisa menampilkan badge/link atau template lokasi
       id_paket: p.id_paket ?? null,
       id_npkt: p.id_npkt ?? null,
-
-      // (opsional) berguna untuk halaman upload memilih template lokasi
       template_key: p.template_key ?? null,
       template_lokasi: p.template_lokasi ?? null,
     };
@@ -181,6 +191,7 @@ export async function GET(req?: NextRequest) {
 
 /* =============== Helpers: Insert + retry unik lokasi/job_id =============== */
 
+// >>>>> tanggal_mulai & template_key & template_lokasi boleh null
 type InsertProjectRow = {
   name: string;
   lokasi: string | null;
@@ -188,16 +199,16 @@ type InsertProjectRow = {
   presales_name: string | null;
   tgl_spk_user: string | null;
   tgl_terima_po: string | null;
-  tanggal_mulai: string | null; // <- BOLEH NULL
-  tanggal_deadline: string;
+  tanggal_mulai: string | null; // boleh NULL
+  tanggal_deadline: string; // wajib
   sigma_man_days: number;
   sigma_hari: number;
   sigma_teknisi: number;
   project_status: "unassigned";
   jam_datang: string;
   jam_pulang: string;
-  template_key: string | null; // <- BOLEH NULL
-  template_lokasi: string | null; // <- NEW
+  template_key: string | null; // boleh NULL
+  template_lokasi: string | null; // NEW
   durasi_minutes: number;
   insentif: number;
 
@@ -231,7 +242,7 @@ async function insertProjectWithRetries(
         (error as any).details || ""
       }`.toLowerCase();
 
-      // Bentrok lokasi (unique index: projects_code_key on (lokasi))
+      // Bentrok lokasi (unique index)
       if (msg.includes("projects_code_key") || msg.includes("(lokasi)")) {
         if (!triedLokasiAdjust) {
           triedLokasiAdjust = true;
@@ -276,15 +287,15 @@ export async function POST(req: NextRequest) {
     namaPresales?: string | null;
     tanggalSpkUser?: string | null;
     tanggalTerimaPo?: string | null;
-    tanggalMulaiProject?: string | null; // <- opsional
+    tanggalMulaiProject?: string | null; // opsional
     tanggalDeadlineProject: string;
     sigmaManDays: number;
     sigmaHari: number;
     sigmaTeknisi: number;
-    templateKey?: string | null; // <- opsional
+    templateKey?: string | null; // opsional
+    templateLokasi?: string | null; // NEW: opsional
 
     // NEW
-    templateLokasi?: string | null; // <-- dari UI
     durasiMinutes?: number | null;
     insentif?: number | null;
     paketDetails?: Array<{ seq: number; rw: string | null; rt: string | null }>;
@@ -333,7 +344,7 @@ export async function POST(req: NextRequest) {
     tgl_spk_user: body.tanggalSpkUser ?? null,
     tgl_terima_po: body.tanggalTerimaPo ?? null,
 
-    tanggal_mulai: body.tanggalMulaiProject || null, // <- boleh null
+    tanggal_mulai: body.tanggalMulaiProject || null, // boleh null
     tanggal_deadline: body.tanggalDeadlineProject,
 
     sigma_man_days: body.sigmaManDays ?? 0,
@@ -343,13 +354,13 @@ export async function POST(req: NextRequest) {
     jam_datang: "08:00:00",
     jam_pulang: "17:00:00",
 
-    template_key: (body.templateKey || null) as string | null, // <- boleh null
-    template_lokasi: body.templateLokasi?.trim() || null, // <- ikut tersimpan
+    template_key: (body.templateKey || null) as string | null, // boleh null
+    template_lokasi: body.templateLokasi?.trim() || null, // NEW
 
     durasi_minutes: durasi,
     insentif: insentif,
 
-    // NEW: akan ikut tersimpan
+    // NEW: ikut tersimpan
     id_paket: idPaket,
     id_npkt: idNpkt,
   };
@@ -364,7 +375,8 @@ export async function POST(req: NextRequest) {
     const created: any[] = [];
     const errors: Array<{ seq: number; error: string }> = [];
 
-    // Agar unik(lokasi) aman, gunakan tanggal (mulai||deadline||hari ini) + RW/RT
+    // Agar unik(lokasi) aman:
+    // gunakan tanggal (mulai || deadline || hari ini) + RW/RT
     const baseLokasi = baseInsert.lokasi;
     const baseTgl =
       body.tanggalMulaiProject ||
@@ -456,6 +468,8 @@ export async function POST(req: NextRequest) {
         // NEW: ikut di respons
         id_paket: p.id_paket ?? null,
         id_npkt: p.id_npkt ?? null,
+        template_key: p.template_key ?? null,
+        template_lokasi: p.template_lokasi ?? null,
       };
     });
 
@@ -524,6 +538,8 @@ export async function POST(req: NextRequest) {
     // NEW: ikut di respons
     id_paket: project.id_paket ?? null,
     id_npkt: project.id_npkt ?? null,
+    template_key: project.template_key ?? null,
+    template_lokasi: project.template_lokasi ?? null,
   };
 
   return NextResponse.json({ data: shaped }, { status: 201 });

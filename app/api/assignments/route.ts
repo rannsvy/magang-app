@@ -2,9 +2,9 @@
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabaseServers"; // server-side client (RLS ON)
-import { supabaseAdmin, supabaseAdmins } from "@/lib/supabaseAdmin"; // admin client (service-role, BYPASS RLS)
-import { sendPushToEmails } from "@/lib/sendAssignmentPush"; // helper kirim push
+import { supabaseServer } from "@/lib/supabaseServers"; // RLS ON
+import { supabaseAdmins } from "@/lib/supabaseAdmin"; // service-role, BYPASS RLS
+import { sendPushToEmails } from "@/lib/sendAssignmentPush";
 
 type ShapedAssignment = {
   projectId: string;
@@ -72,8 +72,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const sb = supabaseServer(); // RLS ON, untuk data user-scoped
-  const sa = supabaseAdmins(); // RLS BYPASS, untuk lookup meta yang aman
+  const sb = supabaseServer(); // RLS ON
+  const sa = supabaseAdmins(); // BYPASS RLS
 
   // A) Ambil penugasan harian (gabungan)
   const { data: paDaily, error: paDailyErr } = await sb
@@ -106,7 +106,7 @@ export async function GET(req: NextRequest) {
     );
 
     // meta teknisi (pakai admin client supaya tidak ke blok RLS)
-    let techMap = new Map<string, { inisial: string; name: string }>();
+    const techMap = new Map<string, { inisial: string; name: string }>();
     if (techIds.length) {
       const { data: techs, error: tErr } = await sa
         .from("technicians")
@@ -124,7 +124,7 @@ export async function GET(req: NextRequest) {
     }
 
     // meta kendaraan (pakai admin client)
-    let vehMap = new Map<string, { code: string; model: string }>();
+    const vehMap = new Map<string, { code: string; model: string }>();
     if (vehIds.length) {
       const { data: vehs, error: vErr } = await sa
         .from("vehicles")
@@ -225,7 +225,6 @@ export async function GET(req: NextRequest) {
     prevByProject.set(r.project_id as string, arr);
   }
 
-  // ⚠️ gunakan admin client agar join ke technicians tidak diblok RLS
   const { data: pa, error: paErr } = await sa
     .from("project_assignments")
     .select(
@@ -474,7 +473,7 @@ export async function POST(req: NextRequest) {
       !pendingSet.has(id) && !completedSet.has(id) && !bastSet.has(id)
   );
 
-  // Enforce tepat 1 leader per project (hanya untuk proyek yang disinkron assignment-nya)
+  // Enforce tepat 1 leader per project (untuk proyek yang disinkron assignment-nya)
   for (const pid of activeScopeProjectIds) {
     const leadersCount = byProject.get(pid)?.techLeaders?.size ?? 0;
     if (leadersCount !== 1 && projectsWithAssignments.includes(pid)) {
@@ -580,7 +579,6 @@ export async function POST(req: NextRequest) {
   /* ========= 2) Sinkron project_assignments (harian; teknisi & kendaraan) ========= */
   if (projectsWithAssignments.length && activeScopeProjectIds.length) {
     // 2.a Ambil LEADER & SUPERVISOR EXISTING utk tanggal ini
-    //    -> dipakai hanya bila leader TIDAK BERUBAH; jika leader BERUBAH maka akan memakai DEFAULT supervisor leader baru.
     const existingLeaderInfoByProject = new Map<
       string,
       { leaderTid: string | null; supervisorId: string | null }
@@ -689,7 +687,7 @@ export async function POST(req: NextRequest) {
           if (existing && existing.leaderTid === tid && existing.supervisorId) {
             supId = existing.supervisorId;
           } else {
-            // Leader BERUBAH atau belum ada -> pakai default supervisor milik leader baru
+            // Leader BERUBAH/baru -> pakai default supervisor leader baru
             supId = defaultSupByTech.get(tid)?.id ?? null;
           }
         }
@@ -857,70 +855,117 @@ export async function POST(req: NextRequest) {
         new Set(newlyAddedForPush.map((x) => x.project_id))
       );
 
-      // Ambil email teknisi
+      // Ambil email + nama teknisi
       const { data: techRows, error: techErr } = await supabaseAdmins()
         .from("technicians")
-        .select("id, email")
+        .select("id, email, nama_panggilan, nama_lengkap, inisial")
         .in("id", techIds);
 
       if (!techErr && techRows?.length) {
         const emailByTech = new Map<string, string>();
+        const nameByTech = new Map<string, string>();
         for (const t of (techRows ?? []) as any[]) {
           const em = String(t?.email || "").trim();
-          if (em) emailByTech.set(t.id as string, em);
+          if (em) emailByTech.set(String(t.id), em);
+          const name =
+            (t?.nama_panggilan && String(t.nama_panggilan).trim()) ||
+            (t?.nama_lengkap && String(t.nama_lengkap).trim()) ||
+            (t?.inisial && String(t.inisial).trim()) ||
+            "";
+          if (name) nameByTech.set(String(t.id), name);
         }
 
-        // Ambil label proyek (code/name), fallback ke id
-        const { data: projMeta, error: projErr2 } = await supabaseAdmins()
-          .from("projects")
-          .select("id, project_code, name, project_name, kode, nama")
-          .in("id", projIds);
-
-        const projectLabel = new Map<string, string>();
-        if (!projErr2) {
-          for (const p of (projMeta ?? []) as any[]) {
+        // === Ambil nama & lokasi project dari API /api/projects ===
+        // Map id -> { label, lokasi }
+        let projectMeta = new Map<string, { label: string; lokasi: string }>();
+        try {
+          const projectsApiUrl = new URL("/api/projects", req.url);
+          projectsApiUrl.searchParams.set("date", date);
+          const resp = await fetch(projectsApiUrl.toString(), {
+            cache: "no-store",
+          });
+          const j = await resp.json();
+          const arr = Array.isArray(j?.data) ? (j.data as any[]) : [];
+          for (const p of arr) {
             const label =
-              (p?.project_code as string) ||
-              (p?.project_name as string) ||
-              (p?.name as string) ||
-              (p?.kode as string) ||
-              (p?.nama as string) ||
-              (p?.id as string);
-            projectLabel.set(p.id as string, label);
+              (typeof p?.name === "string" && p.name.trim()) ||
+              (typeof p?.job_id === "string" && p.job_id.trim()) ||
+              (typeof p?.project_code === "string" && p.project_code.trim()) ||
+              (typeof p?.project_name === "string" && p.project_name.trim()) ||
+              String(p?.id ?? "");
+            const lokasi =
+              (typeof p?.lokasi === "string" && p.lokasi.trim()) || "-";
+            if (p?.id) projectMeta.set(String(p.id), { label, lokasi });
+          }
+        } catch (_e) {
+          // fallback langsung ke tabel projects
+          const { data: projMeta, error: projMetaErr } = await supabaseAdmins()
+            .from("projects")
+            .select(
+              "id, name, project_name, project_code, job_id, kode, nama, lokasi"
+            )
+            .in("id", projIds);
+
+          if (!projMetaErr) {
+            for (const p of (projMeta ?? []) as any[]) {
+              const label =
+                (p?.name as string) ||
+                (p?.project_name as string) ||
+                (p?.project_code as string) ||
+                (p?.job_id as string) ||
+                (p?.kode as string) ||
+                (p?.nama as string) ||
+                (p?.id as string);
+              const lokasi = (p?.lokasi as string) || "-";
+              projectMeta.set(p.id as string, { label, lokasi });
+            }
           }
         }
 
-        // Kelompokkan per teknisi → daftar label proyek
-        const byTech = new Map<string, string[]>();
+        // === Kelompokkan assignment-baru per teknisi
+        const byTech = new Map<string, { label: string; lokasi: string }[]>();
         for (const it of newlyAddedForPush) {
-          const label = projectLabel.get(it.project_id) ?? it.project_id;
+          const meta = projectMeta.get(it.project_id);
+          const label =
+            meta?.label ??
+            (it.project_id.length > 10
+              ? `${it.project_id.slice(0, 8)}…`
+              : it.project_id);
+          const lokasi = meta?.lokasi ?? "-";
           const arr = byTech.get(it.technician_id) ?? [];
-          if (!arr.includes(label)) arr.push(label);
+          arr.push({ label, lokasi });
           byTech.set(it.technician_id, arr);
         }
 
-        // Kirim notifikasi
-        for (const [techId, labels] of byTech) {
+        // === Kirim notifikasi:
+        // - kalau 1 assignment → notif per-assignment (lengkap dgn lokasi, personal name)
+        // - kalau >1 assignment → ringkas jadi 1 notif berisi daftar singkat
+        for (const [techId, projectsList] of byTech) {
           const email = emailByTech.get(techId);
           if (!email) continue;
 
-          const title =
-            labels.length > 1
-              ? "Kamu di-assign ke beberapa project baru"
-              : "Kamu di-assign ke project baru";
+          const techName = nameByTech.get(techId) ?? "Anda";
 
-          const body =
-            labels.length > 1
-              ? labels.slice(0, 3).join(", ") +
-                (labels.length > 3 ? `, +${labels.length - 3} lainnya` : "")
-              : labels[0];
-
-          await sendPushToEmails([email], {
-            title,
-            body,
-            url: "/user/dashboard", // klik notif → buka dashboard teknisi
-            tag: `assign-${date}-${techId}`, // supaya notifikasi sejenis dimerge
-          });
+          if (projectsList.length === 1) {
+            const { label, lokasi } = projectsList[0];
+            await sendPushToEmails([email], {
+              title: `Halo, ${techName} Kamu di-assign ke project baru`,
+              body: `Project: ${label}\nLokasi: ${lokasi}`,
+              url: "/user/dashboard",
+              tag: `assign-${date}-${techId}-${label}`, // unik per assignment
+            });
+          } else {
+            const labels = projectsList.map((x) => x.label);
+            const body =
+              labels.slice(0, 3).join(", ") +
+              (labels.length > 3 ? `, +${labels.length - 3} lainnya` : "");
+            await sendPushToEmails([email], {
+              title: "Kamu di-assign ke beberapa project baru",
+              body,
+              url: "/user/dashboard",
+              tag: `assign-${date}-${techId}`, // merge notifikasi sejenis
+            });
+          }
         }
       }
     }

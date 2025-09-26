@@ -1,9 +1,10 @@
-//login/page.tsx
+// app/login/page.tsx
 "use client";
 
-import type React from "react";
-import { useState, useMemo } from "react";
+import type { FormEvent } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useRouter } from "next/navigation";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,20 +16,89 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+
 import { getDailyQuote } from "@/lib/quotes";
 import { PWAInstallPrompt } from "@/components/pwa-install-prompt";
 import { supabase } from "@/lib/supabaseBrowser";
 
 export default function LoginPage() {
+  const router = useRouter();
+
+  // ====== State ======
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const router = useRouter();
 
+  // ====== Quote ======
   const quote = useMemo(() => getDailyQuote(), []);
 
+  // ====== Gradient crossfade (dari code 1) ======
+  const gradientThemes = [
+    {
+      bg: "bg-gradient-to-br from-emerald-600 to-emerald-800",
+      text: "text-white",
+    },
+    { bg: "bg-gradient-to-br from-slate-900 to-slate-700", text: "text-white" },
+    {
+      bg: "bg-gradient-to-br from-rose-600 to-fuchsia-700",
+      text: "text-white",
+    },
+    { bg: "bg-gradient-to-br from-cyan-600 to-blue-700", text: "text-white" },
+    { bg: "bg-gradient-to-br from-sky-50 to-sky-200", text: "text-slate-900" },
+    {
+      bg: "bg-gradient-to-br from-amber-50 to-amber-200",
+      text: "text-slate-900",
+    },
+    {
+      bg: "bg-gradient-to-br from-violet-100 to-white",
+      text: "text-slate-900",
+    },
+  ];
+
+  const FADE_MS = 3000; // durasi transisi
+  const HOLD_MS = 12000; // jeda sebelum transisi berikutnya
+
+  const initialIdx =
+    Math.floor(Date.now() / (1000 * 60 * 60 * 24)) % gradientThemes.length;
+
+  const [currentIdx, setCurrentIdx] = useState(initialIdx);
+  const [nextIdx, setNextIdx] = useState(
+    (initialIdx + 1) % gradientThemes.length
+  );
+  const [textIdx, setTextIdx] = useState(initialIdx);
+  const [crossfading, setCrossfading] = useState(false);
+
+  useEffect(() => {
+    let holdTimer: ReturnType<typeof setTimeout> | undefined;
+    let fadeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const cycle = () => {
+      setTextIdx(nextIdx);
+      setCrossfading(true);
+
+      fadeTimer = setTimeout(() => {
+        setCurrentIdx((c) => {
+          const newCur = (c + 1) % gradientThemes.length;
+          setNextIdx((newCur + 1) % gradientThemes.length);
+          return newCur;
+        });
+        setCrossfading(false);
+        holdTimer = setTimeout(cycle, HOLD_MS);
+      }, FADE_MS);
+    };
+
+    holdTimer = setTimeout(cycle, HOLD_MS);
+
+    return () => {
+      if (holdTimer) clearTimeout(holdTimer);
+      if (fadeTimer) clearTimeout(fadeTimer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ====== Auth helpers ======
   const routeAfterLogin = async () => {
     let user = (await supabase.auth.getUser()).data.user;
     if (!user) {
@@ -56,7 +126,7 @@ export default function LoginPage() {
     router.replace(isAdmin ? "/admin/dashboard" : "/user/dashboard");
   };
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError("");
@@ -72,6 +142,8 @@ export default function LoginPage() {
         setError(error.message || "Email atau password salah");
         return;
       }
+
+      // sinkronkan cookie httpOnly (opsional, jika ada endpoint /api/auth/set)
       const { data: sess } = await supabase.auth.getSession();
       const at = sess?.session?.access_token;
       const rt = sess?.session?.refresh_token;
@@ -120,6 +192,7 @@ export default function LoginPage() {
 
   const handleForgotPassword = () => router.push("/auth/forgot_password");
 
+  // ====== UI ======
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
       <Card className="w-full max-w-md">
@@ -130,8 +203,41 @@ export default function LoginPage() {
           <CardDescription>
             Masuk ke akun Anda untuk melanjutkan
           </CardDescription>
-          <div className="mt-4 rounded-md border bg-white px-4 py-3 text-sm italic text-gray-700">
-            “{quote}”
+
+          {/* Quote dengan background gradient crossfade (dari code 1) */}
+          <div className="mt-4 relative rounded-xl shadow-sm ring-1 ring-black/5 overflow-hidden">
+            {/* BG A */}
+            <div
+              className={[
+                "absolute inset-0 transition-opacity duration-[3000ms] ease-linear",
+                "will-change-[opacity] pointer-events-none",
+                gradientThemes[currentIdx].bg,
+                crossfading ? "opacity-0" : "opacity-100",
+              ].join(" ")}
+            />
+            {/* BG B */}
+            <div
+              className={[
+                "absolute inset-0 transition-opacity duration-[3000ms] ease-linear",
+                "will-change-[opacity] pointer-events-none",
+                gradientThemes[nextIdx].bg,
+                crossfading ? "opacity-100" : "opacity-0",
+              ].join(" ")}
+            />
+
+            {/* Teks: warna ikut tema target */}
+            <blockquote
+              className={[
+                "relative z-10 px-6 py-7 sm:px-7 sm:py-8",
+                "text-center italic leading-tight tracking-tight [text-wrap:balance]",
+                "transition-colors duration-[3000ms] ease-linear",
+                gradientThemes[textIdx].text,
+              ].join(" ")}
+            >
+              <span className="block text-2xl sm:text-3xl lg:text-4xl font-semibold">
+                “{quote}”
+              </span>
+            </blockquote>
           </div>
         </CardHeader>
 
@@ -196,7 +302,7 @@ export default function LoginPage() {
             onClick={handleGoogleLogin}
             disabled={isGoogleLoading || isLoading}
           >
-            {/* Ikon Google (SVG kecil) */}
+            {/* Ikon Google */}
             <svg
               className="mr-2 h-4 w-4"
               viewBox="0 0 533.5 544.3"

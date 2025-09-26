@@ -1,0 +1,1 @@
+export { PATCH } from "../../../manage-project/[id]/schedule/route";
